@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "collider-fm"
+version = "0.1.0"
+description = "Foundation models for particle collider data"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "h5py",
+    "huggingface_hub",
+    "datasets",
+    "pyarrow",
+    "addict",
+    "timm",
+    "scipy",
+    "ninja",
+    "cumm==0.7.3",
+    "spconv-cu126",
+    "torch-scatter",
+    "matplotlib",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+# Match the existing cluster install flow, which builds torch-scatter from source.
+find-links = ["https://data.pyg.org/whl/torch-2.8.0+cu128.html"]
+no-binary-package = ["torch-scatter"]
+no-build-isolation-package = ["torch-scatter"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

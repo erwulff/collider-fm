@@ -5,29 +5,26 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=64
 #SBATCH -C h100
-#SBATCH -J install_deps
+#SBATCH -J create_uv_venv
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
 
 # Load modules
 module --force purge; module load modules/2.4-20250724
-module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer
-
-# Local uv installation
-UV=~/.local/bin/uv
+module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer uv
 
 # Create env with Python 3.12 using uv
-$UV venv --python 3.12
+uv venv --python 3.12
 
 # Activate the local virtual environment
 source .venv/bin/activate
 
-$UV pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+echo "Using uv: $(command -v uv)"
+echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"
 
-# Build torch-scatter from source to ensure compatibility with GLIBC on the compute node
-$UV pip install --no-binary torch-scatter --verbose torch-scatter -f https://data.pyg.org/whl/torch-2.8.0+cu128.html --no-build-isolation
-
-# Install the rest of the dependencies from requirements.txt
-$UV pip install -r requirements.txt
+# Install the project dependencies from pyproject.toml.
+# torch and torchvision resolve from the CUDA 12.8 PyTorch index, and
+# torch-scatter is built from source per the uv settings in pyproject.toml.
+uv sync
  
