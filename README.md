@@ -1,10 +1,10 @@
-# Panda on ColliderML
+# Collider Foundation Model
 
-This project implements the Panda self-distillation methodology on the ColliderML dataset for high-energy physics.
+This project aims to implements foundation models for particle collider data in the field of high-energy physics.
 
 ## Project Overview
 
-The goal is to learn reusable, sensor-level representations from large-scale simulated HEP data using a hierarchical sparse 3D encoder (Point Transformer V3) and a self-distillation learning strategy as described in the Panda paper.
+The goal is to learn reusable representations from large-scale simulated HEP data using a self-distillation learning strategy.
 
 ## Repository Structure
 
@@ -70,10 +70,6 @@ To visualize a 3D event from the dataset:
 python scripts/inspect_data.py
 ```
 This will generate an `event_0_3d.png` file in the root directory.
-
-## HPC Resources
-
-This project is configured to run on HPC clusters using SLURM. Compute-heavy tasks (training, large-scale data processing) should always be submitted via `sbatch`. Logs are stored in `logs_slurm/`.
 
 ## References
 
