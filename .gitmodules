@@ -1,0 +1,3 @@
+[submodule "Panda_repo"]
+	path = Panda_repo
+	url = git@github.com:DeepLearnPhysics/Panda.git
