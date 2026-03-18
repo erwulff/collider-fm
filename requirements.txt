@@ -1,0 +1,22 @@
+# Core ML
+# torch --index-url https://download.pytorch.org/whl/cu128
+# torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Data Handling
+numpy
+h5py
+huggingface_hub
+datasets
+pyarrow
+
+# Panda Model Dependencies
+addict
+timm
+scipy
+ninja
+cumm==0.7.3
+spconv-cu126
+# torch-scatter -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
+
+# Visualization
+matplotlib
