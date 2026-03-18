@@ -77,6 +77,23 @@ Example 4
 #SBATCH -p genx
 #SBATCH --cpus-per-task=12
 
+## uv on the cluster
+
+The cluster provides a `uv` module starting with `modules/2.4`.
+
+To use it:
+
+```bash
+module load uv
+```
+
+The module:
+
+- sets `UV_CACHE_DIR=$HOME/.cache/uv`
+- appends its own `uv` binary to `PATH` instead of prepending it
+
+That means users can still install their own `uv` and keep it first in `PATH` while benefiting from the cache configuration provided by the module.
+
 ## SLURM guidelines
 
 You don't have access to slurm commands like sbatch. Ask the user to run them for you.

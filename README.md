@@ -1,6 +1,6 @@
 # Collider Foundation Model
 
-This project aims to implements foundation models for particle collider data in the field of high-energy physics.
+This project aims to implement foundation models for particle collider data in high-energy physics.
 
 ## Project Overview
 
@@ -10,40 +10,66 @@ The goal is to learn reusable representations from large-scale simulated HEP dat
 
 ```text
 /
+├── AGENTS.md                  # Primary agent-facing repo guide
 ├── src/
 │   └── collider_fm/           # Core library code
 │       ├── __init__.py        # Package exports
-│       ├── model.py           # Panda model implementation (PTv3 backbone)
-│       └── data.py            # ColliderML PyTorch Dataset and DataLoader
+│       ├── model.py           # Early Panda-style model scaffold
+│       └── data.py            # ColliderML dataset and DataLoader code
 ├── scripts/                   # Standalone Python scripts
-│   ├── download_data.py       # Script to download ColliderML from Hugging Face
+│   ├── download_data.py       # Download ColliderML data from Hugging Face
 │   └── inspect_data.py        # Data visualization and inspection utilities
 ├── slurm/                     # SLURM submission scripts for HPC
-│   ├── download.slurm         # Job for downloading the full dataset
+│   ├── create_uv_venv.slurm   # Create a project virtual environment on a compute node
+│   ├── download.slurm         # Job for downloading dataset subsets
 │   ├── test_model.slurm       # Job for testing the model on a GPU
 │   └── install_deps.slurm     # Job for installing specialized dependencies
-├── Panda_repo/                # Submodule/Clone of the original Panda repository
-├── GEMINI.md                  # Project mandates and context
+├── Panda_repo/                # Git submodule checkout of the Panda reference implementation
+├── logs_slurm/                # Tracked placeholder for SLURM stdout/stderr
+├── GEMINI.md                  # Legacy project context
 ├── PLAN.md                    # Detailed development roadmap
 ├── HPC.md                     # Documentation for HPC resources
-└── WORKING_NOTES.md           # Log of current work and progress
+└── requirements.txt           # Python dependency list
 ```
+
+## Current State
+
+This repository is still in an early implementation phase.
+
+- The dataset loader and inspection scripts are present and usable.
+- The model code is scaffold-level and uses the `Panda_repo` submodule as a reference dependency.
+- Some historical docs describe intended files or workflows that have not been added yet. Prefer [AGENTS.md](AGENTS.md) for current operational guidance.
 
 ## Getting Started
 
 ### Installation
 
-The project uses `uv` for dependency management. A virtual environment is located in `.venv`.
+The project uses `uv` for dependency management. A virtual environment is expected at `.venv`, but it is not committed to the repository.
 
-To set up the environment (if not already done):
+On this cluster, load the `uv` module before using `uv`:
+
 ```bash
-# Using the uv path from GEMINI.md
-~/.local/bin/uv venv
-source .venv/bin/activate
-~/.local/bin/uv pip install -r requirements.txt
+module load uv
 ```
 
-Note: Some dependencies like `spconv` and `torch-scatter` might require specialized installation on compute nodes via `slurm/install_deps.slurm`.
+The module sets `UV_CACHE_DIR=$HOME/.cache/uv` and appends its own `uv` binary to `PATH`, so a user-installed `uv` still takes precedence.
+
+To set up the environment manually:
+```bash
+module load uv
+uv venv --python 3.12
+source .venv/bin/activate
+uv sync
+```
+
+On the cluster, the intended setup flow is:
+
+```bash
+sbatch slurm/create_uv_venv.slurm
+```
+
+Some dependencies such as `spconv` and `torch-scatter` may need to be installed on compute nodes rather than the login node.
+`torch-scatter` is configured in `pyproject.toml` to build from source instead of using a wheel.
 
 ### Dataset
 
@@ -57,11 +83,13 @@ python scripts/download_data.py --pu-config pu0 --num-proc 12
 
 ### Training and Evaluation
 
-The core model logic resides in `src/collider_fm/model.py`. You can run a basic test of the model initialization and forward pass using SLURM:
+The core model logic resides in `src/collider_fm/model.py`. The current smoke-test job is:
 
 ```bash
 sbatch slurm/test_model.slurm
 ```
+
+Note: this job depends on the `Panda_repo` submodule referenced by the model scaffold.
 
 ### Data Inspection
 

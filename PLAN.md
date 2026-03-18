@@ -12,7 +12,7 @@ This document provides a detailed work plan for the project.
     *   [x] Implement basic data inspection and visualization to verify the data loader.
 
 *   **Week 2: Model Architecture**
-    *   [ ] Review the Panda paper and github repo (https://github.com/DeepLearnPhysics/Panda) to understand the model architecture in detail (hierarchical sparse 3D encoder). The code repo has been downloaded to Panda_repo.
+    *   [ ] Review the Panda paper and github repo (https://github.com/DeepLearnPhysics/Panda) to understand the model architecture in detail (hierarchical sparse 3D encoder). The `Panda_repo` submodule is available in this repository for reference.
     *   [ ] Implement the core components of the Panda model in `src/collider_fm/model.py`.
     *   [ ] Start with a simplified version if necessary.
     *   [ ] Write unit tests for the model components to ensure correctness.

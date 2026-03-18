@@ -1,6 +1,10 @@
-# Project: Panda on ColliderML
+# Legacy Project Context
 
-This document outlines the plan for adapting and scaling the methods from the Panda paper on the ColliderML dataset.
+`AGENTS.md` is now the primary operational guide for this repository.
+
+Use this file for project background only. If anything in this file conflicts with the current repository contents or `AGENTS.md`, prefer the current repository state and `AGENTS.md`.
+
+This document outlines the project background for adapting and scaling methods from the Panda paper on the ColliderML dataset.
 
 ## Project Goal
 
@@ -46,19 +50,13 @@ A detailed work plan is available in [PLAN.md](PLAN.md). The high-level phases a
 1.  **Phase 1: Foundation and Initial Implementation**
 2.  **Phase 2: Scaling and Evaluation**
 
-When you have completed tasks in the plan, remember to check them off. Also document your progress so that you don't forget it.
-
-## Guidelines
-
-Before making changes to any file, make sure you have read and understood the file contents. Also make sure you remember instructions given in GEMINI.md and PLAN.md.
-
-Keep a file called WORKING_NOTES.md, where you keep track of current work so that you can easily remember what has been done and what do do next.
+When plan items are completed, update `PLAN.md` to keep the roadmap accurate.
 
 ## Commands and Conventions
 
 *   **Hugging Face Cache:** The Hugging Face cache directory is located at `/mnt/ceph/users/ewulff/data/hf`.
-*   **uv:** Use `~/.local/bin/uv` to run `uv`. Docs for `uv` are at https://docs.astral.sh/uv/.
-*   **The Panda code repo** Has been downloaded to `Panda_repo`.
+*   **uv:** On this cluster, load `uv` with `module load uv` to set `UV_CACHE_DIR=$HOME/.cache/uv`. The module appends its own `uv` binary to `PATH`, so a user-installed `uv` still has precedence. Docs for `uv` are at https://docs.astral.sh/uv/.
+*   **Panda dependency:** A `Panda_repo` git submodule is present in this repository and is used by the current model scaffold.
 
 *(This section will be populated with more useful commands and project conventions as they are established.)*
 
@@ -83,4 +81,3 @@ cuda/12.8.0
 
 Gemini is running in an Apptainer container. The container was built using the script `apptainer/build_gemini_container.sh`.
 This ensures a consistent development environment across different machines.
-
