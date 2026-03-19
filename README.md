@@ -89,7 +89,7 @@ The core model logic resides in `src/collider_fm/model.py`. The current smoke-te
 sbatch slurm/test_model.slurm
 ```
 
-Note: this job depends on the `Panda_repo` submodule referenced by the model scaffold.
+The runtime model code now vendors the required Panda PTv3 components under `src/collider_fm/_panda/`, so the `Panda_repo` submodule is reference-only.
 
 ### Data Inspection
 

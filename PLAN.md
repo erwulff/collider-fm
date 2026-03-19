@@ -14,8 +14,9 @@ This document provides a detailed work plan for the project.
 *   **Week 2: Model Architecture**
     *   [ ] Review the Panda paper and github repo (https://github.com/DeepLearnPhysics/Panda) to understand the model architecture in detail (hierarchical sparse 3D encoder). The `Panda_repo` submodule is available in this repository for reference.
     *   [ ] Implement the core components of the Panda model in `src/collider_fm/model.py`.
-    *   [ ] Start with a simplified version if necessary.
-    *   [ ] Write unit tests for the model components to ensure correctness.
+    *   [x] Start with a simplified version if necessary.
+    *   [x] Write unit tests for the model components to ensure correctness.
+    *   Progress note: `src/collider_fm/model.py` now has a PTv3-backed point-cloud adapter, simplified student/teacher projection heads, and lightweight unit coverage. The `slurm/test_model.slurm` smoke test now completes on GPU (`Student output shape: (1, 32)`, `Distillation loss: 5.7166`). Full paper-parity architecture work is still pending.
 
 *   **Week 3: Training and Loss Implementation**
     *   [ ] Implement the self-distillation loss function as described in the paper.
