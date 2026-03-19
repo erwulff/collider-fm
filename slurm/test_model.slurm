@@ -22,4 +22,4 @@ echo "Using uv: $(command -v uv)"
 uv run python --version
 
 # Run the test
-uv run python -m collider_fm.model
+uv run python scripts/smoke_test_model.py
