@@ -36,7 +36,9 @@ where = ["src"]
 # Match the existing cluster install flow, which builds torch-scatter from source.
 find-links = ["https://data.pyg.org/whl/torch-2.8.0+cu128.html"]
 no-binary-package = ["torch-scatter"]
-no-build-isolation-package = ["torch-scatter"]
+
+[tool.uv.extra-build-dependencies]
+torch-scatter = ["setuptools", "wheel", "torch"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
