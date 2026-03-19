@@ -76,7 +76,7 @@ Some dependencies such as `spconv` and `torch-scatter` may need to be installed 
 The project uses the [ColliderML dataset](https://huggingface.co/datasets/ColliderML/ColliderML). To download a subset or the full dataset, use the provided script:
 
 ```bash
-python scripts/download_data.py --pu-config pu0 --num-proc 12
+uv run python scripts/download_data.py --pu-config pu0 --num-proc 12
 ```
 
 ## Usage
@@ -95,7 +95,7 @@ Note: this job depends on the `Panda_repo` submodule referenced by the model sca
 
 To visualize a 3D event from the dataset:
 ```bash
-python scripts/inspect_data.py
+uv run python scripts/inspect_data.py
 ```
 This will generate an `event_0_3d.png` file in the root directory.
 

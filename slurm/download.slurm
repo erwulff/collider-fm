@@ -17,13 +17,13 @@
 
 # Load modules if necessary
 module --force purge; module load modules/2.2-20230808
-module load slurm gcc cmake cuda/12.1.1 cudnn/8.9.2.26-12.x nccl openmpi apptainer
+module load slurm gcc cmake cuda/12.1.1 cudnn/8.9.2.26-12.x nccl openmpi apptainer uv
 
 # Activate the local virtual environment
 source .venv/bin/activate
 
 # Run the Python script to download the pu0 datasets
-python scripts/download_data.py \
+uv run python scripts/download_data.py \
     --dataset-types ttbar \
     --object-types particles tracker_hits calo_hits tracks \
     --pu-config pu0 \

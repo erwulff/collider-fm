@@ -12,14 +12,14 @@
 
 # Load modules
 module --force purge; module load modules/2.4-20250724
-module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer
+module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer uv
 
 # Activate the local virtual environment
 source .venv/bin/activate
 
 nvidia-smi
-which python
-python --version
+echo "Using uv: $(command -v uv)"
+uv run python --version
 
 # Run the test
-python src/collider_fm/model.py
+uv run python -m collider_fm.model
