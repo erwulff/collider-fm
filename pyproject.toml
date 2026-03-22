@@ -48,3 +48,12 @@ torchvision = { index = "pytorch-cu128" }
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "black",
+]
+
+[tool.black]
+line-length = 160
+target-version = ["py312"]
