@@ -98,6 +98,14 @@ Python formatting is handled with Black and configured in `pyproject.toml` with 
 uv run black .
 ```
 
+Notebook commits are cleaned automatically with `pre-commit` and `nbstripout` so committed `.ipynb` files do not keep cell outputs.
+
+```bash
+uv run pre-commit install
+```
+
+If a notebook with outputs is staged, the hook will strip the outputs, stop the commit once, and ask you to re-stage the cleaned notebook before committing again.
+
 For roadmap and cluster-specific guidance:
 
 - `PLAN.md` tracks milestones and open work.
