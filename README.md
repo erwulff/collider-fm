@@ -90,6 +90,12 @@ sbatch slurm/test_model.slurm
 
 The smoke-test entrypoint lives in `scripts/smoke_test_model.py`.
 
+A minimal tracked training run looks like:
+
+```bash
+uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1
+```
+
 ## Development notes
 
 Python formatting is handled with Black and configured in `pyproject.toml` with a line length of 160 characters.
@@ -105,6 +111,18 @@ uv run pre-commit install
 ```
 
 If a notebook with outputs is staged, the hook will strip the outputs, stop the commit once, and ask you to re-stage the cleaned notebook before committing again.
+
+Training logs are tracker-agnostic. By default `scripts/train.py` writes `config.json` and `metrics.jsonl` under a timestamped directory in `runs/`.
+
+To opt into Comet ML as an additional backend, either log in so Comet saves credentials in `~/.comet.config`, or export:
+
+```bash
+export COMET_API_KEY=...
+export COMET_PROJECT_NAME=collider-fm
+export COMET_WORKSPACE=...
+```
+
+Then run training with the default `--log-backend auto` or force Comet with `--log-backend comet`.
 
 For roadmap and cluster-specific guidance:
 

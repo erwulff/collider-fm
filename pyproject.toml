@@ -24,6 +24,7 @@ dependencies = [
     "spconv-cu126",
     "torch-scatter",
     "matplotlib",
+    "comet-ml>=3.57.3",
 ]
 
 [tool.setuptools]

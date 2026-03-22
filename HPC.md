@@ -34,6 +34,7 @@ uv run black .
 - The documented Hugging Face cache location for this project is `/mnt/ceph/users/ewulff/data/hf`.
 - Heavy dataset download and GPU validation workflows are intended to run through scripts in `slurm/`.
 - Some packages such as `torch-scatter` may need to build on compute nodes instead of the login node.
+- Optional Comet ML logging for training runs can be enabled either through a saved `~/.comet.config` login or by exporting `COMET_API_KEY`, `COMET_PROJECT_NAME`, and `COMET_WORKSPACE` before launching the job.
 
 ## Example SBATCH directives
 
