@@ -19,10 +19,9 @@ This repo is still in a scaffold/prototype phase. Some docs describe intended fu
 
 ## Source Of Truth Docs
 
-- `README.md`: human-oriented project overview and setup notes.
+- `README.md`: human-oriented project overview, setup notes, and common workflows.
 - `PLAN.md`: roadmap and task checklist.
-- `HPC.md`: HPC and SLURM usage constraints.
-- `GEMINI.md`: legacy project context. Use it for background, not as the primary operational guide.
+- `HPC.md`: cluster-specific usage, environment notes, and SLURM guidance.
 
 If a document mentions files or workflows that do not exist, treat them as planned or stale unless the filesystem confirms them.
 
@@ -36,7 +35,8 @@ Top-level layout at time of writing:
 - `apptainer/`: container-related helper scripts.
 - `Panda_repo/`: git submodule checkout of the Panda reference implementation.
 - `main.py`: trivial placeholder entrypoint.
-- `requirements.txt`: Python dependency list.
+- `pyproject.toml`: project metadata, dependencies, and tool configuration.
+- `uv.lock`: locked dependency resolution.
 
 Known doc/repo mismatches:
 
@@ -68,7 +68,7 @@ Agents should not assume those paths exist unless they are created later.
 When updating repo docs:
 
 - Keep `AGENTS.md` short and operational.
-- Put project background and narrative in `README.md`.
+- Put project background, developer setup, and common workflows in `README.md`.
 - Put cluster policy and example batch directives in `HPC.md`.
 - Put roadmap and task tracking in `PLAN.md`.
 - Remove or downgrade stale aspirational statements that read like current facts.

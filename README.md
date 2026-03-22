@@ -1,139 +1,110 @@
 # Collider Foundation Model
 
-This project aims to implement foundation models for particle collider data in high-energy physics.
+Collider Foundation Model is an early-stage Python project for learning reusable representations from particle collider data. The current focus is adapting Panda-style self-distillation workflows to the ColliderML dataset.
 
-## Project Overview
+## Project goal
 
-The goal is to learn reusable representations from large-scale simulated HEP data using a self-distillation learning strategy.
+The project explores self-distillation methods for high-energy physics data, with Panda-style sensor-level representation learning as the starting point. The near-term goal is to get a practical training and evaluation workflow running on ColliderML before scaling to larger experiments.
 
-## Repository Structure
+## Current status
+
+- `src/collider_fm/data.py` provides dataset loading and basic collation.
+- `src/collider_fm/model.py` contains the current model scaffold and smoke-test path.
+- `scripts/download_data.py` and `scripts/inspect_data.py` cover basic data acquisition and inspection.
+- `Panda_repo/` is kept as a reference implementation, while the runtime code vendors the PTv3 pieces currently needed under `src/collider_fm/_panda/`.
+
+## Repository layout
 
 ```text
 /
-├── AGENTS.md                  # Primary agent-facing repo guide
-├── src/
-│   └── collider_fm/           # Core library code
-│       ├── __init__.py        # Package exports
-│       ├── model.py           # Early Panda-style model scaffold
-│       └── data.py            # ColliderML dataset and DataLoader code
-├── scripts/                   # Standalone Python scripts
-│   ├── download_data.py       # Download ColliderML data from Hugging Face
-│   └── inspect_data.py        # Data visualization and inspection utilities
-├── slurm/                     # SLURM submission scripts for HPC
-│   ├── create_uv_venv.slurm   # Create a project virtual environment on a compute node
-│   ├── download.slurm         # Job for downloading dataset subsets
-│   ├── test_model.slurm       # Job for testing the model on a GPU
-│   └── install_deps.slurm     # Job for installing specialized dependencies
-├── Panda_repo/                # Git submodule checkout of the Panda reference implementation
-├── logs_slurm/                # Tracked placeholder for SLURM stdout/stderr
-├── GEMINI.md                  # Legacy project context
-├── PLAN.md                    # Detailed development roadmap
-├── HPC.md                     # Documentation for HPC resources
-└── requirements.txt           # Python dependency list
+├── src/collider_fm/            # Python package code
+├── tests/                      # Unit tests
+├── scripts/                    # Utility scripts for downloads, inspection, and smoke tests
+├── slurm/                      # Batch jobs for cluster workflows
+├── apptainer/                  # Container helper scripts
+├── Panda_repo/                 # Panda reference submodule
+├── logs_slurm/                 # Placeholder directory for SLURM logs
+├── pyproject.toml              # Project metadata and tool configuration
+├── uv.lock                     # Locked dependency resolution for uv
+├── PLAN.md                     # Roadmap and task tracking
+└── HPC.md                      # Cluster and SLURM notes
 ```
 
-## Current State
+## Environment setup
 
-This repository is still in an early implementation phase.
+The project uses `uv` for dependency management and targets Python 3.12.
 
-- The dataset loader and inspection scripts are present and usable.
-- The model code is scaffold-level and uses the `Panda_repo` submodule as a reference dependency.
-- Some historical docs describe intended files or workflows that have not been added yet. Prefer [AGENTS.md](AGENTS.md) for current operational guidance.
-
-## Getting Started
-
-### Installation
-
-The project uses `uv` for dependency management. A virtual environment is expected at `.venv`, but it is not committed to the repository.
-
-On this cluster, load the `uv` module before using `uv`:
+On this cluster, load the `uv` module first:
 
 ```bash
 module load uv
 ```
 
-The module sets `UV_CACHE_DIR=$HOME/.cache/uv` and appends its own `uv` binary to `PATH`, so a user-installed `uv` still takes precedence.
+Then create and activate a virtual environment and sync dependencies:
 
-To set up the environment manually:
 ```bash
 module load uv
 uv venv --python 3.12
 source .venv/bin/activate
-uv sync
+uv sync --dev
 ```
 
-Python formatting is handled with `black`, configured in `pyproject.toml` with a project line length of 160 characters.
-Run it across the repo with:
+Some dependencies such as `spconv` and `torch-scatter` may need to be installed on compute nodes rather than the login node. `torch-scatter` is configured in `pyproject.toml` to build from source.
 
-```bash
-uv run black .
-```
-
-On the cluster, the intended setup flow is:
+If you prefer to create the environment through SLURM, use:
 
 ```bash
 sbatch slurm/create_uv_venv.slurm
 ```
 
-Some dependencies such as `spconv` and `torch-scatter` may need to be installed on compute nodes rather than the login node.
-`torch-scatter` is configured in `pyproject.toml` to build from source instead of using a wheel.
+## Dataset
 
-### Dataset
+The project uses the ColliderML dataset:
 
-The project uses the [ColliderML dataset](https://huggingface.co/datasets/ColliderML/ColliderML). To download a subset or the full dataset, use the provided script:
+- Hugging Face: https://huggingface.co/datasets/ColliderML/ColliderML
+- Project site: https://colliderml.github.io/
+
+ColliderML configurations combine a physics process such as `ttbar`, `ggf`, or `dihiggs`, a pileup setting such as `pu0` or `pu200`, and an object type such as `particles`, `tracker_hits`, `calo_hits`, or `tracks`.
+
+On this cluster, the documented Hugging Face cache location is `/mnt/ceph/users/ewulff/data/hf`.
+
+## Common workflows
+
+Download a ColliderML subset:
 
 ```bash
 uv run python scripts/download_data.py --pu-config pu0 --num-proc 12
 ```
 
-## Usage
+Inspect a sample event:
 
-### Training and Evaluation
+```bash
+uv run python scripts/inspect_data.py
+```
 
-The core model logic resides in `src/collider_fm/model.py`. The current smoke-test job is:
+Run the model smoke test on a GPU allocation:
 
 ```bash
 sbatch slurm/test_model.slurm
 ```
 
-The smoke-test entrypoint lives in `scripts/smoke_test_model.py` so `src/collider_fm/model.py` stays focused on model code.
+The smoke-test entrypoint lives in `scripts/smoke_test_model.py`.
 
-For a minimal end-to-end training run on a tiny subset:
+## Development notes
 
-```bash
-uv run python scripts/train.py --num-epochs 1 --max-train-batches 2 --max-val-batches 1
-```
-
-The current PTv3/spconv training path requires CUDA. For a cluster-backed tiny run, use:
+Python formatting is handled with Black and configured in `pyproject.toml` with a line length of 160 characters.
 
 ```bash
-sbatch slurm/train_small.slurm
+uv run black .
 ```
 
-The runtime model code now vendors the required Panda PTv3 components under `src/collider_fm/_panda/`, so the `Panda_repo` submodule is reference-only.
+For roadmap and cluster-specific guidance:
 
-To generate diagnostic plots for one detailed event plus PCA summaries over a 10-event sample:
-
-```bash
-uv run python scripts/plot_diagnostics.py --device cuda
-```
-
-This writes a timestamped directory under `diagnostics/` containing:
-
-- raw dataloader plots for the detailed event
-- model-input and augmentation plots from `src/collider_fm/views.py`
-- backbone point-feature and pooled-embedding PCA plots
-- student/teacher prototype summaries for the detailed event
-
-### Data Inspection
-
-To visualize a 3D event from the dataset:
-```bash
-uv run python scripts/inspect_data.py
-```
-This will generate an `event_0_3d.png` file in the root directory.
+- `PLAN.md` tracks milestones and open work.
+- `HPC.md` covers cluster usage, SLURM notes, and environment details.
 
 ## References
 
-*   **Panda Paper:** [arXiv:2512.01324](https://arxiv.org/abs/2512.01324)
-*   **ColliderML:** [Hugging Face](https://huggingface.co/datasets/ColliderML/ColliderML) | [Website](https://colliderml.github.io/)
+- Panda paper: https://arxiv.org/abs/2512.01324
+- ColliderML dataset: https://huggingface.co/datasets/ColliderML/ColliderML
+- ColliderML website: https://colliderml.github.io/

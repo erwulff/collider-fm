@@ -1,87 +1,16 @@
 # HPC resources and SLURM
 
-## Compute nodes
+This project is developed on an HPC cluster. Use this document for cluster-specific setup notes, resource references, and SLURM usage.
 
-#Nodes	CPU type	#Cores	Memory	GPU	Fabric	SLURM
-432	genoa	96	1.5TB	no	InfiniBand	-C genoa
-216	icelake	64	1TB	no	InfiniBand	-C icelake
-640	rome	128	1TB	no	InfiniBand	-C rome
-15	graniterapids	144	1TB	8x Nvidia RTX6000Pro Blackwell-96B	InfiniBand	-p gpu -C rtxblackwell --reservation=rocky9 --mem-per-cpu=<mem_per_core>
-24	emeraldrapids	96	2TB	8x Nvidia H200-144GB	InfiniBand	-p gpuxl -C h200 --reservation=rocky9
-24	genoa	96	1.5TB	4x Nvidia H100-94GB	InfiniBand	-p gpuxl -C h100 --reservation=rocky9
-18	icelake	64	1TB	8x Nvidia H100-80GB	InfiniBand	-C h100
-36	icelake	64	1TB	4x Nvidia A100-80GB	InfiniBand	-C a100-80gb
-36	icelake	64	1TB	4x Nvidia A100-40GB	InfiniBand	-C a100-40gb
-6	skylake	36	768GB	4x Nvidia V100-32GB	InfiniBand	-C v100
-4	cascadelake, cooperlake	96-192	3-6TB	no	n/a	-p mem
+## General guidance
 
-## More info on GPU nodes
-
-This wiki page has examples Slurm scripts and introductory information for using the GPU nodes: Using the GPU nodes
-There are multiple generations of NVIDIA GPUs:
-Located in CoreSite, NJ:
-15 with 8x 96GB RTX6000Pro Blackwell Server Edition (Blackwell) (-p gpu --reservation=rocky9 -C rtxblackwell --gpus=<4N> --mem=<memory>) 1000GB system memory, 144 cores workergpu171 to workergpu185
-16 with 8x 141GB H200 (Hopper SXM5) (-p eval -C h200 --gpus=<4N>) 2000GB system memory, 96 cores workergpu301 to workergpu318
-24 with 4x 94GB H100 (Hopper SXM5) (-p gpuxl --gpus=<4N>) 1500GB system memory, 96 cores workergpu201 to workergpu224
-18 with 8x 80GB H100 (Hopper) (--gpus=ib-h100p:<N>, --constraint=ib-h100p) 1000GB system memory, 64 cores workergpu151 to workergpu170
-36 with 4x 80GB A100 (Ampere) (--gpus=a100-sxm4-80gb:<N>, --constraint=a100-80gb&sxm4) 1000GB system memory, 64 cores workergpu037 to workergpu072
-36 with 4x 40GB A100 (Ampere) (--gpus=a100-sxm4-40gb:<N>, --constraint=a100-40gb&sxm4) 1000GB system memory, 64 cores. workergpu001 to workergpu036
-Located at FI:
-6 with 4x NVLinked 32GB V100 (--gpus=v100-sxm2-32gb:<N>, --constraint=v100, --constraint=v100-32gb), 768GB system memory,40 cores workergpu083 to workergpu142
-See Slurm Partitions and Constraints if you are unsure how to use these.
-On non-exclusive partitions, you should make sure that you are not accidentally locking down resources, so avoid requesting more system memory per GPU, or cores per GPU than needed. (we usually recommend not setting memory requirements on FI clusters)
-Node type	Constraints	Max cores per GPU	Max system memory per GPU
-Quad A100-40GB	-C a100-40gb	16	256
-Quad A100-80GB	-C a100-80gb	16	256
-Octo H100-80GB	-C h100	8	128
-Quad H100-94GB	-p gpuxl	24	384
-Octo H200-141GB	-p gpup -C h200	12	256
-Octo H200-144GB	-p gpu -C rtxblackwell --reservation=rocky9	18	125
-
-
-## Example SBATCH directives
-
-Example 1
-#SBATCH -t 2:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpuxl
-#SBATCH --reservation=rocky9
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=96
-#SBATCH --constraint=h100
-
-Example 2
-Example 1
-#SBATCH -t 168:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpu
-#SBATCH --gpus-per-node=8
-#SBATCH --cpus-per-task=64
-#SBATCH --constraint=h100
-
-Example 3
-#SBATCH -t 2:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpu
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=64
-#SBATCH --constraint=a100-80gb&sxm4
-
-Example 4
-#SBATCH -t 24:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p genx
-#SBATCH --cpus-per-task=12
+- Prefer SLURM jobs for heavy downloads, dependency builds, GPU validation, and training runs.
+- Write SLURM logs to `logs_slurm/`.
+- Avoid requesting more CPUs or memory than needed, especially on shared GPU partitions.
 
 ## uv on the cluster
 
 The cluster provides a `uv` module starting with `modules/2.4`.
-
-To use it:
 
 ```bash
 module load uv
@@ -92,16 +21,105 @@ The module:
 - sets `UV_CACHE_DIR=$HOME/.cache/uv`
 - appends its own `uv` binary to `PATH` instead of prepending it
 
-That means users can still install their own `uv` and keep it first in `PATH` while benefiting from the cache configuration provided by the module.
+That means a user-installed `uv` can still stay first in `PATH` while using the cache configuration provided by the module.
 
-For repository-wide Python formatting after syncing dependencies, run:
+After syncing dependencies, format Python files with:
 
 ```bash
 uv run black .
 ```
 
-## SLURM guidelines
+## Project-specific cluster notes
 
-You don't have access to slurm commands like sbatch. Ask the user to run them for you.
+- The documented Hugging Face cache location for this project is `/mnt/ceph/users/ewulff/data/hf`.
+- Heavy dataset download and GPU validation workflows are intended to run through scripts in `slurm/`.
+- Some packages such as `torch-scatter` may need to build on compute nodes instead of the login node.
 
-Always write slurm logs to logs_slurm/.
+## Example SBATCH directives
+
+Example 1:
+
+```bash
+#SBATCH -t 2:00:00
+#SBATCH -N 1
+#SBATCH --tasks-per-node=1
+#SBATCH -p gpuxl
+#SBATCH --reservation=rocky9
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=96
+#SBATCH --constraint=h100
+```
+
+Example 2:
+
+```bash
+#SBATCH -t 168:00:00
+#SBATCH -N 1
+#SBATCH --tasks-per-node=1
+#SBATCH -p gpu
+#SBATCH --gpus-per-node=8
+#SBATCH --cpus-per-task=64
+#SBATCH --constraint=h100
+```
+
+Example 3:
+
+```bash
+#SBATCH -t 2:00:00
+#SBATCH -N 1
+#SBATCH --tasks-per-node=1
+#SBATCH -p gpu
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=64
+#SBATCH --constraint=a100-80gb&sxm4
+```
+
+Example 4:
+
+```bash
+#SBATCH -t 24:00:00
+#SBATCH -N 1
+#SBATCH --tasks-per-node=1
+#SBATCH -p genx
+#SBATCH --cpus-per-task=12
+```
+
+## Compute node reference
+
+### CPU partitions
+
+| Nodes | CPU type | Cores | Memory | Notes |
+| --- | --- | --- | --- | --- |
+| 432 | genoa | 96 | 1.5 TB | `-C genoa` |
+| 216 | icelake | 64 | 1 TB | `-C icelake` |
+| 640 | rome | 128 | 1 TB | `-C rome` |
+| 4 | cascadelake/cooperlake | 96-192 | 3-6 TB | `-p mem` |
+
+### GPU partitions
+
+| Nodes | GPU | CPU cores | Memory | Example SLURM flags |
+| --- | --- | --- | --- | --- |
+| 15 | 8x RTX6000Pro Blackwell-96B | 144 | 1 TB | `-p gpu -C rtxblackwell --reservation=rocky9` |
+| 24 | 8x H200-144GB | 96 | 2 TB | `-p gpuxl -C h200 --reservation=rocky9` |
+| 24 | 4x H100-94GB | 96 | 1.5 TB | `-p gpuxl -C h100 --reservation=rocky9` |
+| 18 | 8x H100-80GB | 64 | 1 TB | `-C h100` |
+| 36 | 4x A100-80GB | 64 | 1 TB | `-C a100-80gb` |
+| 36 | 4x A100-40GB | 64 | 1 TB | `-C a100-40gb` |
+| 6 | 4x V100-32GB | 36 | 768 GB | `-C v100` |
+
+## GPU usage notes
+
+- CoreSite, NJ hosts the Blackwell, H200, H100, and A100 systems.
+- FI hosts the V100 systems.
+- On non-exclusive partitions, avoid over-requesting system memory per GPU or cores per GPU.
+
+Reference values:
+
+| Node type | Constraint or partition | Max cores per GPU | Max system memory per GPU |
+| --- | --- | --- | --- |
+| Quad A100-40GB | `-C a100-40gb` | 16 | 256 GB |
+| Quad A100-80GB | `-C a100-80gb` | 16 | 256 GB |
+| Octo H100-80GB | `-C h100` | 8 | 128 GB |
+| Quad H100-94GB | `-p gpuxl` | 24 | 384 GB |
+| Octo H200-141GB | `-p gpup -C h200` | 12 | 256 GB |
+| Octo H200-144GB | `-p gpu -C rtxblackwell --reservation=rocky9` | 18 | 125 GB |
