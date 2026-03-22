@@ -94,6 +94,12 @@ The module:
 
 That means users can still install their own `uv` and keep it first in `PATH` while benefiting from the cache configuration provided by the module.
 
+For repository-wide Python formatting after syncing dependencies, run:
+
+```bash
+uv run black .
+```
+
 ## SLURM guidelines
 
 You don't have access to slurm commands like sbatch. Ask the user to run them for you.

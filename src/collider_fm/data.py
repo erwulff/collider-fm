@@ -33,9 +33,7 @@ class ColliderMLDataset(Dataset):
         # All datasets should have the same number of rows (events)
         self.num_events = len(self.datasets[object_types[0]])
         for obj_type in object_types:
-            assert (
-                len(self.datasets[obj_type]) == self.num_events
-            ), f"Dataset {obj_type} has {len(self.datasets[obj_type])} rows, expected {self.num_events}"
+            assert len(self.datasets[obj_type]) == self.num_events, f"Dataset {obj_type} has {len(self.datasets[obj_type])} rows, expected {self.num_events}"
 
     def __len__(self):
         return self.num_events

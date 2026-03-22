@@ -62,6 +62,13 @@ source .venv/bin/activate
 uv sync
 ```
 
+Python formatting is handled with `black`, configured in `pyproject.toml` with a project line length of 160 characters.
+Run it across the repo with:
+
+```bash
+uv run black .
+```
+
 On the cluster, the intended setup flow is:
 
 ```bash
@@ -91,7 +98,32 @@ sbatch slurm/test_model.slurm
 
 The smoke-test entrypoint lives in `scripts/smoke_test_model.py` so `src/collider_fm/model.py` stays focused on model code.
 
+For a minimal end-to-end training run on a tiny subset:
+
+```bash
+uv run python scripts/train.py --num-epochs 1 --max-train-batches 2 --max-val-batches 1
+```
+
+The current PTv3/spconv training path requires CUDA. For a cluster-backed tiny run, use:
+
+```bash
+sbatch slurm/train_small.slurm
+```
+
 The runtime model code now vendors the required Panda PTv3 components under `src/collider_fm/_panda/`, so the `Panda_repo` submodule is reference-only.
+
+To generate diagnostic plots for one detailed event plus PCA summaries over a 10-event sample:
+
+```bash
+uv run python scripts/plot_diagnostics.py --device cuda
+```
+
+This writes a timestamped directory under `diagnostics/` containing:
+
+- raw dataloader plots for the detailed event
+- model-input and augmentation plots from `src/collider_fm/views.py`
+- backbone point-feature and pooled-embedding PCA plots
+- student/teacher prototype summaries for the detailed event
 
 ### Data Inspection
 

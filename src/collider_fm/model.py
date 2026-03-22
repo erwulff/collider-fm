@@ -174,16 +174,10 @@ class PandaSelfDistillation(nn.Module):
         if len(views) < 2:
             raise ValueError("Self-distillation requires at least two augmented views.")
 
-        student_outputs = [
-            self._encode_view(view, self.student_backbone, self.student_projector, self.student_predictor)
-            for view in views
-        ]
+        student_outputs = [self._encode_view(view, self.student_backbone, self.student_projector, self.student_predictor) for view in views]
 
         with torch.no_grad():
-            teacher_outputs = [
-                self._encode_view(view, self.teacher_backbone, self.teacher_projector)
-                for view in views[:2]
-            ]
+            teacher_outputs = [self._encode_view(view, self.teacher_backbone, self.teacher_projector) for view in views[:2]]
 
         return student_outputs, teacher_outputs
 

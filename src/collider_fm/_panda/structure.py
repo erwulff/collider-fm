@@ -76,9 +76,7 @@ class Point(Dict):
             # (adjust `grid_size` to what your want)
             assert {"grid_size", "coord"}.issubset(self.keys())
 
-            self["grid_coord"] = torch.div(
-                self.coord - self.coord.min(0)[0], self.grid_size, rounding_mode="trunc"
-            ).int()
+            self["grid_coord"] = torch.div(self.coord - self.coord.min(0)[0], self.grid_size, rounding_mode="trunc").int()
 
         if depth is None:
             # Adaptive measure the depth of serialization cube (length = 2 ^ depth)
@@ -97,17 +95,13 @@ class Point(Dict):
         #  Order2 ([n]),
         #   ...
         #  OrderN ([n])] (k, n)
-        code = [
-            encode(self.grid_coord, self.batch, depth, order=order_) for order_ in order
-        ]
+        code = [encode(self.grid_coord, self.batch, depth, order=order_) for order_ in order]
         code = torch.stack(code)
         order = torch.argsort(code)
         inverse = torch.zeros_like(order).scatter_(
             dim=1,
             index=order,
-            src=torch.arange(0, code.shape[1], device=order.device).repeat(
-                code.shape[0], 1
-            ),
+            src=torch.arange(0, code.shape[1], device=order.device).repeat(code.shape[0], 1),
         )
 
         if shuffle_orders:
@@ -138,20 +132,14 @@ class Point(Dict):
             # dict(type="Copy", keys_dict={"grid_size": 0.01}),
             # (adjust `grid_size` to what your want)
             assert {"grid_size", "coord"}.issubset(self.keys())
-            self["grid_coord"] = torch.div(
-                self.coord - self.coord.min(0)[0], self.grid_size, rounding_mode="trunc"
-            ).int()
+            self["grid_coord"] = torch.div(self.coord - self.coord.min(0)[0], self.grid_size, rounding_mode="trunc").int()
         if "sparse_shape" in self.keys():
             sparse_shape = self.sparse_shape
         else:
-            sparse_shape = torch.add(
-                torch.max(self.grid_coord, dim=0).values, pad
-            ).tolist()
+            sparse_shape = torch.add(torch.max(self.grid_coord, dim=0).values, pad).tolist()
         sparse_conv_feat = spconv.SparseConvTensor(
             features=self.feat,
-            indices=torch.cat(
-                [self.batch.unsqueeze(-1).int(), self.grid_coord.int()], dim=1
-            ).contiguous(),
+            indices=torch.cat([self.batch.unsqueeze(-1).int(), self.grid_coord.int()], dim=1).contiguous(),
             spatial_shape=sparse_shape,
             batch_size=self.batch[-1].tolist() + 1,
         )

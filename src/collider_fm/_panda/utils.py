@@ -32,14 +32,13 @@ from collections.abc import Mapping, Sequence
 from torch.utils.data.dataloader import default_collate
 
 from .logging import get_logger
+
 logger = get_logger(__name__)
 
 
 @torch.no_grad()
 def offset2bincount(offset):
-    return torch.diff(
-        offset, prepend=torch.tensor([0], device=offset.device, dtype=torch.long)
-    )
+    return torch.diff(offset, prepend=torch.tensor([0], device=offset.device, dtype=torch.long))
 
 
 @torch.no_grad()
@@ -50,9 +49,7 @@ def bincount2offset(bincount):
 @torch.no_grad()
 def offset2batch(offset):
     bincount = offset2bincount(offset)
-    return torch.arange(
-        len(bincount), device=offset.device, dtype=torch.long
-    ).repeat_interleave(bincount)
+    return torch.arange(len(bincount), device=offset.device, dtype=torch.long).repeat_interleave(bincount)
 
 
 @torch.no_grad()
@@ -61,11 +58,7 @@ def batch2offset(batch):
 
 
 def get_random_seed():
-    seed = (
-        os.getpid()
-        + int(datetime.now().strftime("%S%f"))
-        + int.from_bytes(os.urandom(2), "big")
-    )
+    seed = os.getpid() + int(datetime.now().strftime("%S%f")) + int.from_bytes(os.urandom(2), "big")
     return seed
 
 
@@ -90,29 +83,26 @@ def filter_kwargs(
 ) -> Tuple[Dict[str, Any], List[str]]:
     """
     Filter kwargs to only include valid parameters for a function/class.
-    
+
     Args:
         func: function or class to filter kwargs for
         kwargs: dict of kwargs to filter
         strict: if True, raise TypeError on unknown keys
         warn: if True, print warning about ignored keys
-        
+
     Returns:
         filtered: dict with only valid kwargs
         ignored: list of ignored keys
     """
     sig = inspect.signature(func)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-    
+    valid_params = set(sig.parameters.keys()) - {"self", "cls"}
+
     # check if function accepts **kwargs
-    has_var_keyword = any(
-        p.kind == inspect.Parameter.VAR_KEYWORD
-        for p in sig.parameters.values()
-    )
-    
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
     if has_var_keyword:
         return kwargs.copy(), []
-    
+
     filtered = {}
     ignored = []
     for k, v in kwargs.items():
@@ -120,15 +110,14 @@ def filter_kwargs(
             filtered[k] = v
         else:
             ignored.append(k)
-    
+
     if ignored:
         if strict:
             raise TypeError(f"Unknown kwargs for {func.__name__}: {ignored}")
         elif warn:
             logger.info(f"{func.__name__}: Ignoring unknown kwargs: {ignored}")
-    
-    return filtered, ignored
 
+    return filtered, ignored
 
 
 def collate_fn(batch, mix_prob=0):

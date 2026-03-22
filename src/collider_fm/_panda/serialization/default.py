@@ -80,5 +80,3 @@ def hilbert_encode(grid_coord: torch.Tensor, depth: int = 16):
 
 def hilbert_decode(code: torch.Tensor, depth: int = 16):
     return hilbert_decode_(code, num_dims=3, num_bits=depth)
-
-
