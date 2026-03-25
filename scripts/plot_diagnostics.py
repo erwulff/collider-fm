@@ -1,3 +1,10 @@
+"""Generate diagnostic plots for the ColliderFM data and representation pipeline.
+
+This script is the batch-oriented counterpart to the notebook explorer. Keep the
+core helpers and plotting behavior aligned with the notebook so the same stages
+can be inspected either interactively or from a saved diagnostics directory.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -16,19 +23,28 @@ from matplotlib.colors import LogNorm
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from collider_fm.data import ColliderMLDataset, collate_fn
-from collider_fm.model import PandaSelfDistillation, as_point_cloud, mean_pool_features
+from collider_fm.diagnostics import (
+    compute_pca,
+    encode_view,
+    load_checkpoint,
+    load_events,
+    radius,
+    sample_indices,
+    tensor_summary,
+    to_numpy,
+)
+from collider_fm.model import create_small_panda_model
 from collider_fm.views import augment_point_view, batch_point_views, build_point_view_from_event
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line interface for a diagnostics run."""
     parser = argparse.ArgumentParser(
         description=(
             "Generate diagnostic plots for the ColliderFM data-to-view-to-representation pipeline. "
@@ -52,11 +68,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def default_output_dir() -> Path:
+    """Return a timestamped output directory for a fresh diagnostics run."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return PROJECT_ROOT / "diagnostics" / f"diagnostics_{timestamp}"
 
 
 def ensure_output_dirs(root: Path) -> dict[str, Path]:
+    """Create the directory layout used by the diagnostics artifacts."""
     subdirs = {
         "root": root,
         "raw": root / "raw",
@@ -70,6 +88,7 @@ def ensure_output_dirs(root: Path) -> dict[str, Path]:
 
 
 def set_seed(seed: int) -> None:
+    """Seed NumPy and PyTorch so repeated runs are easier to compare."""
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -77,140 +96,22 @@ def set_seed(seed: int) -> None:
 
 
 def resolve_device(device_name: str) -> torch.device:
+    """Resolve the requested device and degrade gracefully when CUDA is absent."""
     if device_name == "cuda" and not torch.cuda.is_available():
         print("CUDA was requested but is unavailable; falling back to CPU for raw/view diagnostics only.")
         return torch.device("cpu")
     return torch.device(device_name)
 
 
-def create_model(device: torch.device) -> PandaSelfDistillation:
-    return PandaSelfDistillation(
-        in_channels=6,
-        embed_channels=8,
-        num_prototypes=32,
-        projection_dim=8,
-        prediction_dim=16,
-        backbone_kwargs={
-            "enc_depths": (1, 1, 1, 1, 1),
-            "enc_channels": (8, 12, 16, 24, 32),
-            "enc_num_head": (1, 1, 2, 4, 4),
-            "enc_patch_size": (4, 4, 4, 4, 4),
-            "shuffle_orders": False,
-            "enable_flash": False,
-        },
-    ).to(device)
-
-
-def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[str, Any]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint
-    if isinstance(checkpoint, dict):
-        if "model_state_dict" in checkpoint:
-            state_dict = checkpoint["model_state_dict"]
-        elif "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    return {
-        "checkpoint_path": checkpoint_path,
-        "missing_keys": list(missing_keys),
-        "unexpected_keys": list(unexpected_keys),
-    }
-
-
-def create_dataloader(args: argparse.Namespace, split: str, batch_size: int) -> DataLoader:
-    dataset = ColliderMLDataset(
-        split=split,
-        dataset_type=args.dataset_type,
-        pu_config=args.pu_config,
-        object_types=["tracker_hits", "calo_hits"],
-        cache_dir=args.cache_dir,
-    )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-
-
-def load_events(args: argparse.Namespace, split: str) -> list[dict[str, Any]]:
-    dataloader = create_dataloader(args, split=split, batch_size=64)
-    return next(iter(dataloader))
-
-
-def to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    return tensor.detach().cpu().numpy()
-
-
 def save_figure(fig: plt.Figure, path: Path) -> None:
+    """Apply consistent layout settings and write a figure to disk."""
     fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
-def radius(values: dict[str, torch.Tensor]) -> torch.Tensor:
-    return torch.linalg.norm(torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1)
-
-
-def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
-    array = tensor.detach().cpu()
-    return {
-        "shape": list(array.shape),
-        "min": float(array.min().item()),
-        "max": float(array.max().item()),
-        "mean": float(array.mean().item()),
-        "std": float(array.std().item()) if array.numel() > 1 else 0.0,
-    }
-
-
-def compute_pca(features: np.ndarray, n_components: int = 2) -> np.ndarray:
-    if features.ndim != 2:
-        raise ValueError("PCA expects a 2D array.")
-    if features.shape[0] == 0:
-        raise ValueError("PCA requires at least one sample.")
-
-    centered = features - features.mean(axis=0, keepdims=True)
-    if centered.shape[0] == 1 or centered.shape[1] == 1:
-        result = np.zeros((centered.shape[0], n_components), dtype=np.float32)
-        result[:, : min(n_components, centered.shape[1])] = centered[:, : min(n_components, centered.shape[1])]
-        return result
-
-    _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    components = vt[:n_components]
-    return centered @ components.T
-
-
-def sample_indices(num_items: int, max_items: int, seed: int) -> np.ndarray:
-    if num_items <= max_items:
-        return np.arange(num_items)
-    rng = np.random.default_rng(seed)
-    return np.sort(rng.choice(num_items, size=max_items, replace=False))
-
-
-@torch.no_grad()
-def encode_view(
-    model: PandaSelfDistillation,
-    view: dict[str, torch.Tensor],
-    use_teacher: bool = False,
-) -> dict[str, torch.Tensor]:
-    point = as_point_cloud(view, default_grid_size=model.grid_size)
-    backbone = model.teacher_backbone if use_teacher else model.student_backbone
-    projector = model.teacher_projector if use_teacher else model.student_projector
-    predictor = None if use_teacher else model.student_predictor
-
-    encoded = backbone(point)
-    pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
-    projection = projector(pooled)
-    if predictor is not None:
-        projection = predictor(projection)
-    projection = F.normalize(projection, dim=-1)
-    logits = model.prototype_head(projection)
-    return {
-        "point_features": encoded.feat,
-        "pooled": pooled,
-        "projection": projection,
-        "logits": logits,
-        "offset": point.offset,
-    }
-
-
 def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
+    """Plot the raw detector geometry for a single event."""
     tracker_hits = event["tracker_hits"]
     calo_hits = event["calo_hits"]
 
@@ -228,6 +129,8 @@ def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
     energy = to_numpy(calo_hits.get("total_energy", torch.zeros_like(calo_hits["x"], dtype=torch.float32)))
     positive_energy = energy[energy > 0]
     if positive_energy.size > 0:
+        # Use log-scaled colors and sizes so a few energetic hits do not wash
+        # out the rest of the calorimeter structure.
         color_vmin = float(positive_energy.min())
         color_vmax = float(np.quantile(positive_energy, 0.99))
         if color_vmax <= color_vmin:
@@ -261,6 +164,7 @@ def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
 
 
 def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
+    """Plot scalar summaries for the raw tracker and calorimeter hits."""
     tracker_hits = event["tracker_hits"]
     calo_hits = event["calo_hits"]
     tracker_radius = radius(tracker_hits)
@@ -303,6 +207,7 @@ def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
 
 
 def plot_view_detector_type(view: dict[str, torch.Tensor], path: Path) -> None:
+    """Show the model input cloud colored by detector source."""
     coord = to_numpy(view["coord"])
     detector_type = to_numpy(view["feat"][:, 5])
     fig = plt.figure(figsize=(12, 10))
@@ -336,6 +241,7 @@ def plot_view_detector_type(view: dict[str, torch.Tensor], path: Path) -> None:
 
 
 def plot_view_signal(view: dict[str, torch.Tensor], path: Path) -> None:
+    """Show the model input cloud and feature distributions for one view."""
     coord = to_numpy(view["coord"])
     signal = to_numpy(view["feat"][:, 4])
     features = to_numpy(view["feat"])
@@ -370,6 +276,7 @@ def plot_view_signal(view: dict[str, torch.Tensor], path: Path) -> None:
 
 
 def plot_augmentations(base_view: dict[str, torch.Tensor], aug_a: dict[str, torch.Tensor], aug_b: dict[str, torch.Tensor], path: Path) -> None:
+    """Compare the base view against two augmented variants."""
     views = [("base", base_view), ("aug A", aug_a), ("aug B", aug_b)]
     fig = plt.figure(figsize=(18, 6))
     for index, (label, view) in enumerate(views, start=1):
@@ -386,6 +293,7 @@ def plot_augmentations(base_view: dict[str, torch.Tensor], aug_a: dict[str, torc
 
 
 def plot_augmentation_delta(base_view: dict[str, torch.Tensor], aug_a: dict[str, torch.Tensor], aug_b: dict[str, torch.Tensor], path: Path) -> None:
+    """Summarize how strongly each augmentation perturbs coordinates and signal."""
     base_coord = base_view["coord"]
     base_signal = base_view["feat"][:, 4]
     deltas = {
@@ -411,6 +319,7 @@ def plot_augmentation_delta(base_view: dict[str, torch.Tensor], aug_a: dict[str,
 
 
 def plot_batch_summary(views: list[dict[str, torch.Tensor]], path: Path) -> None:
+    """Summarize point counts across the representation sample."""
     tracker_counts = []
     calo_counts = []
     total_counts = []
@@ -449,6 +358,7 @@ def plot_batch_summary(views: list[dict[str, torch.Tensor]], path: Path) -> None
 
 
 def plot_logits(student_probs: list[np.ndarray], teacher_probs: list[np.ndarray], path: Path, top_k: int) -> None:
+    """Plot the most active prototype probabilities for one detailed event."""
     stacked = np.vstack(student_probs + teacher_probs)
     mean_scores = stacked.mean(axis=0)
     top_indices = np.argsort(mean_scores)[-top_k:]
@@ -475,9 +385,15 @@ def plot_logits(student_probs: list[np.ndarray], teacher_probs: list[np.ndarray]
 
 
 def jensen_shannon_divergence(prob_a: torch.Tensor, prob_b: torch.Tensor) -> float:
+    """Measure agreement between two probability vectors."""
     mean_prob = 0.5 * (prob_a + prob_b)
     js = 0.5 * F.kl_div(prob_a.log(), mean_prob, reduction="sum") + 0.5 * F.kl_div(prob_b.log(), mean_prob, reduction="sum")
     return float(js.item())
+
+
+def embedding_cosine_similarity(embedding_a: torch.Tensor, embedding_b: torch.Tensor) -> float:
+    """Compute cosine similarity for pooled embeddings stored as 1D vectors."""
+    return float(F.cosine_similarity(embedding_a.reshape(1, -1), embedding_b.reshape(1, -1), dim=1).item())
 
 
 def plot_view_agreement(
@@ -488,10 +404,11 @@ def plot_view_agreement(
     teacher_probs: list[torch.Tensor],
     path: Path,
 ) -> None:
+    """Compare view agreement in embedding space and prototype space."""
     cosine_values = {
-        "base vs aug A": F.cosine_similarity(base_pooled, aug_a_pooled).item(),
-        "base vs aug B": F.cosine_similarity(base_pooled, aug_b_pooled).item(),
-        "aug A vs aug B": F.cosine_similarity(aug_a_pooled, aug_b_pooled).item(),
+        "base vs aug A": embedding_cosine_similarity(base_pooled, aug_a_pooled),
+        "base vs aug B": embedding_cosine_similarity(base_pooled, aug_b_pooled),
+        "aug A vs aug B": embedding_cosine_similarity(aug_a_pooled, aug_b_pooled),
     }
     js_values = {
         "student": jensen_shannon_divergence(student_probs[0], student_probs[1]),
@@ -510,6 +427,7 @@ def plot_view_agreement(
 
 
 def plot_embedding_pca(embeddings: torch.Tensor, event_labels: list[str], path: Path) -> None:
+    """Project pooled event embeddings into 2D for a batch-level overview."""
     projected = compute_pca(to_numpy(embeddings), n_components=2)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(projected[:, 0], projected[:, 1], c=np.arange(len(event_labels)), cmap="tab10", s=60)
@@ -528,6 +446,7 @@ def plot_point_feature_pca(
     max_points: int,
     seed: int,
 ) -> None:
+    """Project sampled per-point backbone features into 2D."""
     point_features_np = to_numpy(point_features)
     detector_type_np = to_numpy(detector_type)
     selected = sample_indices(point_features_np.shape[0], max_points, seed)
@@ -550,10 +469,12 @@ def plot_point_feature_pca(
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write a JSON artifact using a stable, human-readable format."""
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weights_source: str) -> None:
+    """Write a short text summary for a completed diagnostics run."""
     lines = [
         "ColliderFM diagnostics run",
         "",
@@ -571,6 +492,7 @@ def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weigh
 
 
 def main() -> None:
+    """Run the full diagnostics pipeline and write plots plus summary artifacts."""
     args = build_arg_parser().parse_args()
     set_seed(args.seed)
 
@@ -580,12 +502,24 @@ def main() -> None:
     device = resolve_device(args.device)
     print(f"Using device: {device}")
 
-    detail_events = load_events(args, args.detail_split)
+    # The detailed event drives all single-event plots, while the separate
+    # representation sample is reserved for batch-level summaries such as PCA.
+    detail_events = load_events(
+        split=args.detail_split,
+        dataset_type=args.dataset_type,
+        pu_config=args.pu_config,
+        cache_dir=args.cache_dir,
+    )
     if not detail_events:
         raise ValueError("The detailed diagnostic split returned no events.")
     detail_event = detail_events[0]
 
-    representation_events = load_events(args, args.representation_split)
+    representation_events = load_events(
+        split=args.representation_split,
+        dataset_type=args.dataset_type,
+        pu_config=args.pu_config,
+        cache_dir=args.cache_dir,
+    )
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
@@ -637,7 +571,7 @@ def main() -> None:
     }
 
     if device.type == "cuda":
-        model = create_model(device)
+        model = create_small_panda_model(device=device)
         checkpoint_artifact = None
         if args.checkpoint is not None:
             checkpoint_artifact = load_checkpoint(model, args.checkpoint)
@@ -651,6 +585,8 @@ def main() -> None:
             }
         )
 
+        # Reuse the same event with multiple augmentations so the agreement
+        # plots reflect view invariance rather than event-to-event variation.
         detail_base_encoding = encode_view(model, base_view, use_teacher=False)
         detail_aug_a_student = encode_view(model, aug_a, use_teacher=False)
         detail_aug_b_student = encode_view(model, aug_b, use_teacher=False)

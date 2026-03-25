@@ -24,7 +24,7 @@ from collider_fm.experiment_logging import (
     ensure_run_directory,
     write_run_config,
 )
-from collider_fm.model import PandaSelfDistillation
+from collider_fm.model import PandaSelfDistillation, create_small_panda_model
 from collider_fm.views import build_distillation_views
 
 
@@ -59,25 +59,6 @@ def create_dataloader(args: argparse.Namespace, split: str) -> DataLoader:
         cache_dir=args.cache_dir,
     )
     return DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
-
-
-def create_model(device: torch.device) -> PandaSelfDistillation:
-    model = PandaSelfDistillation(
-        in_channels=6,
-        embed_channels=8,
-        num_prototypes=32,
-        projection_dim=8,
-        prediction_dim=16,
-        backbone_kwargs={
-            "enc_depths": (1, 1, 1, 1, 1),
-            "enc_channels": (8, 12, 16, 24, 32),
-            "enc_num_head": (1, 1, 2, 4, 4),
-            "enc_patch_size": (4, 4, 4, 4, 4),
-            "shuffle_orders": False,
-            "enable_flash": False,
-        },
-    ).to(device)
-    return model
 
 
 def learning_rate(optimizer: AdamW) -> float:
@@ -178,7 +159,7 @@ def main() -> None:
     print(f"Run directory: {run_dir}")
     print(f"Run config: {config_path}")
 
-    model = create_model(device)
+    model = create_small_panda_model(device=device)
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params / 1e6:.2f}M")

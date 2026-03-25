@@ -9,8 +9,9 @@ The project explores self-distillation methods for high-energy physics data, wit
 ## Current status
 
 - `src/collider_fm/data.py` provides dataset loading and basic collation.
-- `src/collider_fm/model.py` contains the current model scaffold and smoke-test path.
+- `src/collider_fm/model.py` contains the current Panda-inspired self-distillation scaffold and the shared small-model factory used by train, smoke-test, and diagnostics scripts.
 - `scripts/download_data.py` and `scripts/inspect_data.py` cover basic data acquisition and inspection.
+- `scripts/plot_diagnostics.py` produces saved diagnostics for raw events, point views, and compact-model representations.
 - `Panda_repo/` is kept as a reference implementation, while the runtime code vendors the PTv3 pieces currently needed under `src/collider_fm/_panda/`.
 
 ## Repository layout
@@ -57,6 +58,16 @@ If you prefer to create the environment through SLURM, use:
 sbatch slurm/create_uv_venv.slurm
 ```
 
+The intended compute-node setup order is:
+
+```bash
+sbatch slurm/create_uv_venv.slurm
+sbatch slurm/test_model.slurm
+sbatch slurm/train_small.slurm
+```
+
+The shared cluster environment bootstrap for the runtime jobs lives in `slurm/load_env.sh`.
+
 ## Dataset
 
 The project uses the ColliderML dataset:
@@ -89,11 +100,23 @@ sbatch slurm/test_model.slurm
 ```
 
 The smoke-test entrypoint lives in `scripts/smoke_test_model.py`.
+By default it expects cached ColliderML data and fails loudly if the dataset is unavailable.
+For a CUDA-only synthetic sanity check, run:
+
+```bash
+uv run python scripts/smoke_test_model.py --allow-synthetic-fallback
+```
 
 A minimal tracked training run looks like:
 
 ```bash
 uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1
+```
+
+Generate saved diagnostics from cached ColliderML events:
+
+```bash
+uv run python scripts/plot_diagnostics.py --detail-split train[0:1] --representation-split train[:10]
 ```
 
 ## Development notes

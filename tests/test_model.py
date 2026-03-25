@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from collider_fm.model import PandaSelfDistillation, as_point_cloud, mean_pool_features
+from collider_fm.model import PandaSelfDistillation, as_point_cloud, create_small_panda_model, mean_pool_features
+from collider_fm.views import DEFAULT_POINT_GRID_SIZE
 
 
 class DummyBackbone(nn.Module):
@@ -30,6 +31,16 @@ class ModelTests(unittest.TestCase):
         self.assertAlmostEqual(point.grid_size.item(), 0.2)
         self.assertEqual(tuple(point.coord.shape), (2, 3))
         self.assertEqual(tuple(point.feat.shape), (2, 2))
+
+    def test_as_point_cloud_uses_project_default_grid_size(self):
+        view = {
+            "coord": [[0.0, 0.0, 0.0]],
+            "feat": [[1.0, 2.0, 3.0, 4.0, 5.0, 0.0]],
+        }
+
+        point = as_point_cloud(view)
+
+        self.assertAlmostEqual(point.grid_size.item(), DEFAULT_POINT_GRID_SIZE)
 
     def test_mean_pool_features_uses_offsets(self):
         feat = torch.tensor(
@@ -100,6 +111,12 @@ class ModelTests(unittest.TestCase):
         center_before = model.center.detach().clone()
         model.update_center(teacher_outputs)
         self.assertFalse(torch.allclose(center_before, model.center))
+
+    def test_small_model_factory_uses_shared_defaults(self):
+        model = create_small_panda_model(backbone_cls=DummyBackbone, backbone_kwargs={"enc_channels": (8, 10)})
+
+        self.assertEqual(model.grid_size, DEFAULT_POINT_GRID_SIZE)
+        self.assertEqual(model.prototype_head.out_features, 32)
 
 
 if __name__ == "__main__":

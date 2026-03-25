@@ -36,6 +36,22 @@ uv run black .
 - Some packages such as `torch-scatter` may need to build on compute nodes instead of the login node.
 - Optional Comet ML logging for training runs can be enabled either through a saved `~/.comet.config` login or by exporting `COMET_API_KEY`, `COMET_PROJECT_NAME`, and `COMET_WORKSPACE` before launching the job.
 
+## Recommended job order
+
+For a fresh environment on the cluster, use this sequence:
+
+```bash
+sbatch slurm/create_uv_venv.slurm
+sbatch slurm/install_deps.slurm
+sbatch slurm/download.slurm
+sbatch slurm/test_model.slurm
+sbatch slurm/train_small.slurm
+```
+
+Runtime jobs that need the prepared environment now source `slurm/load_env.sh`, which standardizes the module stack and fails quickly if `.venv` has not been created yet.
+
+The smoke test in `scripts/smoke_test_model.py` now expects cached ColliderML data by default. Use `--allow-synthetic-fallback` only when you want a CUDA-only synthetic check rather than a real data-path validation.
+
 ## Example SBATCH directives
 
 Example 1:

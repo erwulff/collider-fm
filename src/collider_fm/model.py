@@ -9,9 +9,20 @@ import torch.nn.functional as F
 
 from ._panda.model_base import PointTransformerV3
 from ._panda.structure import Point
+from .views import DEFAULT_POINT_GRID_SIZE, PointView
 
 
-def as_point_cloud(view: Mapping[str, Any] | Any, default_grid_size: float = 0.01) -> Any:
+SMALL_MODEL_BACKBONE_KWARGS = {
+    "enc_depths": (1, 1, 1, 1, 1),
+    "enc_channels": (8, 12, 16, 24, 32),
+    "enc_num_head": (1, 1, 2, 4, 4),
+    "enc_patch_size": (4, 4, 4, 4, 4),
+    "shuffle_orders": False,
+    "enable_flash": False,
+}
+
+
+def as_point_cloud(view: Mapping[str, Any], default_grid_size: float = DEFAULT_POINT_GRID_SIZE) -> Point:
     """Convert a generic view mapping into the Panda point-cloud structure."""
     data = dict(view)
 
@@ -20,27 +31,36 @@ def as_point_cloud(view: Mapping[str, Any] | Any, default_grid_size: float = 0.0
 
     coord = torch.as_tensor(data["coord"], dtype=torch.float32)
     feat = torch.as_tensor(data["feat"], dtype=torch.float32, device=coord.device)
-
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
     if feat.ndim != 2:
         raise ValueError("'feat' must have shape [num_points, num_features].")
     if feat.shape[0] != coord.shape[0]:
-        raise ValueError("'coord' and 'feat' must have the same number of points.")
+        raise ValueError("'coord' and 'feat' must describe the same number of points.")
 
     data["coord"] = coord
     data["feat"] = feat
 
     if "offset" in data:
-        data["offset"] = torch.as_tensor(data["offset"], dtype=torch.long, device=coord.device).flatten()
+        offset = torch.as_tensor(data["offset"], dtype=torch.long, device=coord.device).flatten()
+        if offset.numel() == 0:
+            raise ValueError("'offset' must contain at least one event boundary.")
+        if offset[-1].item() != coord.shape[0]:
+            raise ValueError("The final offset must equal the number of points.")
+        counts = torch.diff(offset, prepend=offset.new_zeros(1))
+        if torch.any(counts <= 0):
+            raise ValueError("'offset' must be a strictly increasing cumulative count.")
+        data["offset"] = offset
     elif "batch" in data:
-        data["batch"] = torch.as_tensor(data["batch"], dtype=torch.long, device=coord.device).flatten()
+        batch = torch.as_tensor(data["batch"], dtype=torch.long, device=coord.device).flatten()
+        if batch.shape[0] != coord.shape[0]:
+            raise ValueError("'batch' must contain one assignment per point.")
+        data["batch"] = batch
     else:
         data["offset"] = torch.tensor([coord.shape[0]], dtype=torch.long, device=coord.device)
 
     grid_size = data.get("grid_size", default_grid_size)
     data["grid_size"] = torch.as_tensor(grid_size, dtype=coord.dtype, device=coord.device)
-
     return Point(data)
 
 
@@ -100,7 +120,7 @@ class PandaSelfDistillation(nn.Module):
         temp_student: float = 0.1,
         temp_teacher: float = 0.04,
         center_momentum: float = 0.9,
-        grid_size: float = 0.01,
+        grid_size: float = DEFAULT_POINT_GRID_SIZE,
         backbone_cls: type[nn.Module] = PandaEncoderBackbone,
         backbone_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
@@ -156,7 +176,7 @@ class PandaSelfDistillation(nn.Module):
 
     def _encode_view(
         self,
-        view: Mapping[str, Any] | Any,
+        view: Mapping[str, Any] | PointView,
         backbone: nn.Module,
         projector: nn.Module,
         predictor: nn.Module | None = None,
@@ -170,7 +190,7 @@ class PandaSelfDistillation(nn.Module):
         projection = F.normalize(projection, dim=-1)
         return self.prototype_head(projection)
 
-    def forward(self, views: Sequence[Mapping[str, Any] | Any]) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def forward(self, views: Sequence[Mapping[str, Any] | PointView]) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if len(views) < 2:
             raise ValueError("Self-distillation requires at least two augmented views.")
 
@@ -225,6 +245,30 @@ class PandaSelfDistillation(nn.Module):
 
         batch_center = torch.cat(list(teacher_outputs), dim=0).mean(dim=0, keepdim=True)
         self.center.mul_(self.center_momentum).add_(batch_center, alpha=1.0 - self.center_momentum)
+
+
+def create_small_panda_model(
+    device: torch.device | None = None,
+    backbone_cls: type[nn.Module] = PandaEncoderBackbone,
+    backbone_kwargs: Mapping[str, Any] | None = None,
+) -> PandaSelfDistillation:
+    """Construct the compact Panda-style model shared by train, smoke, and diagnostics scripts."""
+    resolved_backbone_kwargs = dict(SMALL_MODEL_BACKBONE_KWARGS)
+    if backbone_kwargs is not None:
+        resolved_backbone_kwargs.update(dict(backbone_kwargs))
+
+    model = PandaSelfDistillation(
+        in_channels=6,
+        embed_channels=8,
+        num_prototypes=32,
+        projection_dim=8,
+        prediction_dim=16,
+        backbone_cls=backbone_cls,
+        backbone_kwargs=resolved_backbone_kwargs,
+    )
+    if device is not None:
+        model = model.to(device)
+    return model
 
 
 def panda_loss(

@@ -1,7 +1,22 @@
+from collections.abc import Sequence
+
 import torch
-from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 import numpy as np
+from torch.utils.data import DataLoader, Dataset
+
+
+DEFAULT_OBJECT_TYPES = ("tracker_hits", "calo_hits")
+
+
+def _convert_list_value(value):
+    if len(value) > 0 and isinstance(value[0], list):
+        return value
+
+    array = np.asarray(value)
+    if array.dtype == object:
+        return value
+    return torch.tensor(array)
 
 
 class ColliderMLDataset(Dataset):
@@ -16,24 +31,30 @@ class ColliderMLDataset(Dataset):
         dataset_name="CERN/ColliderML-Release-1",
         dataset_type="ttbar",
         pu_config="pu0",
-        object_types=["particles", "tracker_hits", "calo_hits"],
+        object_types: Sequence[str] = DEFAULT_OBJECT_TYPES,
         split="train",
         cache_dir="/mnt/ceph/users/ewulff/data/hf",
     ):
 
         self.dataset_name = dataset_name
-        self.object_types = object_types
+        self.object_types = tuple(object_types)
+        if not self.object_types:
+            raise ValueError("'object_types' must contain at least one dataset configuration.")
         self.datasets = {}
 
-        for obj_type in object_types:
+        for obj_type in self.object_types:
             config_name = f"{dataset_type}_{pu_config}_{obj_type}"
             print(f"Loading {config_name}...")
             self.datasets[obj_type] = load_dataset(dataset_name, config_name, split=split, cache_dir=cache_dir)
 
         # All datasets should have the same number of rows (events)
-        self.num_events = len(self.datasets[object_types[0]])
-        for obj_type in object_types:
-            assert len(self.datasets[obj_type]) == self.num_events, f"Dataset {obj_type} has {len(self.datasets[obj_type])} rows, expected {self.num_events}"
+        self.num_events = len(self.datasets[self.object_types[0]])
+        for obj_type in self.object_types:
+            dataset_length = len(self.datasets[obj_type])
+            if dataset_length != self.num_events:
+                raise ValueError(
+                    f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
+                )
 
     def __len__(self):
         return self.num_events
@@ -48,17 +69,7 @@ class ColliderMLDataset(Dataset):
             processed_row = {}
             for key, value in row.items():
                 if isinstance(value, list):
-                    # Handle nested lists (e.g., contrib_particle_ids)
-                    if len(value) > 0 and isinstance(value[0], list):
-                        # For now, keep as list or handle specially if needed
-                        processed_row[key] = value
-                    else:
-                        # Convert to numpy then tensor for speed
-                        try:
-                            processed_row[key] = torch.tensor(np.array(value))
-                        except (ValueError, TypeError):
-                            # Fallback for non-numeric lists
-                            processed_row[key] = value
+                    processed_row[key] = _convert_list_value(value)
                 else:
                     processed_row[key] = value
 
@@ -72,9 +83,8 @@ def collate_fn(batch):
     Custom collate function to handle variable-length events.
     In HEP, each event has a different number of particles/hits.
     For point-cloud based models like Panda, we often want to
-    pad or use a list of tensors.
+    keep events separate until the view-building stage.
     """
-    # Simply return a list of dictionaries for now
     return batch
 
 

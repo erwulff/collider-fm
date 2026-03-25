@@ -16,7 +16,7 @@ This document tracks the implementation roadmap for the project. Mark completed 
   - [ ] Implement the core components of the Panda model in `src/collider_fm/model.py`.
   - [x] Start with a simplified version where needed.
   - [x] Write unit tests for the model components to ensure correctness.
-  - Progress note: `src/collider_fm/model.py` now has a PTv3-backed point-cloud adapter, simplified student/teacher projection heads, and lightweight unit coverage. The `slurm/test_model.slurm` smoke test now completes on GPU with `Student output shape: (1, 32)` and `Distillation loss: 5.7166`. Full paper-parity architecture work is still pending.
+  - Progress note: `src/collider_fm/model.py` now has a PTv3-backed point-cloud adapter, simplified student/teacher projection heads, a shared compact-model factory for train, smoke-test, and diagnostics scripts, and lightweight unit coverage. The point-view contract is now centralized in `src/collider_fm/views.py` with a shared grid-size default and consistent derived features. Full paper-parity architecture work is still pending.
 
 - **Stage 3: Training and Loss Implementation**
   - [x] Implement the self-distillation loss function described in the paper.
@@ -28,11 +28,12 @@ This document tracks the implementation roadmap for the project. Mark completed 
 ## Phase 2: Scaling and Evaluation
 
 - **Stage 4: Evaluation and Refinement**
-  - [ ] Create a diagnostics plotting script to visualize raw events, model inputs, per-point backbone features, pooled event embeddings, and prototype outputs.
+  - [x] Create a diagnostics plotting script to visualize raw events, model inputs, per-point backbone features, pooled event embeddings, and prototype outputs.
   - [ ] Implement evaluation metrics based on the paper's methodology.
   - [ ] Create `scripts/evaluate.py` to run the evaluation.
   - [ ] Refine the model and training process based on initial results.
   - [ ] Experiment with hyperparameters such as learning rate and batch size.
+  - Progress note: `scripts/plot_diagnostics.py` is implemented and the repository already contains saved development diagnostics under `diagnostics/`.
 
 - **Stage 5: Scaling Up**
   - [ ] Modify the data loader to handle the full ColliderML dataset.
