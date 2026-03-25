@@ -18,15 +18,16 @@ def create_dataloader(
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
 ) -> DataLoader:
-    """Create a dataloader for ColliderML diagnostics workflows."""
     dataset = ColliderMLDataset(
         split=split,
         dataset_type=dataset_type,
         pu_config=pu_config,
-        object_types=["tracker_hits", "calo_hits", "particles"],
+        object_types=["calo_hits"],
         cache_dir=cache_dir,
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    return DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
 
 def load_events(
@@ -36,7 +37,6 @@ def load_events(
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
 ) -> list[dict[str, Any]]:
-    """Load one batch of events for diagnostics or notebook exploration."""
     dataloader = create_dataloader(
         split=split,
         batch_size=batch_size,
@@ -47,15 +47,16 @@ def load_events(
     return next(iter(dataloader))
 
 
-def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[str, Any]:
-    """Load a checkpoint into the model and report key mismatches."""
+def load_checkpoint(
+    model: PandaSelfDistillation, checkpoint_path: str
+) -> dict[str, Any]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint
-    if isinstance(checkpoint, dict):
-        if "model_state_dict" in checkpoint:
-            state_dict = checkpoint["model_state_dict"]
-        elif "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint
 
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     return {
@@ -66,17 +67,16 @@ def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[
 
 
 def to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    """Detach a tensor and move it to NumPy for plotting."""
     return tensor.detach().cpu().numpy()
 
 
 def radius(values: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Compute the radial distance for hit dictionaries with x/y/z coordinates."""
-    return torch.linalg.norm(torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1)
+    return torch.linalg.norm(
+        torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1
+    )
 
 
 def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
-    """Return lightweight shape and summary statistics for a tensor."""
     array = tensor.detach().cpu()
     return {
         "shape": list(array.shape),
@@ -88,7 +88,6 @@ def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
 
 
 def compute_pca(features: np.ndarray, n_components: int = 2) -> np.ndarray:
-    """Project a 2D feature matrix onto the leading principal components."""
     if features.ndim != 2:
         raise ValueError("PCA expects a 2D array.")
     if features.shape[0] == 0:
@@ -97,17 +96,16 @@ def compute_pca(features: np.ndarray, n_components: int = 2) -> np.ndarray:
     centered = features - features.mean(axis=0, keepdims=True)
     if centered.shape[0] == 1 or centered.shape[1] == 1:
         result = np.zeros((centered.shape[0], n_components), dtype=np.float32)
-        limit = min(n_components, centered.shape[1])
-        result[:, :limit] = centered[:, :limit]
+        result[:, : min(n_components, centered.shape[1])] = centered[
+            :, : min(n_components, centered.shape[1])
+        ]
         return result
 
     _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    components = vt[:n_components]
-    return centered @ components.T
+    return centered @ vt[:n_components].T
 
 
 def sample_indices(num_items: int, max_items: int, seed: int) -> np.ndarray:
-    """Pick a reproducible subset of indices when a point cloud is too large to plot."""
     if num_items <= max_items:
         return np.arange(num_items)
     rng = np.random.default_rng(seed)
@@ -120,7 +118,6 @@ def encode_view(
     view: dict[str, torch.Tensor],
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Encode one point-view through the student or teacher pathway."""
     point = as_point_cloud(view, default_grid_size=model.grid_size)
     backbone = model.teacher_backbone if use_teacher else model.student_backbone
     projector = model.teacher_projector if use_teacher else model.student_projector

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ._panda.model_base import PointTransformerV3
 from ._panda.structure import Point
-from .views import DEFAULT_POINT_GRID_SIZE, PointView
+from .views import DEFAULT_POINT_GRID_SIZE, POINT_FEATURE_DIM, PointView
 
 
 SMALL_MODEL_BACKBONE_KWARGS = {
@@ -22,10 +22,11 @@ SMALL_MODEL_BACKBONE_KWARGS = {
 }
 
 
-def as_point_cloud(view: Mapping[str, Any], default_grid_size: float = DEFAULT_POINT_GRID_SIZE) -> Point:
-    """Convert a generic view mapping into the Panda point-cloud structure."""
+def as_point_cloud(
+    view: Mapping[str, Any], default_grid_size: float = DEFAULT_POINT_GRID_SIZE
+) -> Point:
+    """Convert one validated point view into Panda's `Point` structure."""
     data = dict(view)
-
     if "coord" not in data or "feat" not in data:
         raise KeyError("Each view must provide 'coord' and 'feat' tensors.")
 
@@ -33,56 +34,48 @@ def as_point_cloud(view: Mapping[str, Any], default_grid_size: float = DEFAULT_P
     feat = torch.as_tensor(data["feat"], dtype=torch.float32, device=coord.device)
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
-    if feat.ndim != 2:
-        raise ValueError("'feat' must have shape [num_points, num_features].")
-    if feat.shape[0] != coord.shape[0]:
-        raise ValueError("'coord' and 'feat' must describe the same number of points.")
+    if feat.ndim != 2 or feat.shape[0] != coord.shape[0]:
+        raise ValueError("'feat' must have shape [num_points, channels].")
 
     data["coord"] = coord
     data["feat"] = feat
 
     if "offset" in data:
-        offset = torch.as_tensor(data["offset"], dtype=torch.long, device=coord.device).flatten()
-        if offset.numel() == 0:
-            raise ValueError("'offset' must contain at least one event boundary.")
-        if offset[-1].item() != coord.shape[0]:
-            raise ValueError("The final offset must equal the number of points.")
+        offset = torch.as_tensor(
+            data["offset"], dtype=torch.long, device=coord.device
+        ).flatten()
+        if offset.numel() == 0 or offset[-1].item() != coord.shape[0]:
+            raise ValueError("'offset' must end at the number of points.")
         counts = torch.diff(offset, prepend=offset.new_zeros(1))
         if torch.any(counts <= 0):
-            raise ValueError("'offset' must be a strictly increasing cumulative count.")
+            raise ValueError("'offset' must be strictly increasing.")
         data["offset"] = offset
-    elif "batch" in data:
-        batch = torch.as_tensor(data["batch"], dtype=torch.long, device=coord.device).flatten()
-        if batch.shape[0] != coord.shape[0]:
-            raise ValueError("'batch' must contain one assignment per point.")
-        data["batch"] = batch
     else:
-        data["offset"] = torch.tensor([coord.shape[0]], dtype=torch.long, device=coord.device)
+        data["offset"] = torch.tensor(
+            [coord.shape[0]], dtype=torch.long, device=coord.device
+        )
 
-    grid_size = data.get("grid_size", default_grid_size)
-    data["grid_size"] = torch.as_tensor(grid_size, dtype=coord.dtype, device=coord.device)
+    data["grid_size"] = torch.as_tensor(
+        data.get("grid_size", default_grid_size), dtype=coord.dtype, device=coord.device
+    )
     return Point(data)
 
 
 def mean_pool_features(feat: torch.Tensor, offset: torch.Tensor | None) -> torch.Tensor:
-    """Pool per-point features into one embedding per event."""
+    """Average point features within each event in a batch."""
     if feat.ndim != 2:
         raise ValueError("'feat' must have shape [num_points, channels].")
-
     if offset is None:
         return feat.mean(dim=0, keepdim=True)
 
     offset = torch.as_tensor(offset, dtype=torch.long, device=feat.device).flatten()
-    if offset.numel() == 0:
-        raise ValueError("'offset' must contain at least one event boundary.")
-    if offset[-1].item() != feat.shape[0]:
-        raise ValueError("The final offset must equal the number of points.")
+    if offset.numel() == 0 or offset[-1].item() != feat.shape[0]:
+        raise ValueError("'offset' must end at the number of points.")
 
     counts = torch.diff(offset, prepend=offset.new_zeros(1))
-    if torch.any(counts <= 0):
-        raise ValueError("'offset' must be a strictly increasing cumulative count.")
-
-    batch_index = torch.arange(offset.numel(), device=feat.device).repeat_interleave(counts)
+    batch_index = torch.arange(offset.numel(), device=feat.device).repeat_interleave(
+        counts
+    )
     pooled = feat.new_zeros((offset.numel(), feat.shape[1]))
     pooled.scatter_add_(0, batch_index.unsqueeze(1).expand(-1, feat.shape[1]), feat)
     return pooled / counts.unsqueeze(1)
@@ -90,29 +83,32 @@ def mean_pool_features(feat: torch.Tensor, offset: torch.Tensor | None) -> torch
 
 def _build_mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
     return nn.Sequential(
-        nn.Linear(input_dim, hidden_dim),
-        nn.GELU(),
-        nn.Linear(hidden_dim, output_dim),
+        nn.Linear(input_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, output_dim)
     )
 
 
 class PandaEncoderBackbone(nn.Module):
-    """Adapter that exposes PTv3 encoder features without the multiscale upcast path."""
+    """Thin wrapper around Point Transformer V3."""
 
     def __init__(self, **backbone_kwargs: Any) -> None:
         super().__init__()
         self.backbone = PointTransformerV3(**backbone_kwargs)
 
     def forward(self, point: Any) -> Any:
-        return self.backbone(point, upcast=False)
+        return self.backbone(point, upcast=True)
 
 
 class PandaSelfDistillation(nn.Module):
-    """Simplified Panda-style self-distillation model for ColliderML point clouds."""
+    """A small student-teacher model for collider calorimeter point clouds.
+
+    The training objective is intentionally simple here: each augmented view keeps
+    the same point order, so the student matches teacher prototype distributions
+    point by point.
+    """
 
     def __init__(
         self,
-        in_channels: int = 6,
+        in_channels: int = POINT_FEATURE_DIM,
         embed_channels: int = 64,
         num_prototypes: int = 1024,
         projection_dim: int = 256,
@@ -126,7 +122,7 @@ class PandaSelfDistillation(nn.Module):
     ) -> None:
         super().__init__()
 
-        default_backbone_kwargs = {
+        resolved_backbone_kwargs = {
             "in_channels": in_channels,
             "order": ("z", "z-trans"),
             "stride": (2, 2, 2, 2),
@@ -150,20 +146,28 @@ class PandaSelfDistillation(nn.Module):
             "enable_flash": False,
         }
         if backbone_kwargs is not None:
-            default_backbone_kwargs.update(dict(backbone_kwargs))
+            resolved_backbone_kwargs.update(dict(backbone_kwargs))
 
-        backbone_dim = default_backbone_kwargs["enc_channels"][-1]
+        if backbone_cls is PandaEncoderBackbone:
+            backbone_dim = int(sum(resolved_backbone_kwargs["enc_channels"]))
+        else:
+            backbone_dim = int(
+                resolved_backbone_kwargs.get(
+                    "out_channels", resolved_backbone_kwargs["enc_channels"][-1]
+                )
+            )
         self.grid_size = grid_size
         self.temp_student = temp_student
         self.temp_teacher = temp_teacher
         self.center_momentum = center_momentum
 
-        self.student_backbone = backbone_cls(**default_backbone_kwargs)
-        self.teacher_backbone = backbone_cls(**default_backbone_kwargs)
-
+        self.student_backbone = backbone_cls(**resolved_backbone_kwargs)
+        self.teacher_backbone = backbone_cls(**resolved_backbone_kwargs)
         self.student_projector = _build_mlp(backbone_dim, backbone_dim, projection_dim)
         self.teacher_projector = _build_mlp(backbone_dim, backbone_dim, projection_dim)
-        self.student_predictor = _build_mlp(projection_dim, prediction_dim, projection_dim)
+        self.student_predictor = _build_mlp(
+            projection_dim, prediction_dim, projection_dim
+        )
         self.prototype_head = nn.Linear(projection_dim, num_prototypes, bias=False)
 
         self.teacher_backbone.load_state_dict(self.student_backbone.state_dict())
@@ -183,22 +187,32 @@ class PandaSelfDistillation(nn.Module):
     ) -> torch.Tensor:
         point = as_point_cloud(view, default_grid_size=self.grid_size)
         encoded = backbone(point)
-        pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
-        projection = projector(pooled)
+        projection = projector(encoded.feat)
         if predictor is not None:
             projection = predictor(projection)
         projection = F.normalize(projection, dim=-1)
         return self.prototype_head(projection)
 
-    def forward(self, views: Sequence[Mapping[str, Any] | PointView]) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def forward(
+        self, views: Sequence[Mapping[str, Any] | PointView]
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if len(views) < 2:
             raise ValueError("Self-distillation requires at least two augmented views.")
 
-        student_outputs = [self._encode_view(view, self.student_backbone, self.student_projector, self.student_predictor) for view in views]
-
+        student_outputs = [
+            self._encode_view(
+                view,
+                self.student_backbone,
+                self.student_projector,
+                self.student_predictor,
+            )
+            for view in views
+        ]
         with torch.no_grad():
-            teacher_outputs = [self._encode_view(view, self.teacher_backbone, self.teacher_projector) for view in views[:2]]
-
+            teacher_outputs = [
+                self._encode_view(view, self.teacher_backbone, self.teacher_projector)
+                for view in views[:2]
+            ]
         return student_outputs, teacher_outputs
 
     def distillation_loss(
@@ -211,21 +225,28 @@ class PandaSelfDistillation(nn.Module):
 
         total_loss = student_outputs[0].new_tensor(0.0)
         num_terms = 0
+        center = cast(torch.Tensor, self.center)
         for teacher_index, teacher_logits in enumerate(teacher_outputs):
             for student_index, student_logits in enumerate(student_outputs):
                 if student_index == teacher_index:
                     continue
+                if student_logits.shape != teacher_logits.shape:
+                    raise ValueError(
+                        "Student and teacher logits must have the same shape for point-level matching."
+                    )
                 total_loss = total_loss + panda_loss(
                     student_logits,
                     teacher_logits.detach(),
-                    self.center,
+                    center,
                     self.temp_student,
                     self.temp_teacher,
                 )
                 num_terms += 1
 
         if num_terms == 0:
-            raise ValueError("Need at least one non-matching student/teacher pair for distillation.")
+            raise ValueError(
+                "Need at least one non-matching student/teacher pair for distillation."
+            )
         return total_loss / num_terms
 
     @torch.no_grad()
@@ -233,18 +254,27 @@ class PandaSelfDistillation(nn.Module):
         if not 0.0 <= momentum <= 1.0:
             raise ValueError("Momentum must be between 0 and 1.")
 
-        for student_param, teacher_param in zip(self.student_backbone.parameters(), self.teacher_backbone.parameters()):
-            teacher_param.data.mul_(momentum).add_(student_param.data, alpha=1.0 - momentum)
-        for student_param, teacher_param in zip(self.student_projector.parameters(), self.teacher_projector.parameters()):
-            teacher_param.data.mul_(momentum).add_(student_param.data, alpha=1.0 - momentum)
+        for student_param, teacher_param in zip(
+            self.student_backbone.parameters(), self.teacher_backbone.parameters()
+        ):
+            teacher_param.data.mul_(momentum).add_(
+                student_param.data, alpha=1.0 - momentum
+            )
+        for student_param, teacher_param in zip(
+            self.student_projector.parameters(), self.teacher_projector.parameters()
+        ):
+            teacher_param.data.mul_(momentum).add_(
+                student_param.data, alpha=1.0 - momentum
+            )
 
     @torch.no_grad()
     def update_center(self, teacher_outputs: Sequence[torch.Tensor]) -> None:
         if not teacher_outputs:
             raise ValueError("Teacher outputs must be non-empty.")
-
         batch_center = torch.cat(list(teacher_outputs), dim=0).mean(dim=0, keepdim=True)
-        self.center.mul_(self.center_momentum).add_(batch_center, alpha=1.0 - self.center_momentum)
+        center = cast(torch.Tensor, self.center)
+        center.mul_(self.center_momentum)
+        center.add_(batch_center, alpha=1.0 - self.center_momentum)
 
 
 def create_small_panda_model(
@@ -252,13 +282,12 @@ def create_small_panda_model(
     backbone_cls: type[nn.Module] = PandaEncoderBackbone,
     backbone_kwargs: Mapping[str, Any] | None = None,
 ) -> PandaSelfDistillation:
-    """Construct the compact Panda-style model shared by train, smoke, and diagnostics scripts."""
     resolved_backbone_kwargs = dict(SMALL_MODEL_BACKBONE_KWARGS)
     if backbone_kwargs is not None:
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
 
     model = PandaSelfDistillation(
-        in_channels=6,
+        in_channels=POINT_FEATURE_DIM,
         embed_channels=8,
         num_prototypes=32,
         projection_dim=8,

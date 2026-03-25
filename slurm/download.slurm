@@ -22,10 +22,10 @@ module load slurm gcc cmake cuda/12.1.1 cudnn/8.9.2.26-12.x nccl openmpi apptain
 # Activate the local virtual environment
 source .venv/bin/activate
 
-# Run the Python script to download the pu0 datasets
+# Run the Python script to download the calo-hit dataset
 uv run python scripts/download_data.py \
     --dataset-types ttbar \
-    --object-types particles tracker_hits calo_hits tracks \
+    --object-types calo_hits \
     --pu-config pu0 \
     --cache-dir /mnt/ceph/users/ewulff/data/hf \
     --num-proc 12

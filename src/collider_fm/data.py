@@ -1,16 +1,20 @@
-from collections.abc import Sequence
+from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
+import numpy as np
 import torch
 from datasets import load_dataset
-import numpy as np
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 
-DEFAULT_OBJECT_TYPES = ("tracker_hits", "calo_hits")
+DEFAULT_OBJECT_TYPES = ("calo_hits",)
+CALO_ENERGY_KEYS = ("energy", "totalenergy", "total_energy")
 
 
-def _convert_list_value(value):
-    if len(value) > 0 and isinstance(value[0], list):
+def _convert_list_value(value: list[object]) -> object:
+    if value and isinstance(value[0], list):
         return value
 
     array = np.asarray(value)
@@ -19,96 +23,79 @@ def _convert_list_value(value):
     return torch.tensor(array)
 
 
+def _add_calo_energy_aliases(row: dict[str, object]) -> dict[str, object]:
+    energy_key = next((key for key in CALO_ENERGY_KEYS if key in row), None)
+    if energy_key is None:
+        return row
+
+    energy = row[energy_key]
+    row.setdefault("energy", energy)
+    row.setdefault("totalenergy", energy)
+    row.setdefault("total_energy", energy)
+    return row
+
+
 class ColliderMLDataset(Dataset):
-    """
-    A PyTorch Dataset for loading ColliderML data from Hugging Face datasets.
-    It combines multiple configurations (e.g., particles, tracker_hits, calo_hits)
-    for the same events.
+    """Small wrapper around the ColliderML Hugging Face dataset.
+
+    For this phase we keep the default path intentionally simple: one event is one
+    dictionary containing only the requested object tables, with `calo_hits` as the
+    default and recommended choice.
     """
 
     def __init__(
         self,
-        dataset_name="CERN/ColliderML-Release-1",
-        dataset_type="ttbar",
-        pu_config="pu0",
+        dataset_name: str = "CERN/ColliderML-Release-1",
+        dataset_type: str = "ttbar",
+        pu_config: str = "pu0",
         object_types: Sequence[str] = DEFAULT_OBJECT_TYPES,
-        split="train",
-        cache_dir="/mnt/ceph/users/ewulff/data/hf",
-    ):
-
+        split: str = "train",
+        cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    ) -> None:
         self.dataset_name = dataset_name
         self.object_types = tuple(object_types)
         if not self.object_types:
-            raise ValueError("'object_types' must contain at least one dataset configuration.")
-        self.datasets = {}
+            raise ValueError(
+                "'object_types' must contain at least one dataset configuration."
+            )
 
-        for obj_type in self.object_types:
-            config_name = f"{dataset_type}_{pu_config}_{obj_type}"
-            print(f"Loading {config_name}...")
-            self.datasets[obj_type] = load_dataset(dataset_name, config_name, split=split, cache_dir=cache_dir)
+        self.datasets: dict[str, Any] = {}
+        for object_type in self.object_types:
+            config_name = f"{dataset_type}_{pu_config}_{object_type}"
+            self.datasets[object_type] = load_dataset(
+                dataset_name, config_name, split=split, cache_dir=cache_dir
+            )
 
-        # All datasets should have the same number of rows (events)
-        self.num_events = len(self.datasets[self.object_types[0]])
-        for obj_type in self.object_types:
-            dataset_length = len(self.datasets[obj_type])
-            if dataset_length != self.num_events:
+        first_object_type = self.object_types[0]
+        self.num_events = len(self.datasets[first_object_type])
+        for object_type in self.object_types[1:]:
+            if len(self.datasets[object_type]) != self.num_events:
                 raise ValueError(
-                    f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
+                    "All requested ColliderML tables must have the same number of events."
                 )
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_events
 
-    def __getitem__(self, idx):
-        event = {}
-        for obj_type, ds in self.datasets.items():
-            # Get the row (event) from the dataset
-            row = ds[idx]
-
-            # Convert list columns to tensors where appropriate
-            processed_row = {}
+    def __getitem__(self, index: int) -> dict[str, dict[str, object]]:
+        event: dict[str, dict[str, object]] = {}
+        for object_type, dataset in self.datasets.items():
+            row: dict[str, object] = dataset[index]
+            processed_row: dict[str, object] = {}
             for key, value in row.items():
                 if isinstance(value, list):
                     processed_row[key] = _convert_list_value(value)
                 else:
                     processed_row[key] = value
 
-            event[obj_type] = processed_row
-
+            if object_type == "calo_hits":
+                processed_row = _add_calo_energy_aliases(processed_row)
+            event[object_type] = processed_row
         return event
 
 
-def collate_fn(batch):
-    """
-    Custom collate function to handle variable-length events.
-    In HEP, each event has a different number of particles/hits.
-    For point-cloud based models like Panda, we often want to
-    keep events separate until the view-building stage.
-    """
+def collate_fn(
+    batch: list[dict[str, dict[str, object]]],
+) -> list[dict[str, dict[str, object]]]:
+    """Keep events as a plain list until the view-building step."""
     return batch
-
-
-if __name__ == "__main__":
-    # Test the dataset
-    print("Testing ColliderMLDataset...")
-    dataset = ColliderMLDataset(split="train[:10]")
-    print(f"Dataset size: {len(dataset)}")
-
-    # Get the first event
-    sample = dataset[0]
-    print("\nKeys in first sample:")
-    for obj_type in sample.keys():
-        print(f"  {obj_type}: {sample[obj_type].keys()}")
-
-    # Check tracker hits
-    tracker_hits = sample["tracker_hits"]
-    num_hits = len(tracker_hits["x"])
-    print(f"\nNumber of tracker hits in event 0: {num_hits}")
-    print(f"First 5 tracker hit x coordinates: {tracker_hits['x'][:5]}")
-
-    # Create a DataLoader
-    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
-    for i, batch in enumerate(dataloader):
-        print(f"\nBatch {i} size: {len(batch)}")
-        if i >= 0:
-            break

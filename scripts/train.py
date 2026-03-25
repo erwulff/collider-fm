@@ -5,6 +5,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 import comet_ml
 import torch
@@ -29,7 +30,9 @@ from collider_fm.views import build_distillation_views
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the simplified ColliderFM self-distillation model.")
+    parser = argparse.ArgumentParser(
+        description="Train the small calo-only ColliderFM model."
+    )
     parser.add_argument("--train-split", default="train[:8]")
     parser.add_argument("--val-split", default="train[8:10]")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -39,14 +42,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-momentum", type=float, default=0.99)
     parser.add_argument("--max-train-batches", type=int, default=2)
     parser.add_argument("--max-val-batches", type=int, default=1)
-    parser.add_argument("--max-tracker-hits", type=int, default=128)
     parser.add_argument("--max-calo-hits", type=int, default=256)
     parser.add_argument("--dataset-type", default="ttbar")
     parser.add_argument("--pu-config", default="pu0")
     parser.add_argument("--cache-dir", default="/mnt/ceph/users/ewulff/data/hf")
-    parser.add_argument("--log-backend", choices=["none", "jsonl", "auto", "comet"], default="auto")
+    parser.add_argument(
+        "--log-backend", choices=["none", "jsonl", "auto", "comet"], default="auto"
+    )
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--run-name", default=None)
+    parser.add_argument("--resume-from", default=None)
     return parser
 
 
@@ -55,10 +60,12 @@ def create_dataloader(args: argparse.Namespace, split: str) -> DataLoader:
         split=split,
         dataset_type=args.dataset_type,
         pu_config=args.pu_config,
-        object_types=["tracker_hits", "calo_hits"],
+        object_types=["calo_hits"],
         cache_dir=args.cache_dir,
     )
-    return DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    return DataLoader(
+        dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
 
 def learning_rate(optimizer: AdamW) -> float:
@@ -66,7 +73,40 @@ def learning_rate(optimizer: AdamW) -> float:
 
 
 def center_norm(model: PandaSelfDistillation) -> float:
-    return float(model.center.norm().item())
+    return float(cast(torch.Tensor, model.center).norm().item())
+
+
+def checkpoint_path(run_dir: Path) -> Path:
+    return run_dir / "checkpoint.pt"
+
+
+def save_checkpoint(
+    run_dir: Path,
+    model: PandaSelfDistillation,
+    optimizer: AdamW,
+    epoch: int,
+    global_step: int,
+) -> Path:
+    path = checkpoint_path(run_dir)
+    torch.save(
+        {
+            "epoch": epoch,
+            "global_step": global_step,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        },
+        path,
+    )
+    return path
+
+
+def load_checkpoint(
+    path: str, model: PandaSelfDistillation, optimizer: AdamW
+) -> tuple[int, int]:
+    checkpoint = torch.load(path, map_location="cpu")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return int(checkpoint.get("epoch", 0)), int(checkpoint.get("global_step", 0))
 
 
 def run_epoch(
@@ -76,7 +116,6 @@ def run_epoch(
     optimizer: AdamW | None,
     max_batches: int,
     teacher_momentum: float,
-    max_tracker_hits: int,
     max_calo_hits: int,
     phase: str,
 ) -> tuple[float, int]:
@@ -90,12 +129,8 @@ def run_epoch(
             break
 
         views = build_distillation_views(
-            events,
-            device=device,
-            max_tracker_hits=max_tracker_hits,
-            max_calo_hits=max_calo_hits,
+            events, device=device, max_calo_hits=max_calo_hits
         )
-
         with torch.set_grad_enabled(is_training):
             student_outputs, teacher_outputs = model(views)
             loss = model.distillation_loss(student_outputs, teacher_outputs)
@@ -107,12 +142,12 @@ def run_epoch(
             model.update_center(teacher_outputs)
             model.update_teacher(momentum=teacher_momentum)
 
-        total_loss += loss.item()
+        total_loss += float(loss.item())
         num_batches += 1
         print(f"{phase} batch {batch_index + 1}: loss={loss.item():.4f}")
 
     if num_batches == 0:
-        raise ValueError(f"No {phase} batches were processed. Check the chosen split and max batch count.")
+        raise ValueError(f"No {phase} batches were processed.")
     return total_loss / num_batches, num_batches
 
 
@@ -122,21 +157,42 @@ def main() -> None:
     print(f"Using device: {device}")
 
     if device.type != "cuda":
-        print("Training requires a CUDA-enabled environment because the current PTv3/spconv stack is GPU-only.")
-        print("Run this script on a GPU node, for example through a SLURM job.")
+        print(
+            "Training requires CUDA because the current PTv3/spconv stack is GPU-only."
+        )
         return
 
     train_loader = create_dataloader(args, args.train_split)
     val_loader = create_dataloader(args, args.val_split)
 
-    run_dir, run_name = ensure_run_directory(PROJECT_ROOT, run_dir=args.run_dir, run_name=args.run_name)
-    logger = create_experiment_logger(args.log_backend, run_dir=run_dir, run_name=run_name)
+    run_dir, run_name = ensure_run_directory(
+        PROJECT_ROOT, run_dir=args.run_dir, run_name=args.run_name
+    )
+    logger = create_experiment_logger(
+        args.log_backend, run_dir=run_dir, run_name=run_name
+    )
     config = vars(args) | {
         "device": str(device),
         "run_dir": str(run_dir),
         "run_name": run_name,
     }
     config_path = write_run_config(run_dir, config)
+    print(f"Run directory: {run_dir}")
+    print(f"Run config: {config_path}")
+
+    model = create_small_panda_model(device=device)
+    optimizer = AdamW(
+        model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+    )
+    start_epoch = 0
+    global_step = 0
+
+    if args.resume_from is not None:
+        start_epoch, global_step = load_checkpoint(args.resume_from, model, optimizer)
+        print(
+            f"Resumed from {args.resume_from} at epoch {start_epoch}, step {global_step}"
+        )
+
     logger.log_params(
         {
             "run_name": run_name,
@@ -149,25 +205,15 @@ def main() -> None:
             "teacher_momentum": args.teacher_momentum,
             "max_train_batches": args.max_train_batches,
             "max_val_batches": args.max_val_batches,
-            "max_tracker_hits": args.max_tracker_hits,
             "max_calo_hits": args.max_calo_hits,
             "dataset_type": args.dataset_type,
             "pu_config": args.pu_config,
-            "log_backend": args.log_backend,
+            "resume_from": args.resume_from,
         }
     )
-    print(f"Run directory: {run_dir}")
-    print(f"Run config: {config_path}")
-
-    model = create_small_panda_model(device=device)
-    optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    num_params = sum(parameter.numel() for parameter in model.parameters())
-    print(f"Model parameters: {num_params / 1e6:.2f}M")
-
-    global_step = 0
 
     try:
-        for epoch in range(args.num_epochs):
+        for epoch in range(start_epoch, args.num_epochs):
             print(f"Epoch {epoch + 1}/{args.num_epochs}")
             epoch_start = time.perf_counter()
             train_loss, train_batches = run_epoch(
@@ -177,7 +223,6 @@ def main() -> None:
                 optimizer=optimizer,
                 max_batches=args.max_train_batches,
                 teacher_momentum=args.teacher_momentum,
-                max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
                 phase="train",
             )
@@ -189,22 +234,24 @@ def main() -> None:
                 optimizer=None,
                 max_batches=args.max_val_batches,
                 teacher_momentum=args.teacher_momentum,
-                max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
                 phase="val",
             )
-            epoch_time_seconds = time.perf_counter() - epoch_start
-            epoch_metrics = {
+            checkpoint = save_checkpoint(
+                run_dir, model, optimizer, epoch + 1, global_step
+            )
+            metrics = {
                 "epoch": epoch + 1,
                 "global_step": global_step,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
                 "learning_rate": learning_rate(optimizer),
-                "epoch_time_seconds": epoch_time_seconds,
+                "epoch_time_seconds": time.perf_counter() - epoch_start,
                 "center_norm": center_norm(model),
+                "checkpoint": str(checkpoint),
             }
-            logger.log_metrics(epoch_metrics, step=global_step)
-            print("epoch summary: " + json.dumps(epoch_metrics, sort_keys=True))
+            logger.log_metrics(metrics, step=global_step)
+            print("epoch summary: " + json.dumps(metrics, sort_keys=True))
     finally:
         logger.finish()
 

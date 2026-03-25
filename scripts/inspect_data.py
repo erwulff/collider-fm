@@ -1,51 +1,80 @@
-import matplotlib.pyplot as plt
-import sys
-import os
+from __future__ import annotations
 
-# Add src to sys.path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(project_root, "src"))
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from collider_fm.data import ColliderMLDataset
+from collider_fm.views import CALO_TYPE_NAMES, build_point_view_from_event
 
 
-def plot_event_3d(event, event_idx=0):
+def plot_event_3d(event: dict[str, dict[str, object]], event_index: int = 0) -> None:
+    calo_hits = event["calo_hits"]
+    x = torch.as_tensor(calo_hits["x"])
+    y = torch.as_tensor(calo_hits["y"])
+    z = torch.as_tensor(calo_hits["z"])
+    energy = torch.as_tensor(calo_hits["energy"])
+    calo_type = build_point_view_from_event(event, device=torch.device("cpu"))[
+        "calo_type"
+    ]
+
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
-
-    # Plot tracker hits
-    th = event["tracker_hits"]
-    ax.scatter(th["z"], th["x"], th["y"], s=1, alpha=0.5, label="Tracker Hits", c="blue")
-
-    # Plot calo hits
-    ch = event["calo_hits"]
-    # Filter out zero energy hits if any
-    mask = ch["total_energy"] > 0
-    ax.scatter(ch["z"][mask], ch["x"][mask], ch["y"][mask], s=ch["total_energy"][mask] * 10, alpha=0.3, label="Calo Hits", c="red")
-
+    scatter = getattr(ax, "scatter")(
+        np.asarray(z.tolist(), dtype=float),
+        np.asarray(x.tolist(), dtype=float),
+        np.asarray(y.tolist(), dtype=float),
+        c=np.asarray(energy.tolist(), dtype=float),
+        s=4,
+        alpha=0.6,
+        cmap="inferno",
+    )
+    fig.colorbar(scatter, ax=ax, shrink=0.7, pad=0.1, label="energy")
     ax.set_xlabel("z [mm]")
     ax.set_ylabel("x [mm]")
     ax.set_zlabel("y [mm]")
-    ax.set_title(f"ColliderML Event {event_idx} - ttbar pu0")
-    ax.legend()
+    ax.set_title(f"ColliderML calorimeter event {event_index}")
+    plt.savefig(f"event_{event_index}_calo.png")
 
-    plt.savefig(f"event_{event_idx}_3d.png")
-    print(f"Saved event visualization to event_{event_idx}_3d.png")
+    counts = {
+        name: int((calo_type == value).sum().item())
+        for value, name in CALO_TYPE_NAMES.items()
+    }
+    print(f"Saved event visualization to event_{event_index}_calo.png")
+    print(f"ECal hits: {counts['ecal']}")
+    print(f"HCal hits: {counts['hcal']}")
 
 
-if __name__ == "__main__":
-    dataset = ColliderMLDataset(split="train[:5]")
-    print("Loading event 0 for visualization...")
+def main() -> None:
+    dataset = ColliderMLDataset(split="train[:5]", object_types=["calo_hits"])
+    print("Loading event 0 for calorimeter inspection...")
     sample = dataset[0]
     plot_event_3d(sample, 0)
 
-    print("\nBasic Stats for Event 0:")
-    print(f"Number of tracker hits: {len(sample['tracker_hits']['x'])}")
-    print(f"Number of calo hits:    {len(sample['calo_hits']['x'])}")
-    print(f"Number of particles:    {len(sample['particles']['px'])}")
+    calo_hits = sample["calo_hits"]
+    print("\nBasic stats for event 0:")
+    print(f"Number of calo hits: {len(torch.as_tensor(calo_hits['x']))}")
+    print(
+        f"Energy range: [{torch.as_tensor(calo_hits['energy']).min():.4f}, {torch.as_tensor(calo_hits['energy']).max():.4f}]"
+    )
+    print(
+        f"x range: [{torch.as_tensor(calo_hits['x']).min():.2f}, {torch.as_tensor(calo_hits['x']).max():.2f}]"
+    )
+    print(
+        f"y range: [{torch.as_tensor(calo_hits['y']).min():.2f}, {torch.as_tensor(calo_hits['y']).max():.2f}]"
+    )
+    print(
+        f"z range: [{torch.as_tensor(calo_hits['z']).min():.2f}, {torch.as_tensor(calo_hits['z']).max():.2f}]"
+    )
 
-    # Print some coordinate ranges to verify
-    th = sample["tracker_hits"]
-    print(f"Tracker x range: [{th['x'].min():.2f}, {th['x'].max():.2f}]")
-    print(f"Tracker y range: [{th['y'].min():.2f}, {th['y'].max():.2f}]")
-    print(f"Tracker z range: [{th['z'].min():.2f}, {th['z'].max():.2f}]")
+
+if __name__ == "__main__":
+    main()

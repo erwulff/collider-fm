@@ -1,47 +1,38 @@
 # Collider Foundation Model
 
-Collider Foundation Model is an early-stage Python project for learning reusable representations from particle collider data. The current focus is adapting Panda-style self-distillation workflows to the ColliderML dataset.
+Collider Foundation Model is a small research codebase for learning reusable representations from collider calorimeter data.
+The current phase is intentionally narrow and simple: calo-only self-distillation on ColliderML Release 1.
 
-## Project goal
+## Current focus
 
-The project explores self-distillation methods for high-energy physics data, with Panda-style sensor-level representation learning as the starting point. The near-term goal is to get a practical training and evaluation workflow running on ColliderML before scaling to larger experiments.
+- Use only `calo_hits` from ColliderML.
+- Build one event into a sparse 3D point cloud.
+- Train a small Panda-style student/teacher model.
+- Keep the code easy to read and easy to teach.
 
-## Current status
+The main data path is:
 
-- `src/collider_fm/data.py` provides dataset loading and basic collation.
-- `src/collider_fm/model.py` contains the current Panda-inspired self-distillation scaffold and the shared small-model factory used by train, smoke-test, and diagnostics scripts.
-- `scripts/download_data.py` and `scripts/inspect_data.py` cover basic data acquisition and inspection.
-- `scripts/plot_diagnostics.py` produces saved diagnostics for raw events, point views, and compact-model representations.
-- `Panda_repo/` is kept as a reference implementation, while the runtime code vendors the PTv3 pieces currently needed under `src/collider_fm/_panda/`.
+`ColliderMLDataset` -> `build_point_view_from_event` -> `build_distillation_views` -> `PandaSelfDistillation` -> diagnostics or exported embeddings.
 
 ## Repository layout
 
 ```text
 /
-├── src/collider_fm/            # Python package code
-├── tests/                      # Unit tests
-├── scripts/                    # Utility scripts for downloads, inspection, and smoke tests
-├── slurm/                      # Batch jobs for cluster workflows
-├── apptainer/                  # Container helper scripts
+├── src/collider_fm/            # Core package code
+├── tests/                      # Small focused tests
+├── scripts/                    # Download, inspect, train, diagnostics, export
+├── notebooks/                  # Tutorial and exploration notebooks
+├── slurm/                      # Cluster job scripts
 ├── Panda_repo/                 # Panda reference submodule
-├── logs_slurm/                 # Placeholder directory for SLURM logs
-├── pyproject.toml              # Project metadata and tool configuration
-├── uv.lock                     # Locked dependency resolution for uv
-├── PLAN.md                     # Roadmap and task tracking
-└── HPC.md                      # Cluster and SLURM notes
+├── pyproject.toml              # Project metadata and dependencies
+├── PLAN.md                     # Implementation roadmap
+├── IMPLEMENTATION_GUIDELINES.md
+└── HPC.md                      # Cluster notes
 ```
 
 ## Environment setup
 
-The project uses `uv` for dependency management and targets Python 3.12.
-
-On this cluster, load the `uv` module first:
-
-```bash
-module load uv
-```
-
-Then create and activate a virtual environment and sync dependencies:
+The project uses `uv` and targets Python 3.12.
 
 ```bash
 module load uv
@@ -50,107 +41,87 @@ source .venv/bin/activate
 uv sync --dev
 ```
 
-Some dependencies such as `spconv` and `torch-scatter` may need to be installed on compute nodes rather than the login node. `torch-scatter` is configured in `pyproject.toml` to build from source.
-
-If you prefer to create the environment through SLURM, use:
-
-```bash
-sbatch slurm/create_uv_venv.slurm
-```
-
-The intended compute-node setup order is:
-
-```bash
-sbatch slurm/create_uv_venv.slurm
-sbatch slurm/test_model.slurm
-sbatch slurm/train_small.slurm
-```
-
-The shared cluster environment bootstrap for the runtime jobs lives in `slurm/load_env.sh`.
+Some packages such as `spconv` and `torch-scatter` may need to be installed on compute nodes.
 
 ## Dataset
 
-The project uses the ColliderML dataset:
+The project uses ColliderML Release 1:
 
 - Hugging Face: https://huggingface.co/datasets/ColliderML/ColliderML
 - Project site: https://colliderml.github.io/
 
-ColliderML configurations combine a physics process such as `ttbar`, `ggf`, or `dihiggs`, a pileup setting such as `pu0` or `pu200`, and an object type such as `particles`, `tracker_hits`, `calo_hits`, or `tracks`.
+This phase uses only `calo_hits`.
+
+Each point keeps:
+
+- 3D coordinates: `x`, `y`, `z`
+- deposited energy
+- a simple calorimeter type flag: ECal or HCal
 
 On this cluster, the documented Hugging Face cache location is `/mnt/ceph/users/ewulff/data/hf`.
 
 ## Common workflows
 
-Download a ColliderML subset:
+Download the calo-hit subset:
 
 ```bash
 uv run python scripts/download_data.py --pu-config pu0 --num-proc 12
 ```
 
-Inspect a sample event:
+Inspect one event:
 
 ```bash
 uv run python scripts/inspect_data.py
 ```
 
-Run the model smoke test on a GPU allocation:
+Run the GPU smoke test:
 
 ```bash
 sbatch slurm/test_model.slurm
 ```
 
-The smoke-test entrypoint lives in `scripts/smoke_test_model.py`.
-By default it expects cached ColliderML data and fails loudly if the dataset is unavailable.
-For a CUDA-only synthetic sanity check, run:
-
-```bash
-uv run python scripts/smoke_test_model.py --allow-synthetic-fallback
-```
-
-A minimal tracked training run looks like:
+Run a tiny tracked training job:
 
 ```bash
 uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1
 ```
 
-Generate saved diagnostics from cached ColliderML events:
+Generate saved diagnostics:
 
 ```bash
 uv run python scripts/plot_diagnostics.py --detail-split train[0:1] --representation-split train[:10]
 ```
 
+Export frozen embeddings from a checkpoint:
+
+```bash
+uv run python scripts/export_embeddings.py --checkpoint runs/<run-name>/checkpoint.pt
+```
+
+## Tutorial notebook
+
+The teaching notebook for this phase lives in `notebooks/calo_pipeline_tutorial.ipynb`.
+It walks through the full pipeline step by step:
+
+1. loading ColliderML calo events
+2. building point views
+3. creating augmented SSL views
+4. running the model
+5. understanding the loss
+6. saving checkpoints and exporting embeddings
+
 ## Development notes
 
-Python formatting is handled with Black and configured in `pyproject.toml` with a line length of 160 characters.
+- Keep functions short and obvious.
+- Prefer direct code over deep abstractions.
+- Keep tests focused on the main behavior only.
+- Use `PLAN.md` for the roadmap and `IMPLEMENTATION_GUIDELINES.md` for the detailed technical target.
+
+Format Python files with:
 
 ```bash
 uv run black .
 ```
-
-Notebook commits are cleaned automatically with `pre-commit` and `nbstripout` so committed `.ipynb` files do not keep cell outputs.
-
-```bash
-uv run pre-commit install
-```
-
-If a notebook with outputs is staged, the hook will strip the outputs, stop the commit once, and ask you to re-stage the cleaned notebook before committing again.
-
-Training logs are tracker-agnostic. By default `scripts/train.py` writes `config.json` and `metrics.jsonl` under a timestamped directory in `runs/`.
-
-To opt into Comet ML as an additional backend, either log in so Comet saves credentials in `~/.comet.config`, or export:
-
-```bash
-export COMET_API_KEY=...
-export COMET_PROJECT_NAME=collider-fm
-export COMET_WORKSPACE=...
-```
-
-Then run training with the default `--log-backend auto` or force Comet with `--log-backend comet`.
-
-For roadmap and cluster-specific guidance:
-
-- `PLAN.md` tracks milestones and open work.
-- `HPC.md` covers cluster usage, SLURM notes, and environment details.
 
 ## References
 

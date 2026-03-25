@@ -1,54 +1,83 @@
-# Project Plan: Panda on ColliderML
+# Project Plan: Simple Calo-Only Panda on ColliderML
 
-This document tracks the implementation roadmap for the project. Mark completed work here as the codebase evolves.
+This roadmap tracks the in-place migration of the existing `collider_fm` repository toward a clean calorimeter-only pretraining pipeline.
+The top priority is clarity.
+The code should stay simple, readable, and easy for undergraduate students to follow.
 
-## Phase 1: Foundation and Initial Implementation
+## Working principles
 
-- **Stage 1: Environment and Data**
-  - [x] Set up a dedicated Python environment using `uv`.
-  - [x] Install core libraries: `pytorch`, `torchvision`, `torchaudio`, `h5py`, `huggingface_hub`, `datasets`.
-  - [x] Write `scripts/download_data.py` to download a subset of the ColliderML dataset from Hugging Face.
-  - [x] Create a PyTorch `Dataset` and `DataLoader` in `src/collider_fm/data.py` to read the HDF5 files.
-  - [x] Implement basic data inspection and visualization to verify the data loader.
+- Prefer small, obvious functions over clever abstractions.
+- Keep the main data path easy to trace from dataset -> point view -> model -> loss -> diagnostics.
+- Avoid unnecessary catches, indirection, and edge-case machinery.
+- Keep only the tests that protect the main behavior.
+- Write docs and notebooks that explain how the pieces fit together.
 
-- **Stage 2: Model Architecture**
-  - [ ] Review the Panda paper and repository (https://github.com/DeepLearnPhysics/Panda) to understand the hierarchical sparse 3D encoder in detail. The `Panda_repo` submodule is available here for reference.
-  - [ ] Implement the core components of the Panda model in `src/collider_fm/model.py`.
-  - [x] Start with a simplified version where needed.
-  - [x] Write unit tests for the model components to ensure correctness.
-  - Progress note: `src/collider_fm/model.py` now has a PTv3-backed point-cloud adapter, simplified student/teacher projection heads, a shared compact-model factory for train, smoke-test, and diagnostics scripts, and lightweight unit coverage. The point-view contract is now centralized in `src/collider_fm/views.py` with a shared grid-size default and consistent derived features. Full paper-parity architecture work is still pending.
+## Phase 1: Simplify the current scaffold
 
-- **Stage 3: Training and Loss Implementation**
-  - [x] Implement the self-distillation loss function described in the paper.
-  - [x] Create `scripts/train.py` to handle the training loop.
-  - [x] Implement basic logging of training and validation loss.
-  - [x] Train the model on a small subset of the data to ensure the training loop runs without errors.
-  - Progress note: point-view construction now lives in `src/collider_fm/views.py`, the GPU smoke test uses `scripts/smoke_test_model.py`, and `scripts/train.py` supports a tiny train and validation run on cached ColliderML hits. `slurm/train_small.slurm` now completes successfully on GPU with `train loss: 7.4539` and `val loss: 6.9485`.
+### Stage 1: Data path
 
-## Phase 2: Scaling and Evaluation
+- [x] Use `uv` for the project environment.
+- [x] Load ColliderML through the Hugging Face `datasets` interface.
+- [x] Add a basic dataset download script.
+- [x] Make `calo_hits` the default and only training input.
+- [x] Remove tracker, particle, and track dependencies from the default runtime path.
+- [x] Keep a simple, stable calo event contract built around coordinates, energy, and detector identity.
 
-- **Stage 4: Evaluation and Refinement**
-  - [x] Create a diagnostics plotting script to visualize raw events, model inputs, per-point backbone features, pooled event embeddings, and prototype outputs.
-  - [ ] Implement evaluation metrics based on the paper's methodology.
-  - [ ] Create `scripts/evaluate.py` to run the evaluation.
-  - [ ] Refine the model and training process based on initial results.
-  - [ ] Experiment with hyperparameters such as learning rate and batch size.
-  - Progress note: `scripts/plot_diagnostics.py` is implemented and the repository already contains saved development diagnostics under `diagnostics/`.
+Progress note: the repo already has a working dataset loader, but the default path is still mixed tracker plus calo. That is the first thing to fix.
 
-- **Stage 5: Scaling Up**
-  - [ ] Modify the data loader to handle the full ColliderML dataset.
-  - [ ] Set up distributed training if necessary, for example with `torch.distributed`.
-  - [ ] Start a long-running training job on the full dataset.
-  - [ ] Implement checkpointing to save and resume training.
+### Stage 2: Point views
 
-- **Stage 6: Analysis and Documentation**
-  - [ ] Analyze the results from the scaled-up training.
-  - [ ] Create visualizations of the learned representations.
-  - [ ] Compare the results to the paper's benchmarks if possible.
-  - [ ] Document the final results and findings.
+- [x] Build one event into a simple calo-only point view in `src/collider_fm/views.py`.
+- [x] Keep the feature contract easy to read and document clearly.
+- [x] Preserve detector identity in a way students can understand.
+- [x] Start with simple global-view augmentations that are geometry-safe.
+- [ ] Add local and masked views only after the base calo path is clear.
 
-## Future Work
+Progress note: the current point-view code is centralized already, which is good. It just needs to stop mixing tracker hits into the representation.
 
-- [ ] Explore different data augmentation techniques.
-- [ ] Experiment with different model architectures or loss functions.
-- [ ] Apply the learned representations to downstream tasks such as jet tagging or particle identification.
+### Stage 3: Model and training loop
+
+- [x] Keep the PTv3-based Panda scaffold as the starting point.
+- [x] Keep the student and EMA teacher structure.
+- [x] Simplify the model interfaces so it is obvious what each method returns.
+- [x] Move the default SSL objective toward point-level training instead of only pooled event embeddings.
+- [ ] Keep the small debug model path for smoke tests.
+- [x] Add checkpoint save and reload to the training loop.
+
+Progress note: the current training loop already runs, but the representation path is still more scaffold than final design.
+
+## Phase 2: Practical diagnostics and usability
+
+### Stage 4: Essential diagnostics
+
+- [x] Keep a saved diagnostics script.
+- [x] Update diagnostics to the calo-only contract.
+- [x] Add simple prototype-usage and embedding-stat summaries.
+- [x] Add frozen-embedding export for later probing.
+- [ ] Keep the plots understandable rather than overly elaborate.
+
+### Stage 5: Teaching materials
+
+- [ ] Write a tutorial notebook that explains the whole pipeline step by step.
+- [ ] Show how raw ColliderML calo data becomes a point view.
+- [ ] Show how the model consumes that point view.
+- [ ] Show one short training step and how the loss is formed.
+- [ ] Show how to inspect saved diagnostics and exported embeddings.
+
+This notebook is a first-class deliverable for this phase, not an afterthought.
+
+## Immediate implementation order
+
+1. Update the codebase to use `calo_hits` only in the default path.
+2. Simplify `src/collider_fm/views.py` around a clean calo-only point-view contract.
+3. Update `scripts/train.py`, `scripts/smoke_test_model.py`, `scripts/inspect_data.py`, and `scripts/plot_diagnostics.py` to match.
+4. Keep only the most useful tests and update them to the new contract.
+5. Add checkpoint save or reload and embedding export.
+6. Write the tutorial notebook.
+
+## Future work
+
+- [ ] Add richer Panda-style local and masked objectives once the base path is simple and solid.
+- [ ] Improve prototype-collapse monitoring if needed.
+- [ ] Reintroduce tracker hits later as a second modality, but only after the calo-only path is stable.
+- [ ] Add distributed training only after the single-GPU version is easy to understand and debug.
