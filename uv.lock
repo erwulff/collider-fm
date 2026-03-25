@@ -350,6 +350,7 @@ dependencies = [
     { name = "torch" },
     { name = "torch-scatter" },
     { name = "torchvision" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
@@ -380,6 +381,7 @@ requires-dist = [
     { name = "torch", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch-scatter" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "tqdm" },
 ]
 
 [package.metadata.requires-dev]

@@ -63,12 +63,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--checkpoint-every-epochs", type=int, default=1)
-    parser.add_argument(
-        "--progress",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Show tqdm progress bars during training and validation.",
-    )
     return parser
 
 
@@ -212,7 +206,6 @@ def run_epoch(
     point_dropout: float,
     teacher_momentum: float,
     phase: str,
-    show_progress: bool,
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch over a bounded number of batches.
 
@@ -235,8 +228,9 @@ def run_epoch(
         dataloader,
         total=max_batches,
         desc=phase,
-        leave=False,
-        disable=not show_progress,
+        leave=True,
+        dynamic_ncols=False,
+        ascii=True,
     )
 
     for batch_index, events in enumerate(progress_bar):
@@ -277,17 +271,11 @@ def run_epoch(
         totals["masked_fraction"] += float(masked_fraction)
         processed_batches += 1
 
-        if show_progress:
-            progress_bar.set_postfix(
-                loss=f"{loss.item():.4f}",
-                entropy=f"{prototype_entropy(usage):.3f}",
-                masked=f"{masked_fraction:.3f}",
-            )
-        else:
-            print(
-                f"{phase} batch {batch_index + 1}: loss={loss.item():.4f} "
-                f"prototype_entropy={prototype_entropy(usage):.4f} masked_fraction={masked_fraction:.3f}"
-            )
+        progress_bar.set_postfix(
+            loss=f"{loss.item():.4f}",
+            entropy=f"{prototype_entropy(usage):.3f}",
+            masked=f"{masked_fraction:.3f}",
+        )
 
     progress_bar.close()
 
@@ -371,7 +359,6 @@ def main() -> None:
                 point_dropout=args.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="train",
-                show_progress=args.progress,
             )
             global_step += train_batches
 
@@ -389,7 +376,6 @@ def main() -> None:
                 point_dropout=args.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="val",
-                show_progress=args.progress,
             )
 
             epoch_time_seconds = time.perf_counter() - epoch_start
