@@ -31,7 +31,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from collider_fm.diagnostics import (
     compute_pca,
-    encode_view,
+    encode_ssl_view,
     load_checkpoint,
     load_events,
     radius,
@@ -39,8 +39,14 @@ from collider_fm.diagnostics import (
     tensor_summary,
     to_numpy,
 )
-from collider_fm.model import create_small_panda_model
-from collider_fm.views import augment_point_view, batch_point_views, build_point_view_from_event
+from collider_fm.view_diagnostics import summarize_ssl_view, summarize_ssl_view_set
+from collider_fm.model import create_small_multimodal_model
+from collider_fm.views import (
+    SSLViewConfig,
+    augment_point_view,
+    build_point_view_from_event,
+    build_ssl_views,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -357,6 +363,50 @@ def plot_batch_summary(views: list[dict[str, torch.Tensor]], path: Path) -> None
     save_figure(fig, path)
 
 
+def plot_ssl_view_composition(view_entries: list[tuple[str, dict[str, Any]]], path: Path) -> None:
+    """Plot selected-versus-hidden point counts for structured SSL views."""
+    labels = [label for label, _ in view_entries]
+    selected_counts = []
+    hidden_counts = []
+    for _, view in view_entries:
+        summary = summarize_ssl_view(view)
+        selected_counts.append(summary["selected_point_count"])
+        hidden_counts.append(summary["hidden_point_count"])
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    positions = np.arange(len(labels))
+    ax.bar(positions, selected_counts, color="tab:green", label="selected")
+    ax.bar(positions, hidden_counts, bottom=selected_counts, color="tab:gray", label="hidden")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylabel("points")
+    ax.set_title("Structured SSL view composition")
+    ax.legend()
+    save_figure(fig, path)
+
+
+def plot_ssl_modality_balance(view_entries: list[tuple[str, dict[str, Any]]], path: Path) -> None:
+    """Plot tracker-versus-calo point counts for structured SSL views."""
+    labels = [label for label, _ in view_entries]
+    tracker_counts = []
+    calo_counts = []
+    for _, view in view_entries:
+        summary = summarize_ssl_view(view)
+        tracker_counts.append(summary["tracker_point_count"])
+        calo_counts.append(summary["calo_point_count"])
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    positions = np.arange(len(labels))
+    ax.bar(positions, tracker_counts, color="tab:blue", label="tracker")
+    ax.bar(positions, calo_counts, bottom=tracker_counts, color="tab:red", label="calo")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylabel("selected points")
+    ax.set_title("Structured SSL modality balance")
+    ax.legend()
+    save_figure(fig, path)
+
+
 def plot_logits(student_probs: list[np.ndarray], teacher_probs: list[np.ndarray], path: Path, top_k: int) -> None:
     """Plot the most active prototype probabilities for one detailed event."""
     stacked = np.vstack(student_probs + teacher_probs)
@@ -480,7 +530,7 @@ def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weigh
         "",
         "This directory contains four plot stages:",
         "1. raw/: one detailed event exactly as emitted by the dataloader",
-        "2. views/: the point-view tensors that go into the model, plus augmentations",
+        "2. views/: the point-view tensors plus structured SSL view composition summaries",
         "3. model/: learned representations and prototype outputs",
         "4. artifacts/: machine-readable summaries for reproducibility",
         "",
@@ -529,6 +579,19 @@ def main() -> None:
         max_tracker_hits=args.max_tracker_hits,
         max_calo_hits=args.max_calo_hits,
     )
+    structured_view_config = SSLViewConfig(
+        teacher_global_views=2,
+        student_global_views=1,
+        student_local_views=2,
+        student_masked_views=1,
+    )
+    detail_ssl_views = build_ssl_views(
+        [detail_event],
+        device=device,
+        max_tracker_hits=args.max_tracker_hits,
+        max_calo_hits=args.max_calo_hits,
+        config=structured_view_config,
+    )
     aug_a = augment_point_view(base_view)
     aug_b = augment_point_view(base_view)
 
@@ -538,6 +601,13 @@ def main() -> None:
     plot_view_signal(base_view, output_dirs["views"] / "event_000_input_signal.png")
     plot_augmentations(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentations.png")
     plot_augmentation_delta(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentation_delta.png")
+    detail_ssl_entries = [
+        (f"{view_type}_{index}", view)
+        for view_type in ("teacher_global", "student_global", "student_local", "student_masked")
+        for index, view in enumerate(detail_ssl_views[view_type])
+    ]
+    plot_ssl_view_composition(detail_ssl_entries, output_dirs["views"] / "event_000_ssl_composition.png")
+    plot_ssl_modality_balance(detail_ssl_entries, output_dirs["views"] / "event_000_ssl_modality_balance.png")
 
     representation_views = [
         build_point_view_from_event(
@@ -548,6 +618,13 @@ def main() -> None:
         )
         for event in representation_events
     ]
+    representation_ssl_views = build_ssl_views(
+        representation_events,
+        device=device,
+        max_tracker_hits=args.max_tracker_hits,
+        max_calo_hits=args.max_calo_hits,
+        config=structured_view_config,
+    )
     plot_batch_summary(representation_views, output_dirs["views"] / "batch_summary.png")
 
     model_artifact: dict[str, Any] = {
@@ -562,16 +639,18 @@ def main() -> None:
             "calo_hits": int(len(detail_event["calo_hits"]["x"])),
             "base_view_coord": tensor_summary(base_view["coord"]),
             "base_view_feat": tensor_summary(base_view["feat"]),
+            "structured_views": summarize_ssl_view_set(detail_ssl_views),
         },
         "representation_sample": {
             "num_events": len(representation_views),
             "tracker_points": [int((view["feat"][:, 5] == 0).sum().item()) for view in representation_views],
             "calo_points": [int((view["feat"][:, 5] == 1).sum().item()) for view in representation_views],
+            "structured_views": summarize_ssl_view_set(representation_ssl_views),
         },
     }
 
     if device.type == "cuda":
-        model = create_small_panda_model(device=device)
+        model = create_small_multimodal_model(device=device, teacher_view_count=structured_view_config.teacher_global_views)
         checkpoint_artifact = None
         if args.checkpoint is not None:
             checkpoint_artifact = load_checkpoint(model, args.checkpoint)
@@ -587,14 +666,26 @@ def main() -> None:
 
         # Reuse the same event with multiple augmentations so the agreement
         # plots reflect view invariance rather than event-to-event variation.
-        detail_base_encoding = encode_view(model, base_view, use_teacher=False)
-        detail_aug_a_student = encode_view(model, aug_a, use_teacher=False)
-        detail_aug_b_student = encode_view(model, aug_b, use_teacher=False)
-        detail_aug_a_teacher = encode_view(model, aug_a, use_teacher=True)
-        detail_aug_b_teacher = encode_view(model, aug_b, use_teacher=True)
+        detail_teacher_views = detail_ssl_views["teacher_global"]
+        detail_student_views = detail_ssl_views["student_global"] + detail_ssl_views["student_local"]
+        if len(detail_teacher_views) < 2:
+            raise ValueError("Diagnostics require at least two teacher global views.")
+        if len(detail_student_views) < 2:
+            raise ValueError("Diagnostics require at least two student views for agreement plots.")
 
-        student_probs = [F.softmax(detail_aug_a_student["logits"][0], dim=-1), F.softmax(detail_aug_b_student["logits"][0], dim=-1)]
-        teacher_probs = [F.softmax(detail_aug_a_teacher["logits"][0], dim=-1), F.softmax(detail_aug_b_teacher["logits"][0], dim=-1)]
+        detail_student_a = encode_ssl_view(model, detail_student_views[0], use_teacher=False)
+        detail_student_b = encode_ssl_view(model, detail_student_views[1], use_teacher=False)
+        detail_teacher_a = encode_ssl_view(model, detail_teacher_views[0], use_teacher=True)
+        detail_teacher_b = encode_ssl_view(model, detail_teacher_views[1], use_teacher=True)
+
+        student_probs = [
+            F.softmax(detail_student_a["logits"][0], dim=-1),
+            F.softmax(detail_student_b["logits"][0], dim=-1),
+        ]
+        teacher_probs = [
+            F.softmax(detail_teacher_a["logits"][0], dim=-1),
+            F.softmax(detail_teacher_b["logits"][0], dim=-1),
+        ]
 
         plot_logits(
             [to_numpy(prob) for prob in student_probs],
@@ -603,21 +694,21 @@ def main() -> None:
             top_k=args.top_k_prototypes,
         )
         plot_view_agreement(
-            detail_base_encoding["pooled"][0],
-            detail_aug_a_student["pooled"][0],
-            detail_aug_b_student["pooled"][0],
+            detail_teacher_a["pooled"][0],
+            detail_student_a["pooled"][0],
+            detail_student_b["pooled"][0],
             student_probs,
             teacher_probs,
             output_dirs["model"] / "event_000_view_agreement.png",
         )
 
-        representation_batch = batch_point_views(representation_views)
-        representation_encoding = encode_view(model, representation_batch, use_teacher=False)
+        representation_teacher_view = representation_ssl_views["teacher_global"][0]
+        representation_encoding = encode_ssl_view(model, representation_teacher_view, use_teacher=True)
         event_labels = [f"event_{index:03d}" for index in range(representation_encoding["pooled"].shape[0])]
         plot_embedding_pca(representation_encoding["pooled"], event_labels, output_dirs["model"] / "batch_embedding_pca.png")
         plot_point_feature_pca(
             representation_encoding["point_features"],
-            representation_batch["feat"][:, 5],
+            representation_encoding["modality_id"],
             output_dirs["model"] / "batch_point_feature_pca.png",
             max_points=args.point_feature_sample_size,
             seed=args.seed,
@@ -626,9 +717,9 @@ def main() -> None:
         model_artifact["model_plots_generated"] = True
         tensor_artifact["detail_event"].update(
             {
-                "base_pooled_embedding": tensor_summary(detail_base_encoding["pooled"]),
-                "student_aug_a_logits": tensor_summary(detail_aug_a_student["logits"]),
-                "teacher_aug_a_logits": tensor_summary(detail_aug_a_teacher["logits"]),
+                "teacher_global_a_pooled": tensor_summary(detail_teacher_a["pooled"]),
+                "student_view_a_logits": tensor_summary(detail_student_a["logits"]),
+                "teacher_view_a_logits": tensor_summary(detail_teacher_a["logits"]),
             }
         )
         tensor_artifact["representation_sample"].update(

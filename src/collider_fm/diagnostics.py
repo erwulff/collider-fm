@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -8,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .data import ColliderMLDataset, collate_fn
-from .model import PandaSelfDistillation, as_point_cloud, mean_pool_features
+from .model import MultimodalPandaSSL, PandaSelfDistillation, as_point_cloud, mean_pool_features
 
 
 def create_dataloader(
@@ -47,8 +48,8 @@ def load_events(
     return next(iter(dataloader))
 
 
-def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[str, Any]:
-    """Load a checkpoint into the model and report key mismatches."""
+def load_checkpoint(model: torch.nn.Module, checkpoint_path: str) -> dict[str, Any]:
+    """Load a checkpoint into a model and report key mismatches."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint
     if isinstance(checkpoint, dict):
@@ -117,10 +118,10 @@ def sample_indices(num_items: int, max_items: int, seed: int) -> np.ndarray:
 @torch.no_grad()
 def encode_view(
     model: PandaSelfDistillation,
-    view: dict[str, torch.Tensor],
+    view: Mapping[str, torch.Tensor],
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Encode one point-view through the student or teacher pathway."""
+    """Encode one legacy point-view through the student or teacher pathway."""
     point = as_point_cloud(view, default_grid_size=model.grid_size)
     backbone = model.teacher_backbone if use_teacher else model.student_backbone
     projector = model.teacher_projector if use_teacher else model.student_projector
@@ -139,4 +140,65 @@ def encode_view(
         "projection": projection,
         "logits": logits,
         "offset": point.offset,
+    }
+
+
+@torch.no_grad()
+def encode_ssl_view(
+    model: MultimodalPandaSSL,
+    view: Mapping[str, Any],
+    use_teacher: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Encode one structured multimodal SSL view through the student or teacher path."""
+    if use_teacher:
+        tracker_stem = model.teacher_tracker_stem
+        calo_stem = model.teacher_calo_stem
+        fusion = model.teacher_fusion
+        backbone = model.teacher_backbone
+        projector = model.teacher_projector
+        predictor = None
+    else:
+        tracker_stem = model.student_tracker_stem
+        calo_stem = model.student_calo_stem
+        fusion = model.student_fusion
+        backbone = model.student_backbone
+        projector = model.student_projector
+        predictor = model.student_predictor
+
+    tracker_continuous = torch.as_tensor(view["tracker_continuous"], dtype=torch.float32)
+    calo_continuous = torch.as_tensor(view["calo_continuous"], dtype=torch.float32, device=tracker_continuous.device)
+    tracker_features = tracker_stem(tracker_continuous, dict(view["tracker_categorical"]))
+    calo_features = calo_stem(calo_continuous, dict(view["calo_categorical"]))
+    fused_features = fusion(
+        tracker_features=tracker_features,
+        calo_features=calo_features,
+        modality_id=torch.as_tensor(view["modality_id"], dtype=torch.long, device=tracker_features.device),
+        tracker_index=view.get("tracker_index"),
+        calo_index=view.get("calo_index"),
+    )
+
+    point = as_point_cloud(
+        {
+            "coord": view["coord"],
+            "feat": fused_features,
+            "offset": view["offset"],
+            "grid_size": view.get("grid_size", model.grid_size),
+        },
+        default_grid_size=model.grid_size,
+    )
+    encoded = backbone(point)
+    pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
+    projection = projector(pooled)
+    if predictor is not None:
+        projection = predictor(projection)
+    projection = F.normalize(projection, dim=-1)
+    logits = model.prototype_head(projection)
+    return {
+        "point_features": encoded.feat,
+        "pooled": pooled,
+        "projection": projection,
+        "logits": logits,
+        "offset": point.offset,
+        "point_id": torch.as_tensor(view["point_id"], dtype=torch.long, device=encoded.feat.device),
+        "modality_id": torch.as_tensor(view["modality_id"], dtype=torch.long, device=encoded.feat.device),
     }

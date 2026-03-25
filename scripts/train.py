@@ -6,12 +6,9 @@ import sys
 import time
 from pathlib import Path
 
-import comet_ml
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-
-del comet_ml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -24,12 +21,12 @@ from collider_fm.experiment_logging import (
     ensure_run_directory,
     write_run_config,
 )
-from collider_fm.model import PandaSelfDistillation, create_small_panda_model
-from collider_fm.views import build_distillation_views
+from collider_fm.model import MultimodalPandaSSL, create_small_multimodal_model
+from collider_fm.views import SSLViewConfig, build_ssl_views, flatten_ssl_view_set
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the simplified ColliderFM self-distillation model.")
+    parser = argparse.ArgumentParser(description="Train the multimodal ColliderFM self-distillation model.")
     parser.add_argument("--train-split", default="train[:8]")
     parser.add_argument("--val-split", default="train[8:10]")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -47,6 +44,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-backend", choices=["none", "jsonl", "auto", "comet"], default="auto")
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--run-name", default=None)
+    parser.add_argument("--teacher-global-views", type=int, default=2)
+    parser.add_argument("--student-global-views", type=int, default=1)
+    parser.add_argument("--student-local-views", type=int, default=2)
+    parser.add_argument("--student-masked-views", type=int, default=1)
+    parser.add_argument("--global-fraction-min", type=float, default=0.6)
+    parser.add_argument("--global-fraction-max", type=float, default=1.0)
+    parser.add_argument("--local-fraction-min", type=float, default=0.2)
+    parser.add_argument("--local-fraction-max", type=float, default=0.5)
+    parser.add_argument("--mask-fraction", type=float, default=0.3)
+    parser.add_argument("--phi-rotation-max", type=float, default=0.2)
+    parser.add_argument("--coord-jitter-scale", type=float, default=0.02)
+    parser.add_argument("--tracker-time-jitter-scale", type=float, default=0.01)
+    parser.add_argument("--calo-energy-jitter-scale", type=float, default=0.01)
     return parser
 
 
@@ -65,12 +75,30 @@ def learning_rate(optimizer: AdamW) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
-def center_norm(model: PandaSelfDistillation) -> float:
+def build_ssl_view_config(args: argparse.Namespace) -> SSLViewConfig:
+    return SSLViewConfig(
+        teacher_global_views=args.teacher_global_views,
+        student_global_views=args.student_global_views,
+        student_local_views=args.student_local_views,
+        student_masked_views=args.student_masked_views,
+        global_fraction_min=args.global_fraction_min,
+        global_fraction_max=args.global_fraction_max,
+        local_fraction_min=args.local_fraction_min,
+        local_fraction_max=args.local_fraction_max,
+        mask_fraction=args.mask_fraction,
+        phi_rotation_max=args.phi_rotation_max,
+        coord_jitter_scale=args.coord_jitter_scale,
+        tracker_time_jitter_scale=args.tracker_time_jitter_scale,
+        calo_energy_jitter_scale=args.calo_energy_jitter_scale,
+    )
+
+
+def center_norm(model: MultimodalPandaSSL) -> float:
     return float(model.center.norm().item())
 
 
 def run_epoch(
-    model: PandaSelfDistillation,
+    model: MultimodalPandaSSL,
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
@@ -78,6 +106,7 @@ def run_epoch(
     teacher_momentum: float,
     max_tracker_hits: int,
     max_calo_hits: int,
+    view_config: SSLViewConfig,
     phase: str,
 ) -> tuple[float, int]:
     is_training = optimizer is not None
@@ -89,22 +118,24 @@ def run_epoch(
         if batch_index >= max_batches:
             break
 
-        views = build_distillation_views(
+        view_set = build_ssl_views(
             events,
             device=device,
             max_tracker_hits=max_tracker_hits,
             max_calo_hits=max_calo_hits,
+            config=view_config,
         )
+        views = flatten_ssl_view_set(view_set)
 
         with torch.set_grad_enabled(is_training):
-            student_outputs, teacher_outputs = model(views)
-            loss = model.distillation_loss(student_outputs, teacher_outputs)
+            outputs = model(views)
+            loss = model.distillation_loss(outputs)
 
         if is_training:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            model.update_center(teacher_outputs)
+            model.update_center(outputs)
             model.update_teacher(momentum=teacher_momentum)
 
         total_loss += loss.item()
@@ -154,12 +185,17 @@ def main() -> None:
             "dataset_type": args.dataset_type,
             "pu_config": args.pu_config,
             "log_backend": args.log_backend,
+            "teacher_global_views": args.teacher_global_views,
+            "student_global_views": args.student_global_views,
+            "student_local_views": args.student_local_views,
+            "student_masked_views": args.student_masked_views,
         }
     )
     print(f"Run directory: {run_dir}")
     print(f"Run config: {config_path}")
 
-    model = create_small_panda_model(device=device)
+    view_config = build_ssl_view_config(args)
+    model = create_small_multimodal_model(device=device, teacher_view_count=args.teacher_global_views)
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params / 1e6:.2f}M")
@@ -179,6 +215,7 @@ def main() -> None:
                 teacher_momentum=args.teacher_momentum,
                 max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
+                view_config=view_config,
                 phase="train",
             )
             global_step += train_batches
@@ -191,6 +228,7 @@ def main() -> None:
                 teacher_momentum=args.teacher_momentum,
                 max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
+                view_config=view_config,
                 phase="val",
             )
             epoch_time_seconds = time.perf_counter() - epoch_start

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
 import torch.nn as nn
@@ -9,6 +10,7 @@ import torch.nn.functional as F
 
 from ._panda.model_base import PointTransformerV3
 from ._panda.structure import Point
+from .stems import CaloStem, ModalityFusion, TrackerStem
 from .views import DEFAULT_POINT_GRID_SIZE, PointView
 
 
@@ -105,6 +107,261 @@ class PandaEncoderBackbone(nn.Module):
 
     def forward(self, point: Any) -> Any:
         return self.backbone(point, upcast=False)
+
+
+class DistillationOutputs(NamedTuple):
+    student_logits: list[torch.Tensor]
+    teacher_logits: list[torch.Tensor]
+    student_point_features: list[torch.Tensor]
+    teacher_point_features: list[torch.Tensor]
+    student_point_ids: list[torch.Tensor]
+    teacher_point_ids: list[torch.Tensor]
+
+
+class MultimodalPandaSSL(nn.Module):
+    """Panda-style SSL wrapper that keeps tracker and calo inputs separate until fusion."""
+
+    def __init__(
+        self,
+        tracker_stem: TrackerStem,
+        calo_stem: CaloStem,
+        num_prototypes: int = 4096,
+        projection_dim: int = 256,
+        prediction_dim: int = 256,
+        temp_student: float = 0.1,
+        temp_teacher: float = 0.04,
+        center_momentum: float = 0.9,
+        teacher_view_count: int = 2,
+        grid_size: float = DEFAULT_POINT_GRID_SIZE,
+        backbone_cls: type[nn.Module] = PandaEncoderBackbone,
+        backbone_kwargs: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__()
+        if tracker_stem.output_dim != calo_stem.output_dim:
+            raise ValueError("Tracker and calo stems must project to the same feature width.")
+        if teacher_view_count < 2:
+            raise ValueError("teacher_view_count must be at least 2.")
+
+        stem_dim = tracker_stem.output_dim
+        default_backbone_kwargs = {
+            "in_channels": stem_dim,
+            "order": ("z", "z-trans"),
+            "stride": (2, 2, 2, 2),
+            "enc_depths": (2, 2, 2, 6, 2),
+            "enc_channels": (stem_dim, stem_dim * 2, stem_dim * 4, stem_dim * 8, stem_dim * 16),
+            "enc_num_head": (
+                max(1, stem_dim // 16),
+                max(1, stem_dim // 8),
+                max(1, stem_dim // 4),
+                max(1, stem_dim // 2),
+                max(1, stem_dim),
+            ),
+            "enc_patch_size": (48, 48, 48, 48, 48),
+            "enc_mode": True,
+            "enable_flash": False,
+        }
+        if backbone_kwargs is not None:
+            default_backbone_kwargs.update(dict(backbone_kwargs))
+
+        backbone_dim = default_backbone_kwargs["enc_channels"][-1]
+        self.grid_size = grid_size
+        self.temp_student = temp_student
+        self.temp_teacher = temp_teacher
+        self.center_momentum = center_momentum
+        self.teacher_view_count = teacher_view_count
+
+        self.student_tracker_stem = tracker_stem
+        self.student_calo_stem = calo_stem
+        self.student_fusion = ModalityFusion(feature_dim=stem_dim)
+        self.teacher_tracker_stem = copy.deepcopy(tracker_stem)
+        self.teacher_calo_stem = copy.deepcopy(calo_stem)
+        self.teacher_fusion = copy.deepcopy(self.student_fusion)
+
+        self.student_backbone = backbone_cls(**default_backbone_kwargs)
+        self.teacher_backbone = backbone_cls(**default_backbone_kwargs)
+
+        self.student_projector = _build_mlp(backbone_dim, backbone_dim, projection_dim)
+        self.teacher_projector = _build_mlp(backbone_dim, backbone_dim, projection_dim)
+        self.student_predictor = _build_mlp(projection_dim, prediction_dim, projection_dim)
+        self.prototype_head = nn.Linear(projection_dim, num_prototypes, bias=False)
+
+        self.teacher_backbone.load_state_dict(self.student_backbone.state_dict())
+        self.teacher_projector.load_state_dict(self.student_projector.state_dict())
+        for student_module, teacher_module in (
+            (self.student_tracker_stem, self.teacher_tracker_stem),
+            (self.student_calo_stem, self.teacher_calo_stem),
+            (self.student_fusion, self.teacher_fusion),
+        ):
+            teacher_module.load_state_dict(student_module.state_dict())
+
+        for module in (
+            self.teacher_tracker_stem,
+            self.teacher_calo_stem,
+            self.teacher_fusion,
+            self.teacher_backbone,
+            self.teacher_projector,
+        ):
+            for parameter in module.parameters():
+                parameter.requires_grad = False
+
+        self.register_buffer("center", torch.zeros(1, num_prototypes))
+
+    def _encode_view(
+        self,
+        view: Mapping[str, Any],
+        tracker_stem: TrackerStem,
+        calo_stem: CaloStem,
+        fusion: ModalityFusion,
+        backbone: nn.Module,
+        projector: nn.Module,
+        predictor: nn.Module | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        required_keys = {
+            "coord",
+            "tracker_continuous",
+            "calo_continuous",
+            "tracker_categorical",
+            "calo_categorical",
+            "modality_id",
+            "point_id",
+            "offset",
+        }
+        missing_keys = required_keys.difference(view.keys())
+        if missing_keys:
+            missing = ", ".join(sorted(missing_keys))
+            raise KeyError(f"Multimodal view is missing required keys: {missing}.")
+
+        tracker_continuous = torch.as_tensor(view["tracker_continuous"], dtype=torch.float32)
+        calo_continuous = torch.as_tensor(view["calo_continuous"], dtype=torch.float32, device=tracker_continuous.device)
+        tracker_features = tracker_stem(tracker_continuous, dict(view["tracker_categorical"]))
+        calo_features = calo_stem(calo_continuous, dict(view["calo_categorical"]))
+        fused_features = fusion(
+            tracker_features=tracker_features,
+            calo_features=calo_features,
+            modality_id=torch.as_tensor(view["modality_id"], dtype=torch.long, device=tracker_features.device),
+            tracker_index=view.get("tracker_index"),
+            calo_index=view.get("calo_index"),
+        )
+
+        point = as_point_cloud(
+            {
+                "coord": view["coord"],
+                "feat": fused_features,
+                "offset": view["offset"],
+                "grid_size": view.get("grid_size", self.grid_size),
+            },
+            default_grid_size=self.grid_size,
+        )
+        encoded = backbone(point)
+        pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
+        projection = projector(pooled)
+        if predictor is not None:
+            projection = predictor(projection)
+        projection = F.normalize(projection, dim=-1)
+        logits = self.prototype_head(projection)
+        point_ids = torch.as_tensor(view["point_id"], dtype=torch.long, device=encoded.feat.device)
+        return logits, encoded.feat, point_ids
+
+    def forward(self, views: Sequence[Mapping[str, Any]]) -> DistillationOutputs:
+        if len(views) < 2:
+            raise ValueError("Self-distillation requires at least two views.")
+        if self.teacher_view_count > len(views):
+            raise ValueError("teacher_view_count cannot exceed the number of provided views.")
+
+        student_encoded = [
+            self._encode_view(
+                view,
+                self.student_tracker_stem,
+                self.student_calo_stem,
+                self.student_fusion,
+                self.student_backbone,
+                self.student_projector,
+                self.student_predictor,
+            )
+            for view in views
+        ]
+        with torch.no_grad():
+            teacher_encoded = [
+                self._encode_view(
+                    view,
+                    self.teacher_tracker_stem,
+                    self.teacher_calo_stem,
+                    self.teacher_fusion,
+                    self.teacher_backbone,
+                    self.teacher_projector,
+                )
+                for view in views[: self.teacher_view_count]
+            ]
+
+        return DistillationOutputs(
+            student_logits=[encoded[0] for encoded in student_encoded],
+            teacher_logits=[encoded[0] for encoded in teacher_encoded],
+            student_point_features=[encoded[1] for encoded in student_encoded],
+            teacher_point_features=[encoded[1] for encoded in teacher_encoded],
+            student_point_ids=[encoded[2] for encoded in student_encoded],
+            teacher_point_ids=[encoded[2] for encoded in teacher_encoded],
+        )
+
+    def distillation_loss(
+        self,
+        student_outputs: Sequence[torch.Tensor] | DistillationOutputs,
+        teacher_outputs: Sequence[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        if isinstance(student_outputs, DistillationOutputs):
+            student_logits = student_outputs.student_logits
+            teacher_logits = student_outputs.teacher_logits
+        else:
+            if teacher_outputs is None:
+                raise ValueError("teacher_outputs must be provided when passing raw student logits.")
+            student_logits = student_outputs
+            teacher_logits = teacher_outputs
+
+        if not student_logits or not teacher_logits:
+            raise ValueError("Student and teacher outputs must both be non-empty.")
+
+        total_loss = student_logits[0].new_tensor(0.0)
+        num_terms = 0
+        for teacher_index, teacher_logit in enumerate(teacher_logits):
+            for student_index, student_logit in enumerate(student_logits):
+                if student_index == teacher_index:
+                    continue
+                total_loss = total_loss + panda_loss(
+                    student_logit,
+                    teacher_logit.detach(),
+                    self.center,
+                    self.temp_student,
+                    self.temp_teacher,
+                )
+                num_terms += 1
+
+        if num_terms == 0:
+            raise ValueError("Need at least one non-matching student/teacher pair for distillation.")
+        return total_loss / num_terms
+
+    @torch.no_grad()
+    def update_teacher(self, momentum: float) -> None:
+        if not 0.0 <= momentum <= 1.0:
+            raise ValueError("Momentum must be between 0 and 1.")
+
+        module_pairs = (
+            (self.student_tracker_stem, self.teacher_tracker_stem),
+            (self.student_calo_stem, self.teacher_calo_stem),
+            (self.student_fusion, self.teacher_fusion),
+            (self.student_backbone, self.teacher_backbone),
+            (self.student_projector, self.teacher_projector),
+        )
+        for student_module, teacher_module in module_pairs:
+            for student_param, teacher_param in zip(student_module.parameters(), teacher_module.parameters()):
+                teacher_param.data.mul_(momentum).add_(student_param.data, alpha=1.0 - momentum)
+
+    @torch.no_grad()
+    def update_center(self, teacher_outputs: Sequence[torch.Tensor] | DistillationOutputs) -> None:
+        teacher_logits = teacher_outputs.teacher_logits if isinstance(teacher_outputs, DistillationOutputs) else teacher_outputs
+        if not teacher_logits:
+            raise ValueError("Teacher outputs must be non-empty.")
+
+        batch_center = torch.cat(list(teacher_logits), dim=0).mean(dim=0, keepdim=True)
+        self.center.mul_(self.center_momentum).add_(batch_center, alpha=1.0 - self.center_momentum)
 
 
 class PandaSelfDistillation(nn.Module):
@@ -263,6 +520,52 @@ def create_small_panda_model(
         num_prototypes=32,
         projection_dim=8,
         prediction_dim=16,
+        backbone_cls=backbone_cls,
+        backbone_kwargs=resolved_backbone_kwargs,
+    )
+    if device is not None:
+        model = model.to(device)
+    return model
+
+
+def create_small_multimodal_model(
+    device: torch.device | None = None,
+    backbone_cls: type[nn.Module] = PandaEncoderBackbone,
+    backbone_kwargs: Mapping[str, Any] | None = None,
+    teacher_view_count: int = 2,
+    tracker_detector_vocab: int = 16,
+    tracker_volume_vocab: int = 64,
+    tracker_layer_vocab: int = 64,
+    tracker_surface_vocab: int | None = 128,
+    calo_subsystem_vocab: int = 16,
+) -> MultimodalPandaSSL:
+    """Construct the compact multimodal model used during early development."""
+    resolved_backbone_kwargs = dict(SMALL_MODEL_BACKBONE_KWARGS)
+    if backbone_kwargs is not None:
+        resolved_backbone_kwargs.update(dict(backbone_kwargs))
+
+    tracker_stem = TrackerStem(
+        continuous_dim=4,
+        embed_dim=8,
+        detector_vocab=tracker_detector_vocab,
+        volume_vocab=tracker_volume_vocab,
+        layer_vocab=tracker_layer_vocab,
+        surface_vocab=tracker_surface_vocab,
+        output_dim=8,
+    )
+    calo_stem = CaloStem(
+        continuous_dim=4,
+        embed_dim=8,
+        subsystem_vocab=calo_subsystem_vocab,
+        output_dim=8,
+    )
+    model = MultimodalPandaSSL(
+        tracker_stem=tracker_stem,
+        calo_stem=calo_stem,
+        num_prototypes=32,
+        projection_dim=8,
+        prediction_dim=16,
+        teacher_view_count=teacher_view_count,
         backbone_cls=backbone_cls,
         backbone_kwargs=resolved_backbone_kwargs,
     )

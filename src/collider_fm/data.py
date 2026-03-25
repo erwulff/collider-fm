@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, TypedDict
 
 import torch
 from datasets import load_dataset
@@ -9,7 +10,38 @@ from torch.utils.data import DataLoader, Dataset
 DEFAULT_OBJECT_TYPES = ("tracker_hits", "calo_hits")
 
 
-def _convert_list_value(value):
+class RawTrackerHits(TypedDict, total=False):
+    x: torch.Tensor
+    y: torch.Tensor
+    z: torch.Tensor
+    time: torch.Tensor
+    detector: torch.Tensor
+    volume_id: torch.Tensor
+    layer_id: torch.Tensor
+    surface_id: torch.Tensor
+    true_x: torch.Tensor
+    true_y: torch.Tensor
+    true_z: torch.Tensor
+    particle_id: torch.Tensor
+
+
+class RawCaloHits(TypedDict, total=False):
+    x: torch.Tensor
+    y: torch.Tensor
+    z: torch.Tensor
+    total_energy: torch.Tensor
+    detector: torch.Tensor
+    contrib_particle_ids: list[list[int]]
+    contrib_energies: list[list[float]]
+    contrib_times: list[list[float]]
+
+
+class RawColliderEvent(TypedDict):
+    tracker_hits: RawTrackerHits
+    calo_hits: RawCaloHits
+
+
+def _convert_list_value(value: list[Any]) -> Any:
     if len(value) > 0 and isinstance(value[0], list):
         return value
 
@@ -56,11 +88,11 @@ class ColliderMLDataset(Dataset):
                     f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
                 )
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_events
 
-    def __getitem__(self, idx):
-        event = {}
+    def __getitem__(self, idx: int) -> RawColliderEvent:
+        event: dict[str, dict[str, Any]] = {}
         for obj_type, ds in self.datasets.items():
             # Get the row (event) from the dataset
             row = ds[idx]
@@ -75,7 +107,7 @@ class ColliderMLDataset(Dataset):
 
             event[obj_type] = processed_row
 
-        return event
+        return event  # type: ignore[return-value]
 
 
 def collate_fn(batch):
