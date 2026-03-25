@@ -1,44 +1,23 @@
 # HPC resources and SLURM
 
-This project is developed on an HPC cluster. Use this document for cluster-specific setup notes, resource references, and SLURM usage.
+This project is developed on an HPC cluster.
+Use this document for cluster-specific setup notes and the recommended SLURM workflow.
 
 ## General guidance
 
 - Prefer SLURM jobs for heavy downloads, dependency builds, GPU validation, and training runs.
 - Write SLURM logs to `logs_slurm/`.
-- Avoid requesting more CPUs or memory than needed, especially on shared GPU partitions.
+- Keep interactive terminal work lightweight.
 
 ## uv on the cluster
 
-The cluster provides a `uv` module starting with `modules/2.4`.
+The cluster provides a `uv` module:
 
 ```bash
 module load uv
 ```
 
-The module:
-
-- sets `UV_CACHE_DIR=$HOME/.cache/uv`
-- appends its own `uv` binary to `PATH` instead of prepending it
-
-That means a user-installed `uv` can still stay first in `PATH` while using the cache configuration provided by the module.
-
-After syncing dependencies, format Python files with:
-
-```bash
-uv run black .
-```
-
-## Project-specific cluster notes
-
-- The documented Hugging Face cache location for this project is `/mnt/ceph/users/ewulff/data/hf`.
-- Heavy dataset download and GPU validation workflows are intended to run through scripts in `slurm/`.
-- Some packages such as `torch-scatter` may need to build on compute nodes instead of the login node.
-- Optional Comet ML logging for training runs can be enabled either through a saved `~/.comet.config` login or by exporting `COMET_API_KEY`, `COMET_PROJECT_NAME`, and `COMET_WORKSPACE` before launching the job.
-
-## Recommended job order
-
-For a fresh environment on the cluster, use this sequence:
+The documented setup flow is:
 
 ```bash
 sbatch slurm/create_uv_venv.slurm
@@ -48,95 +27,66 @@ sbatch slurm/test_model.slurm
 sbatch slurm/train_small.slurm
 ```
 
-Runtime jobs that need the prepared environment now source `slurm/load_env.sh`, which standardizes the module stack and fails quickly if `.venv` has not been created yet.
+Runtime jobs source `slurm/load_env.sh`, which loads modules and activates `.venv`.
 
-The smoke test in `scripts/smoke_test_model.py` now expects cached ColliderML data by default. Use `--allow-synthetic-fallback` only when you want a CUDA-only synthetic check rather than a real data-path validation.
+## Project-specific notes
 
-## Example SBATCH directives
+- The Hugging Face cache location is `/mnt/ceph/users/ewulff/data/hf`.
+- The current PTv3 plus spconv stack is effectively GPU-only for model execution.
+- Optional Comet ML logging can be enabled through `~/.comet.config` or the standard `COMET_*` environment variables.
 
-Example 1:
+## Main SLURM jobs
 
-```bash
-#SBATCH -t 2:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpuxl
-#SBATCH --reservation=rocky9
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=96
-#SBATCH --constraint=h100
-```
+- `slurm/create_uv_venv.slurm`
+  - creates the `.venv`
+  - runs `uv sync`
+- `slurm/install_deps.slurm`
+  - reinstalls GPU-sensitive packages on a compute node
+- `slurm/download.slurm`
+  - downloads ColliderML calorimeter tables
+- `slurm/test_model.slurm`
+  - runs the smoke test on a GPU node
+- `slurm/train_small.slurm`
+  - runs the current SSL baseline
 
-Example 2:
+Both runtime jobs now source `slurm/load_env.sh` so the environment setup is shared in one place.
 
-```bash
-#SBATCH -t 168:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpu
-#SBATCH --gpus-per-node=8
-#SBATCH --cpus-per-task=64
-#SBATCH --constraint=h100
-```
+## Current Monday baseline job
 
-Example 3:
+`slurm/train_small.slurm` runs the current reference baseline:
 
-```bash
-#SBATCH -t 2:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p gpu
-#SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=64
-#SBATCH --constraint=a100-80gb&sxm4
-```
+- 20 epochs
+- 100 train batches per epoch
+- 20 validation batches per epoch
+- `max_calo_hits = 256`
+- local views enabled with `local_fraction = 0.5`
+- masked views enabled with `mask_fraction = 0.3`
+- tqdm progress reporting in the SLURM logs
+- default run name `monday_ssl_baseline`
 
-Example 4:
+Submit it with:
 
 ```bash
-#SBATCH -t 24:00:00
-#SBATCH -N 1
-#SBATCH --tasks-per-node=1
-#SBATCH -p genx
-#SBATCH --cpus-per-task=12
+sbatch slurm/train_small.slurm
 ```
 
-## Compute node reference
+Monitor it with:
 
-### CPU partitions
+```bash
+squeue --me
+tail -f logs_slurm/log_train_ssl_baseline_<jobid>.out
+tail -f logs_slurm/log_train_ssl_baseline_<jobid>.err
+```
 
-| Nodes | CPU type | Cores | Memory | Notes |
-| --- | --- | --- | --- | --- |
-| 432 | genoa | 96 | 1.5 TB | `-C genoa` |
-| 216 | icelake | 64 | 1 TB | `-C icelake` |
-| 640 | rome | 128 | 1 TB | `-C rome` |
-| 4 | cascadelake/cooperlake | 96-192 | 3-6 TB | `-p mem` |
+## Output locations
 
-### GPU partitions
+- training outputs: `runs/<run-name>/`
+- detailed diagnostics: `diagnostics/<name>/`
+- SLURM logs: `logs_slurm/`
 
-| Nodes | GPU | CPU cores | Memory | Example SLURM flags |
-| --- | --- | --- | --- | --- |
-| 15 | 8x RTX6000Pro Blackwell-96B | 144 | 1 TB | `-p gpu -C rtxblackwell --reservation=rocky9` |
-| 24 | 8x H200-144GB | 96 | 2 TB | `-p gpuxl -C h200 --reservation=rocky9` |
-| 24 | 4x H100-94GB | 96 | 1.5 TB | `-p gpuxl -C h100 --reservation=rocky9` |
-| 18 | 8x H100-80GB | 64 | 1 TB | `-C h100` |
-| 36 | 4x A100-80GB | 64 | 1 TB | `-C a100-80gb` |
-| 36 | 4x A100-40GB | 64 | 1 TB | `-C a100-40gb` |
-| 6 | 4x V100-32GB | 36 | 768 GB | `-C v100` |
+These output directories are local generated artifacts and are ignored by git.
 
-## GPU usage notes
+## Practical note
 
-- CoreSite, NJ hosts the Blackwell, H200, H100, and A100 systems.
-- FI hosts the V100 systems.
-- On non-exclusive partitions, avoid over-requesting system memory per GPU or cores per GPU.
-
-Reference values:
-
-| Node type | Constraint or partition | Max cores per GPU | Max system memory per GPU |
-| --- | --- | --- | --- |
-| Quad A100-40GB | `-C a100-40gb` | 16 | 256 GB |
-| Quad A100-80GB | `-C a100-80gb` | 16 | 256 GB |
-| Octo H100-80GB | `-C h100` | 8 | 128 GB |
-| Quad H100-94GB | `-p gpuxl` | 24 | 384 GB |
-| Octo H200-141GB | `-p gpup -C h200` | 12 | 256 GB |
-| Octo H200-144GB | `-p gpu -C rtxblackwell --reservation=rocky9` | 18 | 125 GB |
+If you rerun the same named training job, `metrics.jsonl` may accumulate multiple runs in the same directory.
+`scripts/plot_training_run.py` already handles this by plotting only the last monotonic run segment, but unique run names are still cleaner when comparing experiments.

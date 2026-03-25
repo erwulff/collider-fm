@@ -1,35 +1,58 @@
 # Collider Foundation Model
 
-Collider Foundation Model is a small research codebase for learning reusable representations from collider calorimeter data.
-The current phase is intentionally narrow and simple: calo-only self-distillation on ColliderML Release 1.
+Collider Foundation Model is a small research codebase for self-supervised learning on collider calorimeter data.
+The current repository state is a clean, calo-only prototype built around ColliderML Release 1 and a small Panda-style student/teacher model.
 
-## Current focus
+## What is implemented now
 
-- Use only `calo_hits` from ColliderML.
-- Build one event into a sparse 3D point cloud.
-- Train a small Panda-style student/teacher model.
-- Include simple local and masked student views without making the code hard to follow.
-- Keep the code easy to read and easy to teach.
+- `calo_hits` is the default and only input modality in the training path.
+- Each event is converted into a sparse 3D point cloud with simple per-point features.
+- The model trains with two global teacher views and optional local and masked student views.
+- Training saves checkpoints and per-epoch metrics in `runs/<run-name>/`.
+- Diagnostics and run-plot scripts produce presentation-ready SSL figures.
+- The repository includes a teaching notebook that explains the full pipeline step by step.
 
-The main data path is:
+The main path through the code is:
 
-`ColliderMLDataset` -> `build_point_view_from_event` -> `build_distillation_views` -> `PandaSelfDistillation` -> diagnostics or exported embeddings.
+`ColliderMLDataset` -> `build_point_view_from_event` -> `build_distillation_views` -> `PandaSelfDistillation` -> checkpoints, diagnostics, and exported embeddings.
 
 ## Repository layout
 
 ```text
 /
 ├── src/collider_fm/            # Core package code
-├── tests/                      # Small focused tests
-├── scripts/                    # Download, inspect, train, diagnostics, export
-├── notebooks/                  # Tutorial and exploration notebooks
+├── scripts/                    # Download, inspect, train, and plotting utilities
+├── tests/                      # Focused regression tests
+├── notebooks/                  # Tutorial and diagnostics notebooks
 ├── slurm/                      # Cluster job scripts
 ├── Panda_repo/                 # Panda reference submodule
-├── pyproject.toml              # Project metadata and dependencies
-├── PLAN.md                     # Implementation roadmap
+├── PLAN.md                     # Short roadmap
 ├── IMPLEMENTATION_GUIDELINES.md
-└── HPC.md                      # Cluster notes
+├── HPC.md                      # Cluster-specific notes
+├── pyproject.toml              # Python dependencies and tool config
+└── main.py                     # Tiny entrypoint placeholder
 ```
+
+## Current data and model contract
+
+This phase uses only ColliderML `calo_hits`.
+
+Each point keeps:
+
+- coordinates: `x`, `y`, `z`
+- deposited energy
+- a simple ECal or HCal flag
+
+The point-view representation in `src/collider_fm/views.py` also keeps two simple boolean masks:
+
+- `hidden_mask`: points whose input energy is hidden from the student
+- `loss_mask`: points that contribute to the student loss
+
+That makes the current SSL setup easy to follow:
+
+- global views: nothing hidden, all points used in the loss
+- local views: points outside one neighborhood are hidden and ignored in the loss
+- masked views: randomly hidden points are used in the loss
 
 ## Environment setup
 
@@ -42,7 +65,8 @@ source .venv/bin/activate
 uv sync --dev
 ```
 
-Some packages such as `spconv` and `torch-scatter` may need to be installed on compute nodes.
+Some packages such as `spconv` and `torch-scatter` may need to be installed on compute nodes rather than the login node.
+See `HPC.md` for the recommended SLURM flow.
 
 ## Dataset
 
@@ -51,19 +75,11 @@ The project uses ColliderML Release 1:
 - Hugging Face: https://huggingface.co/datasets/ColliderML/ColliderML
 - Project site: https://colliderml.github.io/
 
-This phase uses only `calo_hits`.
-
-Each point keeps:
-
-- 3D coordinates: `x`, `y`, `z`
-- deposited energy
-- a simple calorimeter type flag: ECal or HCal
-
-On this cluster, the documented Hugging Face cache location is `/mnt/ceph/users/ewulff/data/hf`.
+The documented cache location on this cluster is `/mnt/ceph/users/ewulff/data/hf`.
 
 ## Common workflows
 
-Download the calo-hit subset:
+Download the calo-hit tables:
 
 ```bash
 uv run python scripts/download_data.py --pu-config pu0 --num-proc 12
@@ -81,22 +97,28 @@ Run the GPU smoke test:
 sbatch slurm/test_model.slurm
 ```
 
-Run a tiny tracked training job:
+Run a tiny local training sanity check on a GPU node:
 
 ```bash
-uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1
+uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1 --add-local-view --add-masked-view
 ```
 
-Generate saved diagnostics:
+Run the current SSL baseline through SLURM:
 
 ```bash
-uv run python scripts/plot_diagnostics.py --detail-split train[0:1] --representation-split train[:10]
+sbatch slurm/train_small.slurm
 ```
 
-Plot one finished training run:
+Plot a finished training run:
 
 ```bash
-uv run python scripts/plot_training_run.py runs/monday_ssl_baseline
+uv run python scripts/plot_training_run.py runs/<run-name>
+```
+
+Generate richer checkpoint diagnostics:
+
+```bash
+uv run python scripts/plot_diagnostics.py --checkpoint runs/<run-name>/checkpoint.pt --output-dir diagnostics/<name>
 ```
 
 Export frozen embeddings from a checkpoint:
@@ -105,29 +127,52 @@ Export frozen embeddings from a checkpoint:
 uv run python scripts/export_embeddings.py --checkpoint runs/<run-name>/checkpoint.pt
 ```
 
-## Tutorial notebook
+## Where outputs go
 
-The teaching notebook for this phase lives in `notebooks/calo_pipeline_tutorial.ipynb`.
-It walks through the full pipeline step by step:
+- `runs/<run-name>/`
+  - `config.json`
+  - `metrics.jsonl`
+  - `checkpoint.pt`
+  - `plots/` from `scripts/plot_training_run.py`
+- `diagnostics/<name>/`
+  - saved plots and summaries from `scripts/plot_diagnostics.py`
 
-1. loading ColliderML calo events
+Generated outputs are ignored by git.
+
+## Teaching notebook
+
+The teaching notebook for the current pipeline is `notebooks/calo_pipeline_tutorial.ipynb`.
+It explains:
+
+1. loading raw ColliderML calo events
 2. building point views
-3. creating augmented, local, and masked SSL views
+3. creating global, local, and masked views
 4. running the model
-5. understanding the loss
+5. computing the loss
 6. saving checkpoints and exporting embeddings
+
+`notebooks/plot_diagnostics_explorer.ipynb` is a second notebook for interactive diagnostics work.
 
 ## Development notes
 
-- Keep functions short and obvious.
-- Prefer direct code over deep abstractions.
-- Keep tests focused on the main behavior only.
-- Use `PLAN.md` for the roadmap and `IMPLEMENTATION_GUIDELINES.md` for the detailed technical target.
+- Keep functions short and direct.
+- Prefer explicit data flow over deep abstractions.
+- Keep tests focused on core behavior.
+- Prefer SLURM for heavy downloads or GPU runs.
+- Keep markdown files aligned with the real repository state.
+
+Generated output folders such as `runs/`, `diagnostics/`, and one-off event images are local artifacts and should stay out of git.
 
 Format Python files with:
 
 ```bash
 uv run black .
+```
+
+Run the test suite with:
+
+```bash
+uv run python -m unittest discover -s tests
 ```
 
 ## References

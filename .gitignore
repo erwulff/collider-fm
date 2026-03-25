@@ -11,3 +11,11 @@ wheels/
 
 # SLURM logs
 logs_slurm/*
+
+# Generated outputs
+runs/
+diagnostics/
+event_*_calo.png
+
+# Notebook cache
+.ipynb_checkpoints/

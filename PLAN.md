@@ -1,91 +1,59 @@
 # Project Plan: Simple Calo-Only Panda on ColliderML
 
-This roadmap tracks the in-place migration of the existing `collider_fm` repository toward a clean calorimeter-only pretraining pipeline.
-The top priority is clarity.
-The code should stay simple, readable, and easy for undergraduate students to follow.
+This roadmap tracks the current in-place development of the `collider_fm` repository.
+The main priority is still clarity: the code should stay simple, readable, and teachable.
+
+## Current state
+
+- [x] Use ColliderML through the Hugging Face `datasets` interface.
+- [x] Keep `calo_hits` as the default and only training input.
+- [x] Build a simple point-view contract around coordinates, energy, and ECal/HCal identity.
+- [x] Support global, local, and masked student views while keeping point order fixed.
+- [x] Train a small Panda-style student/teacher model with checkpoint save or reload.
+- [x] Export frozen embeddings from a checkpoint.
+- [x] Save diagnostics plots from a checkpoint.
+- [x] Save training-run plots from `metrics.jsonl`.
+- [x] Provide a step-by-step tutorial notebook.
 
 ## Working principles
 
 - Prefer small, obvious functions over clever abstractions.
-- Keep the main data path easy to trace from dataset -> point view -> model -> loss -> diagnostics.
+- Keep the data path easy to trace from dataset -> point view -> model -> loss -> diagnostics.
 - Avoid unnecessary catches, indirection, and edge-case machinery.
-- Keep only the tests that protect the main behavior.
-- Write docs and notebooks that explain how the pieces fit together.
+- Keep tests focused on the main behavior.
+- Keep docs aligned with the real repository state.
 
-## Phase 1: Simplify the current scaffold
+## What is already working
 
-### Stage 1: Data path
+- [x] A stable SLURM training baseline in `slurm/train_small.slurm`.
+- [x] A run-plotting script in `scripts/plot_training_run.py`.
+- [x] A richer checkpoint diagnostics script in `scripts/plot_diagnostics.py`.
+- [x] Progress reporting in training with `tqdm`.
 
-- [x] Use `uv` for the project environment.
-- [x] Load ColliderML through the Hugging Face `datasets` interface.
-- [x] Add a basic dataset download script.
-- [x] Make `calo_hits` the default and only training input.
-- [x] Remove tracker, particle, and track dependencies from the default runtime path.
-- [x] Keep a simple, stable calo event contract built around coordinates, energy, and detector identity.
+## Next technical priorities
 
-Progress note: the repo already has a working dataset loader, but the default path is still mixed tracker plus calo. That is the first thing to fix.
+### 1. Improve SSL validation quality
 
-### Stage 2: Point views
+- [ ] Make the same-event vs different-event similarity gap more informative.
+- [ ] Add one or two extra non-collapse indicators that stay simple to explain.
+- [ ] Review prototype usage and increase diversity if needed.
 
-- [x] Build one event into a simple calo-only point view in `src/collider_fm/views.py`.
-- [x] Keep the feature contract easy to read and document clearly.
-- [x] Preserve detector identity in a way students can understand.
-- [x] Start with simple global-view augmentations that are geometry-safe.
-- [~] Add local and masked views only after the base calo path is clear.
+### 2. Improve training stability
 
-Progress note: the current point-view code is centralized already, which is good. It now includes simple local and masked view paths that keep point order fixed so the training logic stays easy to understand.
+- [ ] Decide whether the current baseline should stop earlier than 20 epochs.
+- [ ] Tune view fractions, temperatures, or learning rate only if the plots suggest a clear issue.
+- [ ] Consider a cleaner run-name policy so repeated runs do not append to the same metrics file.
 
-### Stage 3: Model and training loop
+### 3. Keep the repo easy to understand
 
-- [x] Keep the PTv3-based Panda scaffold as the starting point.
-- [x] Keep the student and EMA teacher structure.
-- [x] Simplify the model interfaces so it is obvious what each method returns.
-- [x] Move the default SSL objective toward point-level training instead of only pooled event embeddings.
-- [ ] Keep the small debug model path for smoke tests.
-- [x] Add checkpoint save and reload to the training loop.
+- [ ] Split large files only if doing so makes the teaching story simpler.
+- [ ] Keep notebooks and markdown files synced with the actual code.
+- [ ] Keep generated outputs out of git.
 
-Progress note: the current training loop already runs, but the representation path is still more scaffold than final design.
+## Non-goals right now
 
-## Phase 2: Practical diagnostics and usability
-
-### Stage 4: Essential diagnostics
-
-- [x] Keep a saved diagnostics script.
-- [x] Update diagnostics to the calo-only contract.
-- [x] Add simple prototype-usage and embedding-stat summaries.
-- [x] Add frozen-embedding export for later probing.
-- [ ] Keep the plots understandable rather than overly elaborate.
-
-### Stage 5: Teaching materials
-
-- [x] Write a tutorial notebook that explains the whole pipeline step by step.
-- [x] Show how raw ColliderML calo data becomes a point view.
-- [x] Show how the model consumes that point view.
-- [x] Show one short training step and how the loss is formed.
-- [x] Show how to inspect saved diagnostics and exported embeddings.
-
-This notebook is a first-class deliverable for this phase, not an afterthought.
-
-## Immediate implementation order
-
-1. Update the codebase to use `calo_hits` only in the default path.
-2. Simplify `src/collider_fm/views.py` around a clean calo-only point-view contract.
-3. Update `scripts/train.py`, `scripts/smoke_test_model.py`, `scripts/inspect_data.py`, and `scripts/plot_diagnostics.py` to match.
-4. Keep only the most useful tests and update them to the new contract.
-5. Add checkpoint save or reload and embedding export.
-6. Write the tutorial notebook.
-
-## Future work
-
-- [ ] Add richer Panda-style local and masked objectives once the base path is simple and solid.
-- [ ] Improve prototype-collapse monitoring if needed.
-- [ ] Reintroduce tracker hits later as a second modality, but only after the calo-only path is stable.
-- [ ] Add distributed training only after the single-GPU version is easy to understand and debug.
-
-## Monday target
-
-- [x] Run one stable SSL baseline through `slurm/train_small.slurm`.
-- [x] Save per-run metrics in `runs/<run-name>/metrics.jsonl`.
-- [x] Plot training and validation loss from a finished run.
-- [x] Plot a held-out SSL similarity check from a finished checkpoint.
-- [ ] Produce one clean baseline checkpoint and one diagnostics folder for presentation.
+- [ ] Reintroducing tracker hits
+- [ ] Multimodal fusion
+- [ ] Distributed training
+- [ ] Large configuration systems
+- [ ] Complex Panda matching machinery that makes the code harder to teach

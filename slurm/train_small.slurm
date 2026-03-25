@@ -10,13 +10,7 @@
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
-module --force purge; module load modules/2.4-20250724
-module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer uv
-
-source .venv/bin/activate
-
-echo "Using uv: $(command -v uv)"
-uv run python --version
+source slurm/load_env.sh
 
 uv run python scripts/train.py \
     --num-epochs 20 \
