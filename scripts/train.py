@@ -5,12 +5,13 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import comet_ml
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 del comet_ml
 
@@ -43,6 +44,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-batches", type=int, default=2)
     parser.add_argument("--max-val-batches", type=int, default=1)
     parser.add_argument("--max-calo-hits", type=int, default=256)
+    parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--add-local-view", action="store_true")
     parser.add_argument("--local-fraction", type=float, default=0.5)
     parser.add_argument("--add-masked-view", action="store_true")
@@ -76,12 +78,47 @@ def learning_rate(optimizer: AdamW) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
 def center_norm(model: PandaSelfDistillation) -> float:
     return float(cast(torch.Tensor, model.center).norm().item())
 
 
 def checkpoint_path(run_dir: Path) -> Path:
     return run_dir / "checkpoint.pt"
+
+
+def target_num_batches(dataloader: DataLoader, max_batches: int) -> int:
+    return min(len(dataloader), max_batches)
+
+
+def create_progress_bar(phase: str, num_batches: int, log_every: int) -> Any:
+    return create_progress_bar_for_stream(
+        phase=phase,
+        num_batches=num_batches,
+        log_every=log_every,
+        stream=sys.stdout,
+    )
+
+
+def create_progress_bar_for_stream(
+    phase: str,
+    num_batches: int,
+    log_every: int,
+    stream: Any,
+) -> Any:
+    return tqdm(
+        total=num_batches,
+        desc=phase,
+        unit="batch",
+        file=stream,
+        ascii=True,
+        dynamic_ncols=False,
+        leave=True,
+        miniters=max(1, log_every),
+    )
 
 
 def save_checkpoint(
@@ -125,6 +162,7 @@ def run_epoch(
     local_fraction: float,
     add_masked_view: bool,
     mask_fraction: float,
+    log_every: int,
     phase: str,
 ) -> tuple[float, int]:
     """Run one short training or validation pass over a dataloader."""
@@ -132,37 +170,43 @@ def run_epoch(
     model.train(mode=is_training)
     total_loss = 0.0
     num_batches = 0
+    planned_batches = target_num_batches(dataloader, max_batches)
+    progress = create_progress_bar(phase, planned_batches, log_every)
 
-    for batch_index, events in enumerate(dataloader):
-        if batch_index >= max_batches:
-            break
+    try:
+        for batch_index, events in enumerate(dataloader):
+            if batch_index >= max_batches:
+                break
 
-        views = build_distillation_views(
-            events,
-            device=device,
-            max_calo_hits=max_calo_hits,
-            add_local_view=add_local_view,
-            local_fraction=local_fraction,
-            add_masked_view=add_masked_view,
-            mask_fraction=mask_fraction,
-        )
-        loss_masks = [view["loss_mask"] for view in views]
-        with torch.set_grad_enabled(is_training):
-            student_outputs, teacher_outputs = model(views)
-            loss = model.distillation_loss(
-                student_outputs, teacher_outputs, loss_masks=loss_masks
+            views = build_distillation_views(
+                events,
+                device=device,
+                max_calo_hits=max_calo_hits,
+                add_local_view=add_local_view,
+                local_fraction=local_fraction,
+                add_masked_view=add_masked_view,
+                mask_fraction=mask_fraction,
             )
+            loss_masks = [view["loss_mask"] for view in views]
+            with torch.set_grad_enabled(is_training):
+                student_outputs, teacher_outputs = model(views)
+                loss = model.distillation_loss(
+                    student_outputs, teacher_outputs, loss_masks=loss_masks
+                )
 
-        if is_training:
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            model.update_center(teacher_outputs)
-            model.update_teacher(momentum=teacher_momentum)
+            if is_training:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                model.update_center(teacher_outputs)
+                model.update_teacher(momentum=teacher_momentum)
 
-        total_loss += float(loss.item())
-        num_batches += 1
-        print(f"{phase} batch {batch_index + 1}: loss={loss.item():.4f}")
+            total_loss += float(loss.item())
+            num_batches += 1
+            progress.update(1)
+            progress.set_postfix(loss=f"{loss.item():.4f}")
+    finally:
+        progress.close()
 
     if num_batches == 0:
         raise ValueError(f"No {phase} batches were processed.")
@@ -172,12 +216,10 @@ def run_epoch(
 def main() -> None:
     args = build_arg_parser().parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    log(f"Using device: {device}")
 
     if device.type != "cuda":
-        print(
-            "Training requires CUDA because the current PTv3/spconv stack is GPU-only."
-        )
+        log("Training requires CUDA because the current PTv3/spconv stack is GPU-only.")
         return
 
     train_loader = create_dataloader(args, args.train_split)
@@ -195,8 +237,8 @@ def main() -> None:
         "run_name": run_name,
     }
     config_path = write_run_config(run_dir, config)
-    print(f"Run directory: {run_dir}")
-    print(f"Run config: {config_path}")
+    log(f"Run directory: {run_dir}")
+    log(f"Run config: {config_path}")
 
     model = create_small_panda_model(device=device)
     optimizer = AdamW(
@@ -207,7 +249,7 @@ def main() -> None:
 
     if args.resume_from is not None:
         start_epoch, global_step = load_checkpoint(args.resume_from, model, optimizer)
-        print(
+        log(
             f"Resumed from {args.resume_from} at epoch {start_epoch}, step {global_step}"
         )
 
@@ -224,6 +266,7 @@ def main() -> None:
             "max_train_batches": args.max_train_batches,
             "max_val_batches": args.max_val_batches,
             "max_calo_hits": args.max_calo_hits,
+            "log_every": args.log_every,
             "add_local_view": args.add_local_view,
             "local_fraction": args.local_fraction,
             "add_masked_view": args.add_masked_view,
@@ -236,7 +279,7 @@ def main() -> None:
 
     try:
         for epoch in range(start_epoch, args.num_epochs):
-            print(f"Epoch {epoch + 1}/{args.num_epochs}")
+            log(f"Epoch {epoch + 1}/{args.num_epochs}")
             epoch_start = time.perf_counter()
             train_loss, train_batches = run_epoch(
                 model=model,
@@ -250,10 +293,11 @@ def main() -> None:
                 local_fraction=args.local_fraction,
                 add_masked_view=args.add_masked_view,
                 mask_fraction=args.mask_fraction,
+                log_every=args.log_every,
                 phase="train",
             )
             global_step += train_batches
-            val_loss, _ = run_epoch(
+            val_loss, val_batches = run_epoch(
                 model=model,
                 dataloader=val_loader,
                 device=device,
@@ -265,6 +309,7 @@ def main() -> None:
                 local_fraction=args.local_fraction,
                 add_masked_view=args.add_masked_view,
                 mask_fraction=args.mask_fraction,
+                log_every=args.log_every,
                 phase="val",
             )
             checkpoint = save_checkpoint(
@@ -274,14 +319,16 @@ def main() -> None:
                 "epoch": epoch + 1,
                 "global_step": global_step,
                 "train_loss": train_loss,
+                "train_batches": train_batches,
                 "val_loss": val_loss,
+                "val_batches": val_batches,
                 "learning_rate": learning_rate(optimizer),
                 "epoch_time_seconds": time.perf_counter() - epoch_start,
                 "center_norm": center_norm(model),
                 "checkpoint": str(checkpoint),
             }
             logger.log_metrics(metrics, step=global_step)
-            print("epoch summary: " + json.dumps(metrics, sort_keys=True))
+            log("epoch summary: " + json.dumps(metrics, sort_keys=True))
     finally:
         logger.finish()
 

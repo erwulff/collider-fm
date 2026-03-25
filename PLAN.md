@@ -81,3 +81,11 @@ This notebook is a first-class deliverable for this phase, not an afterthought.
 - [ ] Improve prototype-collapse monitoring if needed.
 - [ ] Reintroduce tracker hits later as a second modality, but only after the calo-only path is stable.
 - [ ] Add distributed training only after the single-GPU version is easy to understand and debug.
+
+## Monday target
+
+- [x] Run one stable SSL baseline through `slurm/train_small.slurm`.
+- [x] Save per-run metrics in `runs/<run-name>/metrics.jsonl`.
+- [x] Plot training and validation loss from a finished run.
+- [x] Plot a held-out SSL similarity check from a finished checkpoint.
+- [ ] Produce one clean baseline checkpoint and one diagnostics folder for presentation.

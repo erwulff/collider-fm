@@ -93,6 +93,12 @@ Generate saved diagnostics:
 uv run python scripts/plot_diagnostics.py --detail-split train[0:1] --representation-split train[:10]
 ```
 
+Plot one finished training run:
+
+```bash
+uv run python scripts/plot_training_run.py runs/monday_ssl_baseline
+```
+
 Export frozen embeddings from a checkpoint:
 
 ```bash
