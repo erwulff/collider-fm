@@ -5,23 +5,26 @@
 #SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH -C h100
+#SBATCH -C a100-40gb
 #SBATCH -J train_small
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
-module --force purge; module load modules/2.4-20250724
-module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer uv
+set -euo pipefail
 
-source .venv/bin/activate
+source slurm/load_env.sh
+
+nvidia-smi
 
 echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    --num-epochs 1 \
+    --num-epochs 4 \
     --batch-size 1 \
-    --max-train-batches 1 \
-    --max-val-batches 1 \
-    --train-split "train[:1]" \
-    --val-split "train[1:2]"
+    --max-train-batches 8 \
+    --max-val-batches 2 \
+    --train-split "train[:32]" \
+    --val-split "train[32:40]" \
+    --log-backend jsonl \
+    --run-name "slurm_debug_train_small"

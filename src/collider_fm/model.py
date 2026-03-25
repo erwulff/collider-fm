@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Model and loss helpers for the calo-only masked distillation pipeline."""
+
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -33,7 +35,7 @@ TRAINING_MODEL_BACKBONE_KWARGS = {
 def as_point_cloud(
     view: Mapping[str, Any], default_grid_size: float = DEFAULT_POINT_GRID_SIZE
 ) -> Point:
-    """Convert a generic mapping into the Panda point-cloud structure."""
+    """Convert a validated point-view mapping into Panda's `Point` structure."""
     data = dict(view)
 
     if "coord" not in data or "feat" not in data:
@@ -205,6 +207,9 @@ class PandaSelfDistillation(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Keep the PTv3 kwargs readable and close to the project-level concepts:
+        # a small hierarchical point encoder, traceable pooling, and point-level
+        # upcasting back to the original input resolution.
         default_backbone_kwargs = {
             "in_channels": in_channels,
             "order": ("z", "z-trans"),
@@ -281,6 +286,8 @@ class PandaSelfDistillation(nn.Module):
         projector: nn.Module,
         predictor: nn.Module | None = None,
     ) -> dict[str, torch.Tensor]:
+        """Encode one teacher or student view into point and pooled outputs."""
+
         point = as_point_cloud(view, default_grid_size=self.grid_size)
         encoded = backbone(point)
         point_features = encoded.feat
@@ -333,6 +340,8 @@ class PandaSelfDistillation(nn.Module):
     def forward(
         self, batch: Mapping[str, Sequence[Mapping[str, Any] | PointView]]
     ) -> tuple[list[dict[str, torch.Tensor]], list[dict[str, torch.Tensor]]]:
+        """Encode all student and teacher views from one distillation batch."""
+
         student_views = list(batch["student_views"])
         teacher_views = list(batch["teacher_views"])
         if len(student_views) < 1 or len(teacher_views) < 1:
@@ -350,6 +359,8 @@ class PandaSelfDistillation(nn.Module):
         student_outputs: Sequence[dict[str, torch.Tensor]],
         teacher_outputs: Sequence[dict[str, torch.Tensor]],
     ) -> torch.Tensor:
+        """Average point-level and masked pooled losses across all view pairs."""
+
         if not student_outputs or not teacher_outputs:
             raise ValueError("Student and teacher outputs must both be non-empty.")
 
@@ -404,6 +415,8 @@ class PandaSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def update_center(self, teacher_outputs: Sequence[dict[str, torch.Tensor]]) -> None:
+        """Update the running teacher-logit center used for stabilization."""
+
         if not teacher_outputs:
             raise ValueError("Teacher outputs must be non-empty.")
 

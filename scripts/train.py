@@ -68,6 +68,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def create_dataloader(
     args: argparse.Namespace, split: str, shuffle: bool
 ) -> DataLoader:
+    """Create the calo-only dataloader used by train and validation."""
+
     dataset = ColliderMLDataset(
         split=split,
         dataset_type=args.dataset_type,
@@ -84,11 +86,15 @@ def create_dataloader(
 
 
 def linear_warmup(value_start: float, value_end: float, progress: float) -> float:
+    """Linearly interpolate between two values on `[0, 1]` progress."""
+
     progress = min(max(progress, 0.0), 1.0)
     return value_start + progress * (value_end - value_start)
 
 
 def cosine_decay(value_start: float, value_end: float, progress: float) -> float:
+    """Cosine decay schedule from `value_start` to `value_end`."""
+
     progress = min(max(progress, 0.0), 1.0)
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return value_end + (value_start - value_end) * cosine
@@ -103,6 +109,8 @@ def center_norm(model: PandaSelfDistillation) -> float:
 
 
 def current_teacher_temperature(args: argparse.Namespace, epoch_index: int) -> float:
+    """Warm the teacher temperature during the early epochs only."""
+
     if args.teacher_temperature_warmup_epochs <= 0:
         return args.teacher_temperature_end
     if epoch_index >= args.teacher_temperature_warmup_epochs:
@@ -114,6 +122,8 @@ def current_teacher_temperature(args: argparse.Namespace, epoch_index: int) -> f
 
 
 def current_teacher_momentum(args: argparse.Namespace, global_progress: float) -> float:
+    """Increase EMA momentum smoothly over training."""
+
     return cosine_decay(
         args.teacher_momentum_start, args.teacher_momentum_end, global_progress
     )
@@ -122,6 +132,8 @@ def current_teacher_momentum(args: argparse.Namespace, global_progress: float) -
 def prototype_usage(
     outputs: list[dict[str, torch.Tensor]], num_prototypes: int
 ) -> torch.Tensor:
+    """Estimate prototype occupancy from the student point assignments."""
+
     point_logits = torch.cat([output["point_logits"] for output in outputs], dim=0)
     assignments = point_logits.argmax(dim=-1)
     counts = torch.bincount(assignments, minlength=num_prototypes).to(
@@ -138,6 +150,8 @@ def prototype_entropy(probabilities: torch.Tensor) -> float:
 
 
 def embedding_norm(outputs: list[dict[str, torch.Tensor]]) -> float:
+    """Average norm of the masked pooled student embeddings."""
+
     embeddings = torch.cat(
         [output["masked_pooled_projection"] for output in outputs], dim=0
     )
@@ -158,6 +172,8 @@ def save_checkpoint(
     metrics: dict[str, float],
     is_best: bool = False,
 ) -> Path:
+    """Write epoch, optimizer, and model state to the run directory."""
+
     checkpoints_dir = run_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
@@ -190,6 +206,13 @@ def run_epoch(
     teacher_momentum: float,
     phase: str,
 ) -> tuple[dict[str, float], int]:
+    """Run one train or validation epoch over a bounded number of batches.
+
+    The function keeps the control flow intentionally explicit: build batched
+    teacher/student views, run the model, optionally step the optimizer, then
+    accumulate a few simple metrics that are useful for Monday-style sanity plots.
+    """
+
     is_training = optimizer is not None
     model.train(mode=is_training)
     totals = {

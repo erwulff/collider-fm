@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+"""Point-view utilities for the calo-only self-distillation pipeline.
+
+The project keeps the runtime point contract intentionally small and explicit:
+each point carries `[x, y, z, energy]`, plus a few bookkeeping tensors that make
+masking, batching, and teacher/student alignment easy to follow.
+"""
+
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 import torch
 
@@ -19,6 +26,14 @@ class PointView(TypedDict, total=False):
     patch_id: torch.Tensor
     mask: torch.Tensor
     view_kind: str
+
+
+class DistillationBatch(TypedDict):
+    """Batched views consumed by the student/teacher training loop."""
+
+    teacher_views: list[PointView]
+    student_views: list[PointView]
+    base_views: list[PointView]
 
 
 def _normalize_grid_size(grid_size: Any, device: torch.device) -> torch.Tensor:
@@ -76,7 +91,7 @@ def assemble_point_features(coord: torch.Tensor, energy: torch.Tensor) -> torch.
 
 
 def validate_point_view(view: Mapping[str, Any]) -> PointView:
-    """Normalize and validate one point-view mapping used by the training pipeline."""
+    """Normalize one point-view mapping to the shared project contract."""
     required_keys = {"coord", "feat"}
     missing_keys = required_keys.difference(view.keys())
     if missing_keys:
@@ -166,7 +181,13 @@ def build_point_view_from_event(
     max_calo_hits: int | None = None,
     grid_size: float = DEFAULT_POINT_GRID_SIZE,
 ) -> PointView:
-    """Convert one calorimeter event into a simple model-ready point view."""
+    """Convert one raw ColliderML event into a single point view.
+
+    The returned mapping is the canonical representation used throughout the repo:
+    point coordinates in `coord`, model features in `feat`, cumulative event
+    boundaries in `offset`, and bookkeeping tensors for matching masked student
+    points back to the original calorimeter hits.
+    """
     calo_hits = event["calo_hits"]
     source_device = torch.as_tensor(calo_hits["x"]).device
     if len(calo_hits["x"]) == 0:
@@ -349,7 +370,11 @@ def augment_point_view(
 
 
 def batch_point_views(views: Sequence[Mapping[str, torch.Tensor]]) -> PointView:
-    """Concatenate per-event point views into one batched mapping."""
+    """Concatenate per-event point views into one batched mapping.
+
+    Source indices and patch ids are offset so they remain unique across events.
+    That keeps the later point-level matching logic simple and local to the batch.
+    """
     if not views:
         raise ValueError("At least one point view is required to create a batch.")
 
@@ -396,6 +421,34 @@ def batch_point_views(views: Sequence[Mapping[str, torch.Tensor]]) -> PointView:
     )
 
 
+def _batch_augmented_views(
+    base_views: Sequence[PointView],
+    *,
+    coord_noise_scale: float,
+    feat_noise_scale: float,
+    global_crop_ratio: float,
+    point_dropout: float,
+    mask_fraction: float,
+    view_kind: str,
+) -> PointView:
+    """Apply one augmentation recipe to each event and batch the result."""
+
+    return batch_point_views(
+        [
+            augment_point_view(
+                view,
+                coord_noise_scale=coord_noise_scale,
+                feat_noise_scale=feat_noise_scale,
+                crop_keep_ratio=global_crop_ratio,
+                point_dropout=point_dropout,
+                mask_fraction=mask_fraction,
+                view_kind=view_kind,
+            )
+            for view in base_views
+        ]
+    )
+
+
 def build_distillation_views(
     events: Sequence[Mapping[str, Any]],
     device: torch.device,
@@ -405,7 +458,7 @@ def build_distillation_views(
     global_crop_ratio: float = 0.9,
     student_mask_fraction: float = 0.4,
     point_dropout: float = 0.05,
-) -> dict[str, PointView]:
+) -> DistillationBatch:
     """Build a small, easy-to-read masked-global SSL batch.
 
     The returned dictionary contains two teacher global views and two student global
@@ -418,61 +471,41 @@ def build_distillation_views(
         for event in events
     ]
 
-    teacher_view_a = batch_point_views(
-        [
-            augment_point_view(
-                view,
-                coord_noise_scale=coord_noise_scale,
-                feat_noise_scale=feat_noise_scale,
-                crop_keep_ratio=global_crop_ratio,
-                point_dropout=point_dropout,
-                mask_fraction=0.0,
-                view_kind="teacher_global_a",
-            )
-            for view in base_views
-        ]
+    teacher_view_a = _batch_augmented_views(
+        base_views,
+        coord_noise_scale=coord_noise_scale,
+        feat_noise_scale=feat_noise_scale,
+        global_crop_ratio=global_crop_ratio,
+        point_dropout=point_dropout,
+        mask_fraction=0.0,
+        view_kind="teacher_global_a",
     )
-    teacher_view_b = batch_point_views(
-        [
-            augment_point_view(
-                view,
-                coord_noise_scale=coord_noise_scale,
-                feat_noise_scale=feat_noise_scale,
-                crop_keep_ratio=global_crop_ratio,
-                point_dropout=point_dropout,
-                mask_fraction=0.0,
-                view_kind="teacher_global_b",
-            )
-            for view in base_views
-        ]
+    teacher_view_b = _batch_augmented_views(
+        base_views,
+        coord_noise_scale=coord_noise_scale,
+        feat_noise_scale=feat_noise_scale,
+        global_crop_ratio=global_crop_ratio,
+        point_dropout=point_dropout,
+        mask_fraction=0.0,
+        view_kind="teacher_global_b",
     )
-    student_view_a = batch_point_views(
-        [
-            augment_point_view(
-                view,
-                coord_noise_scale=coord_noise_scale,
-                feat_noise_scale=feat_noise_scale,
-                crop_keep_ratio=global_crop_ratio,
-                point_dropout=point_dropout,
-                mask_fraction=student_mask_fraction,
-                view_kind="student_masked_a",
-            )
-            for view in base_views
-        ]
+    student_view_a = _batch_augmented_views(
+        base_views,
+        coord_noise_scale=coord_noise_scale,
+        feat_noise_scale=feat_noise_scale,
+        global_crop_ratio=global_crop_ratio,
+        point_dropout=point_dropout,
+        mask_fraction=student_mask_fraction,
+        view_kind="student_masked_a",
     )
-    student_view_b = batch_point_views(
-        [
-            augment_point_view(
-                view,
-                coord_noise_scale=coord_noise_scale,
-                feat_noise_scale=feat_noise_scale,
-                crop_keep_ratio=global_crop_ratio,
-                point_dropout=point_dropout,
-                mask_fraction=student_mask_fraction,
-                view_kind="student_masked_b",
-            )
-            for view in base_views
-        ]
+    student_view_b = _batch_augmented_views(
+        base_views,
+        coord_noise_scale=coord_noise_scale,
+        feat_noise_scale=feat_noise_scale,
+        global_crop_ratio=global_crop_ratio,
+        point_dropout=point_dropout,
+        mask_fraction=student_mask_fraction,
+        view_kind="student_masked_b",
     )
 
     return {
