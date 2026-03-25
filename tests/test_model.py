@@ -4,12 +4,17 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from collider_fm.model import PandaSelfDistillation, as_point_cloud, create_small_panda_model, mean_pool_features
-from collider_fm.views import DEFAULT_POINT_GRID_SIZE
+from collider_fm.model import (
+    PandaSelfDistillation,
+    as_point_cloud,
+    create_small_panda_model,
+    mean_pool_features,
+)
+from collider_fm.views import DEFAULT_POINT_GRID_SIZE, POINT_FEATURE_DIM
 
 
 class DummyBackbone(nn.Module):
-    def __init__(self, in_channels=4, enc_channels=(8, 12), **kwargs):
+    def __init__(self, in_channels=POINT_FEATURE_DIM, enc_channels=(8, 12), **kwargs):
         super().__init__()
         self.proj = nn.Linear(in_channels, enc_channels[-1], bias=False)
 
@@ -59,7 +64,7 @@ class ModelTests(unittest.TestCase):
 
     def test_forward_returns_expected_shapes(self):
         model = PandaSelfDistillation(
-            in_channels=4,
+            in_channels=POINT_FEATURE_DIM,
             embed_channels=8,
             num_prototypes=7,
             projection_dim=6,
@@ -70,7 +75,7 @@ class ModelTests(unittest.TestCase):
         views = [
             {
                 "coord": torch.randn(5, 3),
-                "feat": torch.randn(5, 4),
+                "feat": torch.randn(5, POINT_FEATURE_DIM),
                 "offset": torch.tensor([2, 5]),
             }
             for _ in range(3)
@@ -85,7 +90,7 @@ class ModelTests(unittest.TestCase):
 
     def test_teacher_update_and_center_update(self):
         model = PandaSelfDistillation(
-            in_channels=4,
+            in_channels=POINT_FEATURE_DIM,
             embed_channels=8,
             num_prototypes=7,
             projection_dim=6,

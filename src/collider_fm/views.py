@@ -5,16 +5,19 @@ from typing import Any, TypedDict
 
 import torch
 
-
 DEFAULT_POINT_GRID_SIZE = 10.0
-POINT_FEATURE_DIM = 6
+POINT_FEATURE_DIM = 4
 
 
-class PointView(TypedDict):
+class PointView(TypedDict, total=False):
     coord: torch.Tensor
     feat: torch.Tensor
     offset: torch.Tensor
     grid_size: torch.Tensor
+    source_index: torch.Tensor
+    energy: torch.Tensor
+    patch_id: torch.Tensor
+    mask: torch.Tensor
 
 
 def normalize_feature(values: torch.Tensor) -> torch.Tensor:
@@ -36,27 +39,35 @@ def _require_hit_tensor(hits: Mapping[str, Any], key: str, device: torch.device)
     return torch.as_tensor(hits[key], dtype=torch.float32, device=device).flatten()
 
 
-def assemble_point_features(
-    coord: torch.Tensor,
-    signal: torch.Tensor,
-    detector_type: torch.Tensor,
-) -> torch.Tensor:
-    """Build the six-channel per-point feature tensor from its source components."""
+def _resolve_calo_energy(calo_hits: Mapping[str, Any], device: torch.device) -> torch.Tensor:
+    for key in ("energy", "totalenergy", "total_energy"):
+        if key in calo_hits:
+            return torch.as_tensor(calo_hits[key], dtype=torch.float32, device=device).flatten()
+    raise KeyError("Calorimeter hits must provide 'energy', 'totalenergy', or 'total_energy'.")
+
+
+def _default_source_index(num_points: int, device: torch.device) -> torch.Tensor:
+    return torch.arange(num_points, device=device, dtype=torch.long)
+
+
+def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Tensor:
+    grid_coord = torch.div(coord - coord.min(dim=0).values, grid_size, rounding_mode="floor").long()
+    base = grid_coord.max(dim=0).values + 1
+    stride_y = base[2].clamp_min(1)
+    stride_x = (base[1] * stride_y).clamp_min(1)
+    return grid_coord[:, 0] * stride_x + grid_coord[:, 1] * stride_y + grid_coord[:, 2]
+
+
+def assemble_point_features(coord: torch.Tensor, energy: torch.Tensor) -> torch.Tensor:
+    """Build the project-standard per-point feature tensor `[x, y, z, energy]`."""
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
 
-    signal = torch.as_tensor(signal, dtype=torch.float32, device=coord.device).flatten()
-    detector_type = torch.as_tensor(detector_type, dtype=torch.float32, device=coord.device).flatten()
-    if signal.shape[0] != coord.shape[0]:
-        raise ValueError("'signal' must contain one value per point.")
-    if detector_type.shape[0] != coord.shape[0]:
-        raise ValueError("'detector_type' must contain one value per point.")
+    energy = torch.as_tensor(energy, dtype=torch.float32, device=coord.device).flatten()
+    if energy.shape[0] != coord.shape[0]:
+        raise ValueError("'energy' must contain one value per point.")
 
-    radius = normalize_feature(torch.linalg.norm(coord, dim=1))
-    return torch.cat(
-        [coord, radius.unsqueeze(1), signal.unsqueeze(1), detector_type.unsqueeze(1)],
-        dim=1,
-    )
+    return torch.cat([coord, energy.unsqueeze(1)], dim=1)
 
 
 def validate_point_view(view: Mapping[str, Any]) -> PointView:
@@ -88,11 +99,43 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         raise ValueError("'offset' must be a strictly increasing cumulative count.")
 
     grid_size = _normalize_grid_size(view.get("grid_size", DEFAULT_POINT_GRID_SIZE), coord.device)
+    energy = torch.as_tensor(view.get("energy", feat[:, 3]), dtype=torch.float32, device=coord.device).flatten()
+    if energy.shape[0] != coord.shape[0]:
+        raise ValueError("'energy' must contain one value per point.")
+
+    source_index = torch.as_tensor(
+        view.get("source_index", _default_source_index(coord.shape[0], coord.device)),
+        dtype=torch.long,
+        device=coord.device,
+    ).flatten()
+    if source_index.shape[0] != coord.shape[0]:
+        raise ValueError("'source_index' must contain one value per point.")
+
+    patch_id = torch.as_tensor(
+        view.get("patch_id", _default_patch_id(coord, grid_size)),
+        dtype=torch.long,
+        device=coord.device,
+    ).flatten()
+    if patch_id.shape[0] != coord.shape[0]:
+        raise ValueError("'patch_id' must contain one value per point.")
+
+    mask = torch.as_tensor(
+        view.get("mask", torch.zeros(coord.shape[0], device=coord.device)),
+        dtype=torch.bool,
+        device=coord.device,
+    ).flatten()
+    if mask.shape[0] != coord.shape[0]:
+        raise ValueError("'mask' must contain one value per point.")
+
     return {
         "coord": coord,
         "feat": feat,
         "offset": offset,
         "grid_size": grid_size,
+        "source_index": source_index,
+        "energy": energy,
+        "patch_id": patch_id,
+        "mask": mask,
     }
 
 
@@ -106,42 +149,21 @@ def sample_hit_indices(num_hits: int, max_hits: int | None, device: torch.device
 def build_point_view_from_event(
     event: Mapping[str, Any],
     device: torch.device,
-    max_tracker_hits: int | None = None,
     max_calo_hits: int | None = None,
     grid_size: float = DEFAULT_POINT_GRID_SIZE,
 ) -> PointView:
-    """Convert one raw event into the point-view format expected by the model.
-
-    The returned mapping matches the Panda point-cloud convention used elsewhere in
-    the repo: coordinates, per-point features, cumulative offsets, and grid size.
-    """
-    tracker_hits = event["tracker_hits"]
+    """Convert one raw calorimeter event into the point-view format expected by the model."""
     calo_hits = event["calo_hits"]
-    source_device = torch.as_tensor(tracker_hits["x"]).device
-    if torch.as_tensor(calo_hits["x"]).device != source_device:
-        raise ValueError("Tracker-hit and calo-hit tensors must be on the same source device.")
-
-    tracker_indices = sample_hit_indices(
-        num_hits=len(tracker_hits["x"]),
-        max_hits=max_tracker_hits,
-        device=source_device,
-    )
+    source_device = torch.as_tensor(calo_hits["x"]).device
+    if len(calo_hits["x"]) == 0:
+        raise ValueError("Cannot build a point view from an event with zero calorimeter hits.")
     calo_indices = sample_hit_indices(
         num_hits=len(calo_hits["x"]),
         max_hits=max_calo_hits,
         device=source_device,
     )
 
-    # Build a single coordinate tensor by concatenating tracker and calorimeter hits.
-    tracker_coord = torch.stack(
-        [
-            _require_hit_tensor(tracker_hits, "x", source_device)[tracker_indices],
-            _require_hit_tensor(tracker_hits, "y", source_device)[tracker_indices],
-            _require_hit_tensor(tracker_hits, "z", source_device)[tracker_indices],
-        ],
-        dim=1,
-    ).to(device=device, dtype=torch.float32)
-    calo_coord = torch.stack(
+    coord = torch.stack(
         [
             _require_hit_tensor(calo_hits, "x", source_device)[calo_indices],
             _require_hit_tensor(calo_hits, "y", source_device)[calo_indices],
@@ -150,38 +172,20 @@ def build_point_view_from_event(
         dim=1,
     ).to(device=device, dtype=torch.float32)
 
-    tracker_time = normalize_feature(
-        torch.as_tensor(
-            tracker_hits.get("time", torch.zeros(len(tracker_hits["x"]), device=source_device))[tracker_indices],
-            dtype=torch.float32,
-            device=device,
-        )
-    )
-    calo_energy = normalize_feature(
-        torch.as_tensor(
-            calo_hits.get("total_energy", torch.zeros(len(calo_hits["x"]), device=source_device))[calo_indices],
-            dtype=torch.float32,
-            device=device,
-        )
-    )
-
-    coord = torch.cat([tracker_coord, calo_coord], dim=0)
-    signal = torch.cat([tracker_time, calo_energy], dim=0)
-    # Encode detector origin as a simple binary feature: 0 for tracker, 1 for calo.
-    detector_type = torch.cat(
-        [
-            torch.zeros(tracker_coord.shape[0], device=device),
-            torch.ones(calo_coord.shape[0], device=device),
-        ],
-        dim=0,
-    )
+    energy = _resolve_calo_energy(calo_hits, device=source_device)[calo_indices].to(device=device, dtype=torch.float32)
+    source_index = torch.as_tensor(calo_indices, dtype=torch.long, device=device)
+    grid_size_tensor = torch.tensor(grid_size, dtype=torch.float32, device=device)
 
     return validate_point_view(
         {
             "coord": coord,
-            "feat": assemble_point_features(coord, signal, detector_type),
+            "feat": assemble_point_features(coord, energy),
             "offset": torch.tensor([coord.shape[0]], dtype=torch.long, device=device),
-            "grid_size": torch.tensor(grid_size, dtype=torch.float32, device=device),
+            "grid_size": grid_size_tensor,
+            "source_index": source_index,
+            "energy": energy,
+            "patch_id": _default_patch_id(coord, grid_size_tensor),
+            "mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=device),
         }
     )
 
@@ -191,21 +195,23 @@ def augment_point_view(
     coord_noise_scale: float = 0.5,
     feat_noise_scale: float = 0.01,
 ) -> PointView:
-    """Create a noisy copy of a point view for self-distillation training."""
+    """Create a noisy copy of a calorimeter point view for self-distillation training."""
     base_view = validate_point_view(view)
     coord = base_view["coord"].clone()
-    signal = base_view["feat"][:, 4].clone()
-    detector_type = base_view["feat"][:, 5].clone()
+    energy = base_view["energy"].clone()
 
-    # Rebuild derived features from the perturbed coordinates to keep the view consistent.
     coord = coord + torch.randn_like(coord) * coord_noise_scale
-    signal = signal + torch.randn_like(signal) * feat_noise_scale
+    energy = (energy * (1.0 + torch.randn_like(energy) * feat_noise_scale)).clamp_min(0.0)
 
     return {
         "coord": coord,
-        "feat": assemble_point_features(coord, signal, detector_type),
+        "feat": assemble_point_features(coord, energy),
         "offset": base_view["offset"].clone(),
         "grid_size": base_view["grid_size"].clone(),
+        "source_index": base_view["source_index"].clone(),
+        "energy": energy,
+        "patch_id": _default_patch_id(coord, base_view["grid_size"]),
+        "mask": base_view["mask"].clone(),
     }
 
 
@@ -222,26 +228,45 @@ def batch_point_views(views: Sequence[Mapping[str, torch.Tensor]]) -> PointView:
 
     coord = torch.cat([view["coord"] for view in normalized_views], dim=0)
     feat = torch.cat([view["feat"] for view in normalized_views], dim=0)
-    # Offsets store cumulative point counts so the backbone can recover event boundaries.
-    counts = torch.tensor([view["coord"].shape[0] for view in normalized_views], device=coord.device, dtype=torch.long)
+    energy = torch.cat([view["energy"] for view in normalized_views], dim=0)
+    source_index_parts = []
+    patch_id_parts = []
+    source_offset = 0
+    patch_offset = 0
+    for view in normalized_views:
+        source_index_parts.append(view["source_index"] + source_offset)
+        patch_id_parts.append(view["patch_id"] + patch_offset)
+        source_offset += int(view["source_index"].max().item()) + 1
+        patch_offset += int(view["patch_id"].max().item()) + 1
+    source_index = torch.cat(source_index_parts, dim=0)
+    patch_id = torch.cat(patch_id_parts, dim=0)
+    mask = torch.cat([view["mask"] for view in normalized_views], dim=0)
+    counts = torch.tensor(
+        [view["coord"].shape[0] for view in normalized_views],
+        device=coord.device,
+        dtype=torch.long,
+    )
     return {
         "coord": coord,
         "feat": feat,
         "offset": torch.cumsum(counts, dim=0),
         "grid_size": grid_size.clone(),
+        "source_index": source_index,
+        "energy": energy,
+        "patch_id": patch_id,
+        "mask": mask,
     }
 
 
 def build_distillation_views(
     events: Sequence[Mapping[str, Any]],
     device: torch.device,
-    max_tracker_hits: int | None = None,
     max_calo_hits: int | None = None,
     coord_noise_scale: float = 0.5,
     feat_noise_scale: float = 0.01,
     num_augmentations: int = 2,
 ) -> list[PointView]:
-    """Create independently augmented batched views from the same events."""
+    """Create independently augmented batched views from the same calorimeter events."""
     if num_augmentations < 2:
         raise ValueError("Self-distillation requires at least two augmented views.")
 
@@ -249,7 +274,6 @@ def build_distillation_views(
         build_point_view_from_event(
             event,
             device=device,
-            max_tracker_hits=max_tracker_hits,
             max_calo_hits=max_calo_hits,
         )
         for event in events
@@ -258,7 +282,11 @@ def build_distillation_views(
     def build_augmented_batch() -> PointView:
         return batch_point_views(
             [
-                augment_point_view(view, coord_noise_scale=coord_noise_scale, feat_noise_scale=feat_noise_scale)
+                augment_point_view(
+                    view,
+                    coord_noise_scale=coord_noise_scale,
+                    feat_noise_scale=feat_noise_scale,
+                )
                 for view in base_views
             ]
         )
@@ -267,16 +295,20 @@ def build_distillation_views(
 
 
 def make_random_view(num_points: int, in_channels: int, device: torch.device) -> PointView:
-    """Generate a synthetic point view for quick smoke tests."""
+    """Generate a synthetic calorimeter point view for quick smoke tests."""
     if in_channels != POINT_FEATURE_DIM:
         raise ValueError(f"Random views in this project require {POINT_FEATURE_DIM} input channels.")
 
     coord = torch.rand(num_points, 3, device=device)
-    signal = torch.rand(num_points, device=device)
-    detector_type = torch.randint(0, 2, (num_points,), device=device, dtype=torch.int64).to(torch.float32)
+    energy = torch.rand(num_points, device=device)
+    grid_size = torch.tensor(DEFAULT_POINT_GRID_SIZE, device=device)
     return {
         "coord": coord,
-        "feat": assemble_point_features(coord, signal, detector_type),
+        "feat": assemble_point_features(coord, energy),
         "offset": torch.tensor([num_points], dtype=torch.long, device=device),
-        "grid_size": torch.tensor(DEFAULT_POINT_GRID_SIZE, device=device),
+        "grid_size": grid_size,
+        "source_index": _default_source_index(num_points, device),
+        "energy": energy,
+        "patch_id": _default_patch_id(coord, grid_size),
+        "mask": torch.zeros(num_points, dtype=torch.bool, device=device),
     }

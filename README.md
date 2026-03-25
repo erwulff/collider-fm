@@ -1,6 +1,6 @@
 # Collider Foundation Model
 
-Collider Foundation Model is an early-stage Python project for learning reusable representations from particle collider data. The current focus is adapting Panda-style self-distillation workflows to the ColliderML dataset.
+Collider Foundation Model is an early-stage Python project for learning reusable representations from particle collider data. The current focus is a calo-only first stage: adapting Panda-style self-distillation workflows to ColliderML calorimeter hits before adding tracker or downstream reconstruction heads.
 
 ## Project goal
 
@@ -8,10 +8,10 @@ The project explores self-distillation methods for high-energy physics data, wit
 
 ## Current status
 
-- `src/collider_fm/data.py` provides dataset loading and basic collation.
+- `src/collider_fm/data.py` loads ColliderML calorimeter parquet tables through Hugging Face `datasets` and normalizes the energy field aliases.
+- `src/collider_fm/views.py` converts one event into calo-only point clouds with features `[x, y, z, energy]` plus bookkeeping fields used by the SSL pipeline.
 - `src/collider_fm/model.py` contains the current Panda-inspired self-distillation scaffold and the shared small-model factory used by train, smoke-test, and diagnostics scripts.
-- `scripts/download_data.py` and `scripts/inspect_data.py` cover basic data acquisition and inspection.
-- `scripts/plot_diagnostics.py` produces saved diagnostics for raw events, point views, and compact-model representations.
+- `scripts/download_data.py`, `scripts/inspect_data.py`, and `scripts/plot_diagnostics.py` are aligned with the calo-only phase.
 - `Panda_repo/` is kept as a reference implementation, while the runtime code vendors the PTv3 pieces currently needed under `src/collider_fm/_panda/`.
 
 ## Repository layout
@@ -75,13 +75,15 @@ The project uses the ColliderML dataset:
 - Hugging Face: https://huggingface.co/datasets/ColliderML/ColliderML
 - Project site: https://colliderml.github.io/
 
-ColliderML configurations combine a physics process such as `ttbar`, `ggf`, or `dihiggs`, a pileup setting such as `pu0` or `pu200`, and an object type such as `particles`, `tracker_hits`, `calo_hits`, or `tracks`.
+ColliderML configurations combine a physics process such as `ttbar`, `ggf`, or `dihiggs`, a pileup setting such as `pu0` or `pu200`, and an object type such as `calo_hits`, `tracker_hits`, `particles`, or `tracks`.
+
+The current implementation intentionally uses only the `calo_hits` tables. Each event is treated as a sparse 3D point cloud with per-point features `[x, y, z, energy]`.
 
 On this cluster, the documented Hugging Face cache location is `/mnt/ceph/users/ewulff/data/hf`.
 
 ## Common workflows
 
-Download a ColliderML subset:
+Download the calo-hit subset used by the current pipeline:
 
 ```bash
 uv run python scripts/download_data.py --pu-config pu0 --num-proc 12
@@ -113,7 +115,7 @@ A minimal tracked training run looks like:
 uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1
 ```
 
-Generate saved diagnostics from cached ColliderML events:
+Generate saved diagnostics from cached ColliderML calo events:
 
 ```bash
 uv run python scripts/plot_diagnostics.py --detail-split train[0:1] --representation-split train[:10]
@@ -135,7 +137,7 @@ uv run pre-commit install
 
 If a notebook with outputs is staged, the hook will strip the outputs, stop the commit once, and ask you to re-stage the cleaned notebook before committing again.
 
-Training logs are tracker-agnostic. By default `scripts/train.py` writes `config.json` and `metrics.jsonl` under a timestamped directory in `runs/`.
+Training is currently calo-only. By default `scripts/train.py` writes `config.json` and `metrics.jsonl` under a timestamped directory in `runs/`.
 
 To opt into Comet ML as an additional backend, either log in so Comet saves credentials in `~/.comet.config`, or export:
 

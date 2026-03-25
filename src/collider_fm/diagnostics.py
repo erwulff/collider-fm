@@ -23,7 +23,7 @@ def create_dataloader(
         split=split,
         dataset_type=dataset_type,
         pu_config=pu_config,
-        object_types=["tracker_hits", "calo_hits", "particles"],
+        object_types=["calo_hits"],
         cache_dir=cache_dir,
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)

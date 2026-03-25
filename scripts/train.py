@@ -39,7 +39,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-momentum", type=float, default=0.99)
     parser.add_argument("--max-train-batches", type=int, default=2)
     parser.add_argument("--max-val-batches", type=int, default=1)
-    parser.add_argument("--max-tracker-hits", type=int, default=128)
     parser.add_argument("--max-calo-hits", type=int, default=256)
     parser.add_argument("--dataset-type", default="ttbar")
     parser.add_argument("--pu-config", default="pu0")
@@ -55,7 +54,7 @@ def create_dataloader(args: argparse.Namespace, split: str) -> DataLoader:
         split=split,
         dataset_type=args.dataset_type,
         pu_config=args.pu_config,
-        object_types=["tracker_hits", "calo_hits"],
+        object_types=["calo_hits"],
         cache_dir=args.cache_dir,
     )
     return DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
@@ -76,7 +75,6 @@ def run_epoch(
     optimizer: AdamW | None,
     max_batches: int,
     teacher_momentum: float,
-    max_tracker_hits: int,
     max_calo_hits: int,
     phase: str,
 ) -> tuple[float, int]:
@@ -92,7 +90,6 @@ def run_epoch(
         views = build_distillation_views(
             events,
             device=device,
-            max_tracker_hits=max_tracker_hits,
             max_calo_hits=max_calo_hits,
         )
 
@@ -149,7 +146,6 @@ def main() -> None:
             "teacher_momentum": args.teacher_momentum,
             "max_train_batches": args.max_train_batches,
             "max_val_batches": args.max_val_batches,
-            "max_tracker_hits": args.max_tracker_hits,
             "max_calo_hits": args.max_calo_hits,
             "dataset_type": args.dataset_type,
             "pu_config": args.pu_config,
@@ -177,7 +173,6 @@ def main() -> None:
                 optimizer=optimizer,
                 max_batches=args.max_train_batches,
                 teacher_momentum=args.teacher_momentum,
-                max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
                 phase="train",
             )
@@ -189,7 +184,6 @@ def main() -> None:
                 optimizer=None,
                 max_batches=args.max_val_batches,
                 teacher_momentum=args.teacher_momentum,
-                max_tracker_hits=args.max_tracker_hits,
                 max_calo_hits=args.max_calo_hits,
                 phase="val",
             )

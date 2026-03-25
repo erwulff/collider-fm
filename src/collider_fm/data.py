@@ -1,12 +1,12 @@
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 from datasets import load_dataset
-import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
-
-DEFAULT_OBJECT_TYPES = ("tracker_hits", "calo_hits")
+DEFAULT_OBJECT_TYPES = ("calo_hits",)
+CALO_ENERGY_KEYS = ("energy", "totalenergy", "total_energy")
 
 
 def _convert_list_value(value):
@@ -19,11 +19,29 @@ def _convert_list_value(value):
     return torch.tensor(array)
 
 
+def _apply_object_aliases(obj_type: str, row: dict[str, object]) -> dict[str, object]:
+    if obj_type != "calo_hits":
+        return row
+
+    energy_key = next((key for key in CALO_ENERGY_KEYS if key in row), None)
+    if energy_key is None:
+        return row
+
+    energy_value = row[energy_key]
+    row.setdefault("energy", energy_value)
+    row.setdefault("totalenergy", energy_value)
+    row.setdefault("total_energy", energy_value)
+    return row
+
+
 class ColliderMLDataset(Dataset):
     """
     A PyTorch Dataset for loading ColliderML data from Hugging Face datasets.
-    It combines multiple configurations (e.g., particles, tracker_hits, calo_hits)
-    for the same events.
+    It combines one or more ColliderML object configurations for the same events.
+
+    The current project default is calorimeter hits only. Calorimeter rows receive a
+    canonical `energy` alias so downstream code can use one stable field name while
+    remaining compatible with both `totalenergy` and `total_energy` dataset variants.
     """
 
     def __init__(
@@ -52,9 +70,7 @@ class ColliderMLDataset(Dataset):
         for obj_type in self.object_types:
             dataset_length = len(self.datasets[obj_type])
             if dataset_length != self.num_events:
-                raise ValueError(
-                    f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
-                )
+                raise ValueError(f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}.")
 
     def __len__(self):
         return self.num_events
@@ -73,7 +89,7 @@ class ColliderMLDataset(Dataset):
                 else:
                     processed_row[key] = value
 
-            event[obj_type] = processed_row
+            event[obj_type] = _apply_object_aliases(obj_type, processed_row)
 
         return event
 
@@ -81,9 +97,8 @@ class ColliderMLDataset(Dataset):
 def collate_fn(batch):
     """
     Custom collate function to handle variable-length events.
-    In HEP, each event has a different number of particles/hits.
-    For point-cloud based models like Panda, we often want to
-    keep events separate until the view-building stage.
+    ColliderML events have variable numbers of calorimeter cells, so we keep events
+    separate until the view-building stage.
     """
     return batch
 
@@ -100,11 +115,10 @@ if __name__ == "__main__":
     for obj_type in sample.keys():
         print(f"  {obj_type}: {sample[obj_type].keys()}")
 
-    # Check tracker hits
-    tracker_hits = sample["tracker_hits"]
-    num_hits = len(tracker_hits["x"])
-    print(f"\nNumber of tracker hits in event 0: {num_hits}")
-    print(f"First 5 tracker hit x coordinates: {tracker_hits['x'][:5]}")
+    calo_hits = sample["calo_hits"]
+    num_hits = len(calo_hits["x"])
+    print(f"\nNumber of calorimeter hits in event 0: {num_hits}")
+    print(f"First 5 calorimeter energies: {calo_hits['energy'][:5]}")
 
     # Create a DataLoader
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)

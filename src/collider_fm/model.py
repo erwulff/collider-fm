@@ -9,8 +9,7 @@ import torch.nn.functional as F
 
 from ._panda.model_base import PointTransformerV3
 from ._panda.structure import Point
-from .views import DEFAULT_POINT_GRID_SIZE, PointView
-
+from .views import DEFAULT_POINT_GRID_SIZE, POINT_FEATURE_DIM, PointView
 
 SMALL_MODEL_BACKBONE_KWARGS = {
     "enc_depths": (1, 1, 1, 1, 1),
@@ -108,11 +107,11 @@ class PandaEncoderBackbone(nn.Module):
 
 
 class PandaSelfDistillation(nn.Module):
-    """Simplified Panda-style self-distillation model for ColliderML point clouds."""
+    """Simplified Panda-style self-distillation model for ColliderML calo point clouds."""
 
     def __init__(
         self,
-        in_channels: int = 6,
+        in_channels: int = POINT_FEATURE_DIM,
         embed_channels: int = 64,
         num_prototypes: int = 1024,
         projection_dim: int = 256,
@@ -148,6 +147,7 @@ class PandaSelfDistillation(nn.Module):
             "enc_patch_size": (48, 48, 48, 48, 48),
             "enc_mode": True,
             "enable_flash": False,
+            "mask_token": True,
         }
         if backbone_kwargs is not None:
             default_backbone_kwargs.update(dict(backbone_kwargs))
@@ -194,7 +194,15 @@ class PandaSelfDistillation(nn.Module):
         if len(views) < 2:
             raise ValueError("Self-distillation requires at least two augmented views.")
 
-        student_outputs = [self._encode_view(view, self.student_backbone, self.student_projector, self.student_predictor) for view in views]
+        student_outputs = [
+            self._encode_view(
+                view,
+                self.student_backbone,
+                self.student_projector,
+                self.student_predictor,
+            )
+            for view in views
+        ]
 
         with torch.no_grad():
             teacher_outputs = [self._encode_view(view, self.teacher_backbone, self.teacher_projector) for view in views[:2]]
@@ -258,7 +266,7 @@ def create_small_panda_model(
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
 
     model = PandaSelfDistillation(
-        in_channels=6,
+        in_channels=POINT_FEATURE_DIM,
         embed_channels=8,
         num_prototypes=32,
         projection_dim=8,

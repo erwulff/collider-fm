@@ -25,7 +25,7 @@ source .venv/bin/activate
 # Run the Python script to download the pu0 datasets
 uv run python scripts/download_data.py \
     --dataset-types ttbar \
-    --object-types particles tracker_hits calo_hits tracks \
+    --object-types calo_hits \
     --pu-config pu0 \
     --cache-dir /mnt/ceph/users/ewulff/data/hf \
     --num-proc 12

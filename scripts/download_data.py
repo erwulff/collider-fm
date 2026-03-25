@@ -8,17 +8,31 @@ def main():
     parser.add_argument(
         "--object-types",
         nargs="+",
-        default=["particles", "tracker_hits", "calo_hits", "tracks"],
-        help="List of object types to download (default: ['particles', 'tracker_hits', 'calo_hits', 'tracks']).",
+        default=["calo_hits"],
+        help="List of object types to download (default: ['calo_hits']).",
     )
     parser.add_argument(
-        "--dataset-types", nargs="+", default=["ttbar"], help="List of dataset types (default: ['ttbar'], options: 'ttbar', 'dihiggs', 'ggf', 'higgs_portal')."
+        "--dataset-types",
+        nargs="+",
+        default=["ttbar"],
+        help="List of dataset types (default: ['ttbar'], options: 'ttbar', 'dihiggs', 'ggf', 'higgs_portal').",
     )
-    parser.add_argument("--pu-config", default="pu200", help="PU configuration for the dataset (default: 'pu200', options: 'pu0').")
     parser.add_argument(
-        "--cache-dir", default="/mnt/ceph/users/ewulff/data/hf", help="Directory to cache the datasets (default: '/mnt/ceph/users/ewulff/data/hf')."
+        "--pu-config",
+        default="pu200",
+        help="PU configuration for the dataset (default: 'pu200', options: 'pu0').",
     )
-    parser.add_argument("--num-proc", type=int, default=4, help="Number of processes to use for downloading (default: 4).")
+    parser.add_argument(
+        "--cache-dir",
+        default="/mnt/ceph/users/ewulff/data/hf",
+        help="Directory to cache the datasets (default: '/mnt/ceph/users/ewulff/data/hf').",
+    )
+    parser.add_argument(
+        "--num-proc",
+        type=int,
+        default=4,
+        help="Number of processes to use for downloading (default: 4).",
+    )
     # Parse arguments
     args = parser.parse_args()
 
