@@ -9,6 +9,7 @@ import torch
 DEFAULT_POINT_GRID_SIZE = 10.0
 POINT_FEATURE_DIM = 2
 DEFAULT_MASK_FRACTION = 0.3
+DEFAULT_LOCAL_FRACTION = 0.5
 
 # ColliderML calorimeter detector IDs split naturally into two coarse groups.
 # For this phase we keep the detector story intentionally simple: 9/10/11 are
@@ -17,6 +18,11 @@ ECAL_DETECTOR_IDS = frozenset({9, 10, 11})
 HCAL_DETECTOR_IDS = frozenset({12, 13, 14})
 CALO_TYPE_NAMES = {0: "ecal", 1: "hcal"}
 PointView = dict[str, torch.Tensor]
+
+# View convention used throughout this project:
+# - `hidden_mask` marks points whose input energy was hidden from the student.
+# - `loss_mask` marks points that should contribute to the student loss.
+# For global views, `hidden_mask` is all False and `loss_mask` is all True.
 
 
 def _normalize_grid_size(grid_size: Any, device: torch.device) -> torch.Tensor:
@@ -111,9 +117,18 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         dtype=torch.long,
         device=coord.device,
     ).flatten()
-    mask = torch.as_tensor(
+    hidden_mask = torch.as_tensor(
         view.get(
-            "mask", torch.zeros(coord.shape[0], dtype=torch.bool, device=coord.device)
+            "hidden_mask",
+            torch.zeros(coord.shape[0], dtype=torch.bool, device=coord.device),
+        ),
+        dtype=torch.bool,
+        device=coord.device,
+    ).flatten()
+    loss_mask = torch.as_tensor(
+        view.get(
+            "loss_mask",
+            torch.ones(coord.shape[0], dtype=torch.bool, device=coord.device),
         ),
         dtype=torch.bool,
         device=coord.device,
@@ -123,7 +138,8 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         energy.shape[0] != coord.shape[0]
         or calo_type.shape[0] != coord.shape[0]
         or detector_id.shape[0] != coord.shape[0]
-        or mask.shape[0] != coord.shape[0]
+        or hidden_mask.shape[0] != coord.shape[0]
+        or loss_mask.shape[0] != coord.shape[0]
     ):
         raise ValueError("Point-view side channels must contain one value per point.")
 
@@ -137,7 +153,8 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         "energy": energy,
         "detector_id": detector_id,
         "calo_type": calo_type,
-        "mask": mask,
+        "hidden_mask": hidden_mask,
+        "loss_mask": loss_mask,
     }
 
 
@@ -191,7 +208,8 @@ def build_point_view_from_event(
             "energy": energy,
             "detector_id": detector_id,
             "calo_type": calo_type,
-            "mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=device),
+            "hidden_mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=device),
+            "loss_mask": torch.ones(coord.shape[0], dtype=torch.bool, device=device),
         }
     )
 
@@ -237,7 +255,8 @@ def augment_point_view(
         "energy": energy,
         "detector_id": base_view["detector_id"].clone(),
         "calo_type": base_view["calo_type"].clone(),
-        "mask": base_view["mask"].clone(),
+        "hidden_mask": base_view["hidden_mask"].clone(),
+        "loss_mask": base_view["loss_mask"].clone(),
     }
 
 
@@ -255,13 +274,17 @@ def mask_point_view(
         num_masked = max(1, num_masked)
     num_masked = min(num_points, num_masked)
 
-    mask = torch.zeros(num_points, dtype=torch.bool, device=base_view["coord"].device)
+    hidden_mask = torch.zeros(
+        num_points, dtype=torch.bool, device=base_view["coord"].device
+    )
     if num_masked > 0:
-        selected_indices = torch.randperm(num_points, device=mask.device)[:num_masked]
-        mask[selected_indices] = True
+        selected_indices = torch.randperm(num_points, device=hidden_mask.device)[
+            :num_masked
+        ]
+        hidden_mask[selected_indices] = True
 
     energy = base_view["energy"].clone()
-    energy[mask] = 0.0
+    energy[hidden_mask] = 0.0
     return {
         "coord": base_view["coord"].clone(),
         "feat": assemble_point_features(energy, base_view["calo_type"]),
@@ -270,11 +293,57 @@ def mask_point_view(
         "energy": energy,
         "detector_id": base_view["detector_id"].clone(),
         "calo_type": base_view["calo_type"].clone(),
-        "mask": mask,
+        "hidden_mask": hidden_mask,
+        "loss_mask": hidden_mask.clone(),
+    }
+
+
+def local_crop_point_view(
+    view: Mapping[str, Any], keep_fraction: float = DEFAULT_LOCAL_FRACTION
+) -> PointView:
+    """Keep a local neighborhood and hide the rest of the event from the student.
+
+    This keeps the full point order so the code stays easy to follow. Points outside
+    the crop remain in the tensor, but their energy is set to zero and they do not
+    contribute to the student loss.
+    """
+    if not 0.0 < keep_fraction <= 1.0:
+        raise ValueError("'keep_fraction' must be between 0 and 1.")
+
+    base_view = validate_point_view(view)
+    num_points = base_view["coord"].shape[0]
+    num_kept = max(1, int(round(num_points * keep_fraction)))
+
+    center_index = torch.randint(
+        num_points, size=(1,), device=base_view["coord"].device
+    )
+    center = base_view["coord"][center_index[0]]
+    distances = torch.linalg.norm(base_view["coord"] - center, dim=1)
+    kept_indices = torch.topk(distances, k=num_kept, largest=False).indices
+
+    loss_mask = torch.zeros(
+        num_points, dtype=torch.bool, device=base_view["coord"].device
+    )
+    loss_mask[kept_indices] = True
+    hidden_mask = ~loss_mask
+
+    energy = base_view["energy"].clone()
+    energy[hidden_mask] = 0.0
+    return {
+        "coord": base_view["coord"].clone(),
+        "feat": assemble_point_features(energy, base_view["calo_type"]),
+        "offset": base_view["offset"].clone(),
+        "grid_size": base_view["grid_size"].clone(),
+        "energy": energy,
+        "detector_id": base_view["detector_id"].clone(),
+        "calo_type": base_view["calo_type"].clone(),
+        "hidden_mask": hidden_mask,
+        "loss_mask": loss_mask,
     }
 
 
 def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
+    """Stack several single-event views into one batched point view."""
     if not views:
         raise ValueError("At least one point view is required to create a batch.")
 
@@ -301,7 +370,10 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
             [view["detector_id"] for view in normalized_views], dim=0
         ),
         "calo_type": torch.cat([view["calo_type"] for view in normalized_views], dim=0),
-        "mask": torch.cat([view["mask"] for view in normalized_views], dim=0),
+        "hidden_mask": torch.cat(
+            [view["hidden_mask"] for view in normalized_views], dim=0
+        ),
+        "loss_mask": torch.cat([view["loss_mask"] for view in normalized_views], dim=0),
     }
 
 
@@ -310,9 +382,16 @@ def build_distillation_views(
     device: torch.device,
     max_calo_hits: int | None = None,
     num_augmentations: int = 2,
+    add_local_view: bool = False,
+    local_fraction: float = DEFAULT_LOCAL_FRACTION,
     add_masked_view: bool = False,
     mask_fraction: float = DEFAULT_MASK_FRACTION,
 ) -> list[PointView]:
+    """Build the list of student or teacher views used by training.
+
+    The first two entries are always global views. Optional local and masked views
+    are appended afterward so the calling code can stay simple.
+    """
     if num_augmentations < 2:
         raise ValueError("Self-distillation requires at least two augmented views.")
 
@@ -324,6 +403,17 @@ def build_distillation_views(
         batch_point_views([augment_point_view(view) for view in base_views])
         for _ in range(num_augmentations)
     ]
+    if add_local_view:
+        views.append(
+            batch_point_views(
+                [
+                    local_crop_point_view(
+                        augment_point_view(view), keep_fraction=local_fraction
+                    )
+                    for view in base_views
+                ]
+            )
+        )
     if add_masked_view:
         views.append(
             batch_point_views(
@@ -364,5 +454,6 @@ def make_random_view(
         "energy": energy,
         "detector_id": detector_id.long(),
         "calo_type": calo_type,
-        "mask": torch.zeros(num_points, dtype=torch.bool, device=device),
+        "hidden_mask": torch.zeros(num_points, dtype=torch.bool, device=device),
+        "loss_mask": torch.ones(num_points, dtype=torch.bool, device=device),
     }

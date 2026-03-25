@@ -35,6 +35,7 @@ from collider_fm.views import (
     augment_point_view,
     batch_point_views,
     build_point_view_from_event,
+    local_crop_point_view,
     mask_point_view,
 )
 
@@ -148,13 +149,24 @@ def plot_calo_type_counts(view: dict[str, torch.Tensor], path: Path) -> None:
 
 
 def plot_mask_counts(view: dict[str, torch.Tensor], path: Path) -> None:
-    mask = view["mask"]
-    counts = [int((~mask).sum().item()), int(mask.sum().item())]
+    hidden_mask = view["hidden_mask"]
+    counts = [int((~hidden_mask).sum().item()), int(hidden_mask.sum().item())]
 
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.bar(["visible", "masked"], counts, color=["tab:blue", "tab:red"])
     ax.set_ylabel("points")
     ax.set_title("Mask counts")
+    save_figure(fig, path)
+
+
+def plot_loss_counts(view: dict[str, torch.Tensor], path: Path) -> None:
+    loss_mask = view["loss_mask"]
+    counts = [int(loss_mask.sum().item()), int((~loss_mask).sum().item())]
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(["used in loss", "ignored"], counts, color=["tab:green", "tab:gray"])
+    ax.set_ylabel("points")
+    ax.set_title("Loss-mask counts")
     save_figure(fig, path)
 
 
@@ -253,6 +265,7 @@ def main() -> None:
     )
     aug_a = augment_point_view(base_view)
     aug_b = augment_point_view(base_view)
+    local_view = local_crop_point_view(augment_point_view(base_view))
     masked_view = mask_point_view(augment_point_view(base_view))
     representation_views = [
         build_point_view_from_event(
@@ -264,7 +277,16 @@ def main() -> None:
     plot_raw_event(detail_event, output_dirs["raw"] / "event_000_raw.png")
     plot_views(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_views.png")
     plot_calo_type_counts(base_view, output_dirs["views"] / "event_000_calo_types.png")
+    plot_mask_counts(
+        local_view, output_dirs["views"] / "event_000_local_hidden_counts.png"
+    )
+    plot_loss_counts(
+        local_view, output_dirs["views"] / "event_000_local_loss_counts.png"
+    )
     plot_mask_counts(masked_view, output_dirs["views"] / "event_000_mask_counts.png")
+    plot_loss_counts(
+        masked_view, output_dirs["views"] / "event_000_mask_loss_counts.png"
+    )
 
     summary: dict[str, Any] = {
         "device": str(device),
@@ -282,7 +304,9 @@ def main() -> None:
             summary["checkpoint_load"] = load_checkpoint(model, args.checkpoint)
         model.eval()
 
-        student_outputs, teacher_outputs = model([base_view, aug_a, masked_view])
+        student_outputs, teacher_outputs = model(
+            [base_view, aug_a, local_view, masked_view]
+        )
         prototype_summary = plot_prototype_usage(
             student_outputs[0],
             output_dirs["model"] / "prototype_usage.png",
@@ -305,6 +329,7 @@ def main() -> None:
         summary["model"] = {
             "student_logits": tensor_summary(student_outputs[0]),
             "teacher_logits": tensor_summary(teacher_outputs[0]),
+            "local_view": tensor_summary(local_view["feat"]),
             "masked_view": tensor_summary(masked_view["feat"]),
             "point_features": tensor_summary(detail_encoding["point_features"]),
             "pooled_embeddings": tensor_summary(representation_encoding["pooled"]),

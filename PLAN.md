@@ -33,7 +33,7 @@ Progress note: the repo already has a working dataset loader, but the default pa
 - [x] Start with simple global-view augmentations that are geometry-safe.
 - [~] Add local and masked views only after the base calo path is clear.
 
-Progress note: the current point-view code is centralized already, which is good. It now includes a simple masked-view path that keeps point order fixed so the training logic stays easy to understand.
+Progress note: the current point-view code is centralized already, which is good. It now includes simple local and masked view paths that keep point order fixed so the training logic stays easy to understand.
 
 ### Stage 3: Model and training loop
 
@@ -58,11 +58,11 @@ Progress note: the current training loop already runs, but the representation pa
 
 ### Stage 5: Teaching materials
 
-- [ ] Write a tutorial notebook that explains the whole pipeline step by step.
-- [ ] Show how raw ColliderML calo data becomes a point view.
-- [ ] Show how the model consumes that point view.
-- [ ] Show one short training step and how the loss is formed.
-- [ ] Show how to inspect saved diagnostics and exported embeddings.
+- [x] Write a tutorial notebook that explains the whole pipeline step by step.
+- [x] Show how raw ColliderML calo data becomes a point view.
+- [x] Show how the model consumes that point view.
+- [x] Show one short training step and how the loss is formed.
+- [x] Show how to inspect saved diagnostics and exported embeddings.
 
 This notebook is a first-class deliverable for this phase, not an afterthought.
 

@@ -99,6 +99,29 @@ class ModelTests(unittest.TestCase):
             torch.allclose(center_before, cast(torch.Tensor, model.center))
         )
 
+    def test_distillation_loss_can_use_loss_masks(self):
+        model = PandaSelfDistillation(
+            in_channels=POINT_FEATURE_DIM,
+            embed_channels=8,
+            num_prototypes=7,
+            projection_dim=6,
+            prediction_dim=5,
+            backbone_cls=DummyBackbone,
+            backbone_kwargs={"out_channels": 10, "enc_channels": (8, 10)},
+        )
+        student_outputs = [torch.randn(5, 7), torch.randn(5, 7), torch.randn(5, 7)]
+        teacher_outputs = [torch.randn(5, 7), torch.randn(5, 7)]
+        loss_masks = [
+            torch.tensor([True, True, True, True, True]),
+            torch.tensor([True, False, True, False, True]),
+            torch.tensor([False, True, False, True, False]),
+        ]
+
+        loss = model.distillation_loss(
+            student_outputs, teacher_outputs, loss_masks=loss_masks
+        )
+        self.assertEqual(loss.ndim, 0)
+
     def test_small_model_factory_uses_shared_defaults(self):
         model = create_small_panda_model(
             backbone_cls=DummyBackbone,

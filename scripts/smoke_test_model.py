@@ -17,6 +17,7 @@ from collider_fm.views import (
     POINT_FEATURE_DIM,
     augment_point_view,
     build_point_view_from_event,
+    local_crop_point_view,
     mask_point_view,
     make_random_view,
 )
@@ -54,6 +55,7 @@ def load_smoke_test_views(
         return [
             base_view,
             augment_point_view(base_view),
+            local_crop_point_view(augment_point_view(base_view)),
             mask_point_view(augment_point_view(base_view)),
         ], "ColliderML cached calo event"
     except Exception as exc:
@@ -65,7 +67,7 @@ def load_smoke_test_views(
             make_random_view(
                 num_points=64, in_channels=POINT_FEATURE_DIM, device=device
             )
-            for _ in range(3)
+            for _ in range(4)
         ]
         return views, f"synthetic fallback ({type(exc).__name__}: {exc})"
 
@@ -88,9 +90,9 @@ def run_smoke_test(args: argparse.Namespace) -> None:
     )
 
     student_outputs, teacher_outputs = model(views)
-    student_masks = [view["mask"] for view in views]
+    student_masks = [view["loss_mask"] for view in views]
     loss = model.distillation_loss(
-        student_outputs, teacher_outputs, student_masks=student_masks
+        student_outputs, teacher_outputs, loss_masks=student_masks
     )
     model.update_center(teacher_outputs)
     model.update_teacher(momentum=0.99)
