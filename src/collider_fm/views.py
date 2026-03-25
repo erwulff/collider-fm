@@ -8,6 +8,7 @@ import torch
 
 DEFAULT_POINT_GRID_SIZE = 10.0
 POINT_FEATURE_DIM = 2
+DEFAULT_MASK_FRACTION = 0.3
 
 # ColliderML calorimeter detector IDs split naturally into two coarse groups.
 # For this phase we keep the detector story intentionally simple: 9/10/11 are
@@ -110,11 +111,19 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         dtype=torch.long,
         device=coord.device,
     ).flatten()
+    mask = torch.as_tensor(
+        view.get(
+            "mask", torch.zeros(coord.shape[0], dtype=torch.bool, device=coord.device)
+        ),
+        dtype=torch.bool,
+        device=coord.device,
+    ).flatten()
 
     if (
         energy.shape[0] != coord.shape[0]
         or calo_type.shape[0] != coord.shape[0]
         or detector_id.shape[0] != coord.shape[0]
+        or mask.shape[0] != coord.shape[0]
     ):
         raise ValueError("Point-view side channels must contain one value per point.")
 
@@ -128,6 +137,7 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         "energy": energy,
         "detector_id": detector_id,
         "calo_type": calo_type,
+        "mask": mask,
     }
 
 
@@ -181,6 +191,7 @@ def build_point_view_from_event(
             "energy": energy,
             "detector_id": detector_id,
             "calo_type": calo_type,
+            "mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=device),
         }
     )
 
@@ -226,6 +237,40 @@ def augment_point_view(
         "energy": energy,
         "detector_id": base_view["detector_id"].clone(),
         "calo_type": base_view["calo_type"].clone(),
+        "mask": base_view["mask"].clone(),
+    }
+
+
+def mask_point_view(
+    view: Mapping[str, Any], mask_fraction: float = DEFAULT_MASK_FRACTION
+) -> PointView:
+    """Hide a random fraction of point energies while keeping point order fixed."""
+    if not 0.0 <= mask_fraction <= 1.0:
+        raise ValueError("'mask_fraction' must be between 0 and 1.")
+
+    base_view = validate_point_view(view)
+    num_points = base_view["coord"].shape[0]
+    num_masked = int(round(num_points * mask_fraction))
+    if mask_fraction > 0.0:
+        num_masked = max(1, num_masked)
+    num_masked = min(num_points, num_masked)
+
+    mask = torch.zeros(num_points, dtype=torch.bool, device=base_view["coord"].device)
+    if num_masked > 0:
+        selected_indices = torch.randperm(num_points, device=mask.device)[:num_masked]
+        mask[selected_indices] = True
+
+    energy = base_view["energy"].clone()
+    energy[mask] = 0.0
+    return {
+        "coord": base_view["coord"].clone(),
+        "feat": assemble_point_features(energy, base_view["calo_type"]),
+        "offset": base_view["offset"].clone(),
+        "grid_size": base_view["grid_size"].clone(),
+        "energy": energy,
+        "detector_id": base_view["detector_id"].clone(),
+        "calo_type": base_view["calo_type"].clone(),
+        "mask": mask,
     }
 
 
@@ -256,6 +301,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
             [view["detector_id"] for view in normalized_views], dim=0
         ),
         "calo_type": torch.cat([view["calo_type"] for view in normalized_views], dim=0),
+        "mask": torch.cat([view["mask"] for view in normalized_views], dim=0),
     }
 
 
@@ -264,6 +310,8 @@ def build_distillation_views(
     device: torch.device,
     max_calo_hits: int | None = None,
     num_augmentations: int = 2,
+    add_masked_view: bool = False,
+    mask_fraction: float = DEFAULT_MASK_FRACTION,
 ) -> list[PointView]:
     if num_augmentations < 2:
         raise ValueError("Self-distillation requires at least two augmented views.")
@@ -272,10 +320,22 @@ def build_distillation_views(
         build_point_view_from_event(event, device=device, max_calo_hits=max_calo_hits)
         for event in events
     ]
-    return [
+    views = [
         batch_point_views([augment_point_view(view) for view in base_views])
         for _ in range(num_augmentations)
     ]
+    if add_masked_view:
+        views.append(
+            batch_point_views(
+                [
+                    mask_point_view(
+                        augment_point_view(view), mask_fraction=mask_fraction
+                    )
+                    for view in base_views
+                ]
+            )
+        )
+    return views
 
 
 def make_random_view(
@@ -304,4 +364,5 @@ def make_random_view(
         "energy": energy,
         "detector_id": detector_id.long(),
         "calo_type": calo_type,
+        "mask": torch.zeros(num_points, dtype=torch.bool, device=device),
     }

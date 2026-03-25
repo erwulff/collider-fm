@@ -31,9 +31,9 @@ Progress note: the repo already has a working dataset loader, but the default pa
 - [x] Keep the feature contract easy to read and document clearly.
 - [x] Preserve detector identity in a way students can understand.
 - [x] Start with simple global-view augmentations that are geometry-safe.
-- [ ] Add local and masked views only after the base calo path is clear.
+- [~] Add local and masked views only after the base calo path is clear.
 
-Progress note: the current point-view code is centralized already, which is good. It just needs to stop mixing tracker hits into the representation.
+Progress note: the current point-view code is centralized already, which is good. It now includes a simple masked-view path that keeps point order fixed so the training logic stays easy to understand.
 
 ### Stage 3: Model and training loop
 

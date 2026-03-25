@@ -35,6 +35,7 @@ from collider_fm.views import (
     augment_point_view,
     batch_point_views,
     build_point_view_from_event,
+    mask_point_view,
 )
 
 
@@ -146,6 +147,17 @@ def plot_calo_type_counts(view: dict[str, torch.Tensor], path: Path) -> None:
     save_figure(fig, path)
 
 
+def plot_mask_counts(view: dict[str, torch.Tensor], path: Path) -> None:
+    mask = view["mask"]
+    counts = [int((~mask).sum().item()), int(mask.sum().item())]
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(["visible", "masked"], counts, color=["tab:blue", "tab:red"])
+    ax.set_ylabel("points")
+    ax.set_title("Mask counts")
+    save_figure(fig, path)
+
+
 def plot_prototype_usage(
     point_logits: torch.Tensor, path: Path, top_k: int
 ) -> dict[str, float]:
@@ -241,6 +253,7 @@ def main() -> None:
     )
     aug_a = augment_point_view(base_view)
     aug_b = augment_point_view(base_view)
+    masked_view = mask_point_view(augment_point_view(base_view))
     representation_views = [
         build_point_view_from_event(
             event, device=device, max_calo_hits=args.max_calo_hits
@@ -251,6 +264,7 @@ def main() -> None:
     plot_raw_event(detail_event, output_dirs["raw"] / "event_000_raw.png")
     plot_views(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_views.png")
     plot_calo_type_counts(base_view, output_dirs["views"] / "event_000_calo_types.png")
+    plot_mask_counts(masked_view, output_dirs["views"] / "event_000_mask_counts.png")
 
     summary: dict[str, Any] = {
         "device": str(device),
@@ -268,7 +282,7 @@ def main() -> None:
             summary["checkpoint_load"] = load_checkpoint(model, args.checkpoint)
         model.eval()
 
-        student_outputs, teacher_outputs = model([base_view, aug_a])
+        student_outputs, teacher_outputs = model([base_view, aug_a, masked_view])
         prototype_summary = plot_prototype_usage(
             student_outputs[0],
             output_dirs["model"] / "prototype_usage.png",
@@ -291,6 +305,7 @@ def main() -> None:
         summary["model"] = {
             "student_logits": tensor_summary(student_outputs[0]),
             "teacher_logits": tensor_summary(teacher_outputs[0]),
+            "masked_view": tensor_summary(masked_view["feat"]),
             "point_features": tensor_summary(detail_encoding["point_features"]),
             "pooled_embeddings": tensor_summary(representation_encoding["pooled"]),
             "prototype_usage": prototype_summary,

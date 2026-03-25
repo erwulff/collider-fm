@@ -219,6 +219,7 @@ class PandaSelfDistillation(nn.Module):
         self,
         student_outputs: Sequence[torch.Tensor],
         teacher_outputs: Sequence[torch.Tensor],
+        student_masks: Sequence[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if not student_outputs or not teacher_outputs:
             raise ValueError("Student and teacher outputs must both be non-empty.")
@@ -234,9 +235,24 @@ class PandaSelfDistillation(nn.Module):
                     raise ValueError(
                         "Student and teacher logits must have the same shape for point-level matching."
                     )
+                if student_masks is not None:
+                    mask = student_masks[student_index]
+                    if mask.shape[0] != student_logits.shape[0]:
+                        raise ValueError(
+                            "Each student mask must contain one value per point."
+                        )
+                    if mask.any():
+                        student_logits_for_loss = student_logits[mask]
+                        teacher_logits_for_loss = teacher_logits.detach()[mask]
+                    else:
+                        student_logits_for_loss = student_logits
+                        teacher_logits_for_loss = teacher_logits.detach()
+                else:
+                    student_logits_for_loss = student_logits
+                    teacher_logits_for_loss = teacher_logits.detach()
                 total_loss = total_loss + panda_loss(
-                    student_logits,
-                    teacher_logits.detach(),
+                    student_logits_for_loss,
+                    teacher_logits_for_loss,
                     center,
                     self.temp_student,
                     self.temp_teacher,

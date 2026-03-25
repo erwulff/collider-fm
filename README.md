@@ -8,6 +8,7 @@ The current phase is intentionally narrow and simple: calo-only self-distillatio
 - Use only `calo_hits` from ColliderML.
 - Build one event into a sparse 3D point cloud.
 - Train a small Panda-style student/teacher model.
+- Include one simple masked-view variant without making the code hard to follow.
 - Keep the code easy to read and easy to teach.
 
 The main data path is:
@@ -105,7 +106,7 @@ It walks through the full pipeline step by step:
 
 1. loading ColliderML calo events
 2. building point views
-3. creating augmented SSL views
+3. creating augmented and masked SSL views
 4. running the model
 5. understanding the loss
 6. saving checkpoints and exporting embeddings

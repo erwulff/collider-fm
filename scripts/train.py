@@ -43,6 +43,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-batches", type=int, default=2)
     parser.add_argument("--max-val-batches", type=int, default=1)
     parser.add_argument("--max-calo-hits", type=int, default=256)
+    parser.add_argument("--add-masked-view", action="store_true")
+    parser.add_argument("--mask-fraction", type=float, default=0.3)
     parser.add_argument("--dataset-type", default="ttbar")
     parser.add_argument("--pu-config", default="pu0")
     parser.add_argument("--cache-dir", default="/mnt/ceph/users/ewulff/data/hf")
@@ -117,6 +119,8 @@ def run_epoch(
     max_batches: int,
     teacher_momentum: float,
     max_calo_hits: int,
+    add_masked_view: bool,
+    mask_fraction: float,
     phase: str,
 ) -> tuple[float, int]:
     is_training = optimizer is not None
@@ -129,11 +133,18 @@ def run_epoch(
             break
 
         views = build_distillation_views(
-            events, device=device, max_calo_hits=max_calo_hits
+            events,
+            device=device,
+            max_calo_hits=max_calo_hits,
+            add_masked_view=add_masked_view,
+            mask_fraction=mask_fraction,
         )
+        student_masks = [view["mask"] for view in views]
         with torch.set_grad_enabled(is_training):
             student_outputs, teacher_outputs = model(views)
-            loss = model.distillation_loss(student_outputs, teacher_outputs)
+            loss = model.distillation_loss(
+                student_outputs, teacher_outputs, student_masks=student_masks
+            )
 
         if is_training:
             optimizer.zero_grad(set_to_none=True)
@@ -206,6 +217,8 @@ def main() -> None:
             "max_train_batches": args.max_train_batches,
             "max_val_batches": args.max_val_batches,
             "max_calo_hits": args.max_calo_hits,
+            "add_masked_view": args.add_masked_view,
+            "mask_fraction": args.mask_fraction,
             "dataset_type": args.dataset_type,
             "pu_config": args.pu_config,
             "resume_from": args.resume_from,
@@ -224,6 +237,8 @@ def main() -> None:
                 max_batches=args.max_train_batches,
                 teacher_momentum=args.teacher_momentum,
                 max_calo_hits=args.max_calo_hits,
+                add_masked_view=args.add_masked_view,
+                mask_fraction=args.mask_fraction,
                 phase="train",
             )
             global_step += train_batches
@@ -235,6 +250,8 @@ def main() -> None:
                 max_batches=args.max_val_batches,
                 teacher_momentum=args.teacher_momentum,
                 max_calo_hits=args.max_calo_hits,
+                add_masked_view=args.add_masked_view,
+                mask_fraction=args.mask_fraction,
                 phase="val",
             )
             checkpoint = save_checkpoint(
