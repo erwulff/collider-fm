@@ -4,11 +4,10 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .data import ColliderMLDataset, collate_fn
-from .model import PandaSelfDistillation, as_point_cloud, mean_pool_features
+from .model import PandaSelfDistillation
 
 
 def create_dataloader(
@@ -26,7 +25,9 @@ def create_dataloader(
         object_types=["calo_hits"],
         cache_dir=cache_dir,
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    return DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
 
 def load_events(
@@ -47,7 +48,9 @@ def load_events(
     return next(iter(dataloader))
 
 
-def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[str, Any]:
+def load_checkpoint(
+    model: PandaSelfDistillation, checkpoint_path: str
+) -> dict[str, Any]:
     """Load a checkpoint into the model and report key mismatches."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint
@@ -72,7 +75,9 @@ def to_numpy(tensor: torch.Tensor) -> np.ndarray:
 
 def radius(values: dict[str, torch.Tensor]) -> torch.Tensor:
     """Compute the radial distance for hit dictionaries with x/y/z coordinates."""
-    return torch.linalg.norm(torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1)
+    return torch.linalg.norm(
+        torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1
+    )
 
 
 def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
@@ -121,22 +126,19 @@ def encode_view(
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Encode one point-view through the student or teacher pathway."""
-    point = as_point_cloud(view, default_grid_size=model.grid_size)
-    backbone = model.teacher_backbone if use_teacher else model.student_backbone
-    projector = model.teacher_projector if use_teacher else model.student_projector
-    predictor = None if use_teacher else model.student_predictor
-
-    encoded = backbone(point)
-    pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
-    projection = projector(pooled)
-    if predictor is not None:
-        projection = predictor(projection)
-    projection = F.normalize(projection, dim=-1)
-    logits = model.prototype_head(projection)
+    encoded = (
+        model.encode_teacher_view(view)
+        if use_teacher
+        else model.encode_student_view(view)
+    )
     return {
-        "point_features": encoded.feat,
-        "pooled": pooled,
-        "projection": projection,
-        "logits": logits,
-        "offset": point.offset,
+        "point_features": encoded["point_features"],
+        "point_projection": encoded["point_projection"],
+        "pooled": encoded["pooled"],
+        "projection": encoded["masked_pooled_projection"],
+        "logits": encoded["masked_logits"],
+        "point_logits": encoded["point_logits"],
+        "offset": encoded["offset"],
+        "source_index": encoded["source_index"],
+        "mask": encoded["mask"],
     }

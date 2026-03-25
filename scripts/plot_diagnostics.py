@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from collider_fm.diagnostics import (
     tensor_summary,
     to_numpy,
 )
-from collider_fm.model import create_small_panda_model
+from collider_fm.model import create_small_panda_model, create_training_panda_model
 from collider_fm.views import (
     augment_point_view,
     batch_point_views,
@@ -53,6 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-calo-hits", type=int, default=256)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--metrics-file", default=None)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--dataset-type", default="ttbar")
     parser.add_argument("--pu-config", default="pu0")
@@ -89,7 +91,9 @@ def set_seed(seed: int) -> None:
 
 def resolve_device(device_name: str) -> torch.device:
     if device_name == "cuda" and not torch.cuda.is_available():
-        print("CUDA was requested but is unavailable; falling back to CPU for raw/view diagnostics only.")
+        print(
+            "CUDA was requested but is unavailable; falling back to CPU for raw/view diagnostics only."
+        )
         return torch.device("cpu")
     return torch.device(device_name)
 
@@ -180,7 +184,9 @@ def plot_view_signal(view: dict[str, torch.Tensor], path: Path) -> None:
     fig = plt.figure(figsize=(14, 12))
     grid = fig.add_gridspec(3, 2)
     ax_scatter = fig.add_subplot(grid[:, 0], projection="3d")
-    scatter = ax_scatter.scatter(coord[:, 2], coord[:, 0], coord[:, 1], c=energy, cmap="inferno", s=4, alpha=0.7)
+    scatter = ax_scatter.scatter(
+        coord[:, 2], coord[:, 0], coord[:, 1], c=energy, cmap="inferno", s=4, alpha=0.7
+    )
     fig.colorbar(scatter, ax=ax_scatter, shrink=0.7, pad=0.1, label="energy")
     ax_scatter.set_xlabel("z")
     ax_scatter.set_ylabel("x")
@@ -336,12 +342,20 @@ def plot_logits(
 
 def jensen_shannon_divergence(prob_a: torch.Tensor, prob_b: torch.Tensor) -> float:
     mean_prob = 0.5 * (prob_a + prob_b)
-    js = 0.5 * F.kl_div(prob_a.log(), mean_prob, reduction="sum") + 0.5 * F.kl_div(prob_b.log(), mean_prob, reduction="sum")
+    js = 0.5 * F.kl_div(prob_a.log(), mean_prob, reduction="sum") + 0.5 * F.kl_div(
+        prob_b.log(), mean_prob, reduction="sum"
+    )
     return float(js.item())
 
 
-def embedding_cosine_similarity(embedding_a: torch.Tensor, embedding_b: torch.Tensor) -> float:
-    return float(F.cosine_similarity(embedding_a.reshape(1, -1), embedding_b.reshape(1, -1), dim=1).item())
+def embedding_cosine_similarity(
+    embedding_a: torch.Tensor, embedding_b: torch.Tensor
+) -> float:
+    return float(
+        F.cosine_similarity(
+            embedding_a.reshape(1, -1), embedding_b.reshape(1, -1), dim=1
+        ).item()
+    )
 
 
 def plot_view_agreement(
@@ -363,7 +377,9 @@ def plot_view_agreement(
     }
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].bar(list(cosine_values.keys()), list(cosine_values.values()), color="tab:green")
+    axes[0].bar(
+        list(cosine_values.keys()), list(cosine_values.values()), color="tab:green"
+    )
     axes[0].set_ylim(0.0, 1.05)
     axes[0].set_title("Embedding cosine similarity")
     axes[0].tick_params(axis="x", rotation=20)
@@ -373,7 +389,9 @@ def plot_view_agreement(
     save_figure(fig, path)
 
 
-def plot_embedding_pca(embeddings: torch.Tensor, event_labels: list[str], path: Path) -> None:
+def plot_embedding_pca(
+    embeddings: torch.Tensor, event_labels: list[str], path: Path
+) -> None:
     projected = compute_pca(to_numpy(embeddings), n_components=2)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(
@@ -391,11 +409,15 @@ def plot_embedding_pca(embeddings: torch.Tensor, event_labels: list[str], path: 
     save_figure(fig, path)
 
 
-def plot_point_feature_pca(point_features: torch.Tensor, path: Path, max_points: int, seed: int) -> None:
+def plot_point_feature_pca(
+    point_features: torch.Tensor, path: Path, max_points: int, seed: int
+) -> None:
     point_features_np = to_numpy(point_features)
     if point_features_np.shape[0] > max_points:
         rng = np.random.default_rng(seed)
-        selected = np.sort(rng.choice(point_features_np.shape[0], size=max_points, replace=False))
+        selected = np.sort(
+            rng.choice(point_features_np.shape[0], size=max_points, replace=False)
+        )
     else:
         selected = np.arange(point_features_np.shape[0])
     projected = compute_pca(point_features_np[selected], n_components=2)
@@ -412,7 +434,9 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weights_source: str) -> None:
+def write_summary(
+    path: Path, device: torch.device, ran_model_plots: bool, weights_source: str
+) -> None:
     lines = [
         "ColliderFM diagnostics run",
         "",
@@ -429,11 +453,98 @@ def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weigh
     path.write_text("\n".join(lines))
 
 
+def infer_metrics_path(
+    checkpoint_path: str | None, metrics_file: str | None
+) -> Path | None:
+    if metrics_file is not None:
+        return Path(metrics_file)
+    if checkpoint_path is None:
+        return None
+
+    checkpoint = Path(checkpoint_path)
+    run_dir = (
+        checkpoint.parent.parent
+        if checkpoint.parent.name == "checkpoints"
+        else checkpoint.parent
+    )
+    candidate = run_dir / "metrics.jsonl"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
+    records = []
+    for line in metrics_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        records.append(json.loads(line))
+    return records
+
+
+def _metric_series(
+    records: Sequence[dict[str, Any]], key: str
+) -> tuple[list[float], list[float]]:
+    xs = []
+    ys = []
+    for record in records:
+        if key not in record:
+            continue
+        xs.append(float(record.get("epoch", len(xs) + 1)))
+        ys.append(float(record[key]))
+    return xs, ys
+
+
+def plot_metric_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+    curve_specs = [
+        ("Loss", "train_loss", "val_loss"),
+        ("Prototype entropy", "train_prototype_entropy", "val_prototype_entropy"),
+        ("Embedding norm", "train_embedding_norm", "val_embedding_norm"),
+    ]
+
+    for axis, (title, train_key, val_key) in zip(axes, curve_specs):
+        train_x, train_y = _metric_series(records, train_key)
+        val_x, val_y = _metric_series(records, val_key)
+        if train_y:
+            axis.plot(train_x, train_y, marker="o", label="train")
+        if val_y:
+            axis.plot(val_x, val_y, marker="o", label="val")
+        axis.set_title(title)
+        axis.set_xlabel("epoch")
+        axis.legend()
+
+    fig.suptitle("Training metrics")
+    save_figure(fig, path)
+
+
+def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+    curve_specs = [
+        ("Learning rate", "learning_rate"),
+        ("Teacher momentum", "teacher_momentum"),
+        ("Teacher temperature", "teacher_temperature"),
+    ]
+
+    for axis, (title, key) in zip(axes, curve_specs):
+        xs, ys = _metric_series(records, key)
+        if ys:
+            axis.plot(xs, ys, marker="o")
+        axis.set_title(title)
+        axis.set_xlabel("epoch")
+
+    fig.suptitle("Training schedules")
+    save_figure(fig, path)
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     set_seed(args.seed)
 
-    output_root = Path(args.output_dir) if args.output_dir is not None else default_output_dir()
+    output_root = (
+        Path(args.output_dir) if args.output_dir is not None else default_output_dir()
+    )
     output_dirs = ensure_output_dirs(output_root)
 
     device = resolve_device(args.device)
@@ -458,14 +569,18 @@ def main() -> None:
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
-    base_view = build_point_view_from_event(detail_event, device=device, max_calo_hits=args.max_calo_hits)
+    base_view = build_point_view_from_event(
+        detail_event, device=device, max_calo_hits=args.max_calo_hits
+    )
     aug_a = augment_point_view(base_view)
     aug_b = augment_point_view(base_view)
 
     plot_raw_geometry(detail_event, output_dirs["raw"] / "event_000_geometry.png")
     plot_raw_scalars(detail_event, output_dirs["raw"] / "event_000_scalars.png")
     plot_view_signal(base_view, output_dirs["views"] / "event_000_input_signal.png")
-    plot_augmentations(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentations.png")
+    plot_augmentations(
+        base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentations.png"
+    )
     plot_augmentation_delta(
         base_view,
         aug_a,
@@ -473,14 +588,22 @@ def main() -> None:
         output_dirs["views"] / "event_000_augmentation_delta.png",
     )
 
-    representation_views = [build_point_view_from_event(event, device=device, max_calo_hits=args.max_calo_hits) for event in representation_events]
+    representation_views = [
+        build_point_view_from_event(
+            event, device=device, max_calo_hits=args.max_calo_hits
+        )
+        for event in representation_events
+    ]
     plot_batch_summary(representation_views, output_dirs["views"] / "batch_summary.png")
 
     model_artifact: dict[str, Any] = {
         "device": str(device),
         "checkpoint_path": args.checkpoint,
+        "metrics_path": args.metrics_file,
         "model_plots_generated": False,
-        "weights_source": "fresh initialization" if args.checkpoint is None else f"checkpoint: {args.checkpoint}",
+        "weights_source": "fresh initialization"
+        if args.checkpoint is None
+        else f"checkpoint: {args.checkpoint}",
     }
     tensor_artifact: dict[str, Any] = {
         "detail_event": {
@@ -490,13 +613,34 @@ def main() -> None:
         },
         "representation_sample": {
             "num_events": len(representation_views),
-            "point_counts": [int(view["coord"].shape[0]) for view in representation_views],
-            "masked_counts": [int(view["mask"].sum().item()) for view in representation_views],
+            "point_counts": [
+                int(view["coord"].shape[0]) for view in representation_views
+            ],
+            "masked_counts": [
+                int(view["mask"].sum().item()) for view in representation_views
+            ],
         },
     }
 
+    metrics_path = infer_metrics_path(args.checkpoint, args.metrics_file)
+    if metrics_path is not None and metrics_path.exists():
+        metric_records = load_metric_records(metrics_path)
+        if metric_records:
+            plot_metric_curves(
+                metric_records, output_dirs["model"] / "training_metrics.png"
+            )
+            plot_schedule_curves(
+                metric_records, output_dirs["model"] / "training_schedules.png"
+            )
+            model_artifact["metrics_path"] = str(metrics_path)
+            model_artifact["num_metric_records"] = len(metric_records)
+
     if device.type == "cuda":
-        model = create_small_panda_model(device=device)
+        model = (
+            create_training_panda_model(device=device)
+            if args.checkpoint is not None
+            else create_small_panda_model(device=device)
+        )
         checkpoint_artifact = None
         if args.checkpoint is not None:
             checkpoint_artifact = load_checkpoint(model, args.checkpoint)
@@ -541,8 +685,13 @@ def main() -> None:
         )
 
         representation_batch = batch_point_views(representation_views)
-        representation_encoding = encode_view(model, representation_batch, use_teacher=False)
-        event_labels = [f"event_{index:03d}" for index in range(representation_encoding["pooled"].shape[0])]
+        representation_encoding = encode_view(
+            model, representation_batch, use_teacher=False
+        )
+        event_labels = [
+            f"event_{index:03d}"
+            for index in range(representation_encoding["pooled"].shape[0])
+        ]
         plot_embedding_pca(
             representation_encoding["pooled"],
             event_labels,
@@ -566,11 +715,15 @@ def main() -> None:
         tensor_artifact["representation_sample"].update(
             {
                 "pooled_embeddings": tensor_summary(representation_encoding["pooled"]),
-                "point_features": tensor_summary(representation_encoding["point_features"]),
+                "point_features": tensor_summary(
+                    representation_encoding["point_features"]
+                ),
             }
         )
     else:
-        print("Skipping model-backed plots because the current PTv3/spconv path requires CUDA.")
+        print(
+            "Skipping model-backed plots because the current PTv3/spconv path requires CUDA."
+        )
 
     write_json(
         output_dirs["artifacts"] / "run_config.json",

@@ -13,18 +13,15 @@ if str(SRC_ROOT) not in sys.path:
 
 from collider_fm.data import ColliderMLDataset
 from collider_fm.model import create_small_panda_model
-from collider_fm.views import (
-    POINT_FEATURE_DIM,
-    augment_point_view,
-    build_point_view_from_event,
-    make_random_view,
-)
+from collider_fm.views import build_distillation_views
 
 SMOKE_TEST_MAX_CALO_HITS = 256
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a compact Panda-style smoke test on ColliderML point views.")
+    parser = argparse.ArgumentParser(
+        description="Run a compact Panda-style smoke test on ColliderML point views."
+    )
     parser.add_argument("--train-split", default="train[:1]")
     parser.add_argument("--dataset-type", default="ttbar")
     parser.add_argument("--pu-config", default="pu0")
@@ -37,7 +34,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_smoke_test_views(args: argparse.Namespace, device: torch.device) -> tuple[list[dict[str, torch.Tensor]], str]:
+def load_smoke_test_views(
+    args: argparse.Namespace, device: torch.device
+) -> tuple[dict[str, object], str]:
     try:
         dataset = ColliderMLDataset(
             split=args.train_split,
@@ -47,9 +46,12 @@ def load_smoke_test_views(args: argparse.Namespace, device: torch.device) -> tup
             object_types=["calo_hits"],
         )
         event = dataset[0]
-        base_view = build_point_view_from_event(event, device=device, max_calo_hits=SMOKE_TEST_MAX_CALO_HITS)
-        views = [base_view, augment_point_view(base_view)]
-        return views, "ColliderML cached event"
+        distillation_batch = build_distillation_views(
+            [event],
+            device=device,
+            max_calo_hits=SMOKE_TEST_MAX_CALO_HITS,
+        )
+        return distillation_batch, "ColliderML cached event"
     except Exception as exc:
         if not args.allow_synthetic_fallback:
             raise RuntimeError(
@@ -57,8 +59,22 @@ def load_smoke_test_views(args: argparse.Namespace, device: torch.device) -> tup
                 "Download or cache the dataset first, or rerun with --allow-synthetic-fallback "
                 "for a CUDA-only synthetic check."
             ) from exc
-        views = [make_random_view(num_points=64, in_channels=POINT_FEATURE_DIM, device=device) for _ in range(2)]
-        return views, f"synthetic fallback ({type(exc).__name__}: {exc})"
+        coord = torch.rand(64, 3, device=device)
+        energy = torch.rand(64, device=device)
+        base_event = {
+            "calo_hits": {
+                "x": coord[:, 0],
+                "y": coord[:, 1],
+                "z": coord[:, 2],
+                "energy": energy,
+            }
+        }
+        distillation_batch = build_distillation_views(
+            [base_event],
+            device=device,
+            max_calo_hits=SMOKE_TEST_MAX_CALO_HITS,
+        )
+        return distillation_batch, f"synthetic fallback ({type(exc).__name__}: {exc})"
 
 
 def run_smoke_test(args: argparse.Namespace) -> None:
@@ -70,18 +86,24 @@ def run_smoke_test(args: argparse.Namespace) -> None:
     print(f"Total parameters: {num_params / 1e6:.2f}M")
 
     if device.type != "cuda":
-        print("Skipping forward pass because the Panda smoke test is intended for a CUDA-enabled node.")
+        print(
+            "Skipping forward pass because the Panda smoke test is intended for a CUDA-enabled node."
+        )
         return
 
-    views, data_source = load_smoke_test_views(args, device)
+    batch, data_source = load_smoke_test_views(args, device)
     print(f"Smoke test data source: {data_source}")
-    print(f"Smoke test points per view: {views[0]['coord'].shape[0]} (calo<={SMOKE_TEST_MAX_CALO_HITS})")
-    student_outputs, teacher_outputs = model(views)
+    print(
+        f"Smoke test student points: {batch['student_views'][0]['coord'].shape[0]} (calo<={SMOKE_TEST_MAX_CALO_HITS})"
+    )
+    student_outputs, teacher_outputs = model(batch)
     loss = model.distillation_loss(student_outputs, teacher_outputs)
     model.update_center(teacher_outputs)
     model.update_teacher(momentum=0.99)
 
-    print(f"Forward pass successful. Student output shape: {tuple(student_outputs[0].shape)}")
+    print(
+        f"Forward pass successful. Student point-logit shape: {tuple(student_outputs[0]['point_logits'].shape)}"
+    )
     print(f"Distillation loss: {loss.item():.4f}")
 
 
