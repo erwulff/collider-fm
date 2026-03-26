@@ -2,6 +2,8 @@
 
 Collider Foundation Model is a calo-only self-supervised learning project built around ColliderML Release 1 and a Panda-style student-teacher training recipe. The current repository focus is a clean first-stage pipeline for calorimeter hits only: build point-cloud views from raw events, train a masked global self-distillation model, save checkpoints, and generate diagnostics and training-run plots.
 
+The project now uses a shared OmegaConf config file at `config/default.yaml`. That file defines the project defaults for data loading, view construction, model setup, training, diagnostics, and download settings. Script command-line arguments override the config when both are provided.
+
 ## Current status
 
 - `src/collider_fm/data.py` loads ColliderML `calo_hits` through Hugging Face `datasets` and normalizes calorimeter energy aliases.
@@ -74,6 +76,27 @@ Download the calo-hit subset used by the current pipeline:
 ```bash
 uv run python scripts/download_data.py --dataset-types ttbar --object-types calo_hits --pu-config pu0 --num-proc 12
 ```
+
+For reproducible runs, you can pin the dataset revision and then load only from the local cache:
+
+```bash
+uv run python scripts/download_data.py --dataset-types ttbar --object-types calo_hits --pu-config pu0 --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 --num-proc 12
+uv run python scripts/train.py --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 --local-files-only
+```
+
+This prevents training or diagnostics from silently following newer dataset commits on the Hub after you already cached a known-good version.
+
+## Shared config
+
+The default project config lives at `config/default.yaml`.
+
+Use a custom config file with:
+
+```bash
+uv run python scripts/train.py --config config/default.yaml
+```
+
+Any explicit CLI arguments override values loaded from the config file.
 
 Inspect a sample event:
 

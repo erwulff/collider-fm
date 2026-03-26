@@ -82,6 +82,8 @@ Current status:
 - implemented in `scripts/train.py`
 - current outputs include `config.json`, `metrics.jsonl`, and checkpoints under `runs/<run_name>_<timestamp>/checkpoints/`
 - current metrics include loss, prototype entropy, embedding norm, masked fraction, teacher schedules, and center norm
+- dataset loading can now pin a Hugging Face revision and optionally require local cached files only
+- project defaults are now centralized in `config/default.yaml` and loaded through OmegaConf
 
 ## Diagnostics target
 

@@ -80,6 +80,14 @@ The documented Hugging Face cache for this project is:
 
 Current scripts and SLURM jobs default to that path.
 
+For reproducible training, prefer pinning a Hugging Face dataset revision and then running with local-cache-only loading. The long training job is set up that way so it does not silently move to a newer Hub snapshot during later submissions.
+
+The checked-in default pinned revision is:
+
+```text
+e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+```
+
 ## Logging and outputs
 
 - training runs are written under `runs/<run_name>_<timestamp>/`
