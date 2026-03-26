@@ -26,6 +26,7 @@ dependencies = [
     "matplotlib",
     "tqdm",
     "comet-ml>=3.57.3",
+    "omegaconf>=2.3.0",
 ]
 
 [tool.setuptools]
