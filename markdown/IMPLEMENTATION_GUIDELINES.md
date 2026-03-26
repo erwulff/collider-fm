@@ -91,7 +91,8 @@ Current status:
 
 Current status:
 
-- `notebooks/plot_diagnostics_explorer.ipynb` is the tutorial notebook
+- `notebooks/dataset_walkthrough.ipynb` covers the dataset and dataloader path
+- `notebooks/model_walkthrough.ipynb` covers views, model internals, training, and SSL validation
 - `scripts/plot_diagnostics.py` covers raw/view/model diagnostics and can use checkpoints plus `metrics.jsonl`
 - `scripts/plot_training_run.py` writes run-level metric plots into a subfolder inside the run directory
 

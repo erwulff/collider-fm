@@ -10,7 +10,8 @@ Collider Foundation Model is a calo-only self-supervised learning project built 
 - `scripts/train.py` runs the current calo-only masked-global training loop with JSONL logging, checkpointing, and terminal/log-friendly `tqdm` progress bars.
 - `scripts/plot_diagnostics.py` generates raw-data, view-level, and checkpoint-backed model diagnostics.
 - `scripts/plot_training_run.py` plots saved training metrics directly from a completed run directory.
-- `notebooks/plot_diagnostics_explorer.ipynb` is the tutorial notebook for the repo workflow.
+- `notebooks/dataset_walkthrough.ipynb` explains the Hugging Face dataset and dataloader path.
+- `notebooks/model_walkthrough.ipynb` explains point views, augmentations, model structure, training, and SSL validation plots.
 
 This is still a research/prototype codebase, but the current calo-only training path now runs end to end on GPU and through SLURM.
 
@@ -21,7 +22,7 @@ This is still a research/prototype codebase, but the current calo-only training 
 ├── src/collider_fm/            # Package code for data, views, model, and diagnostics
 ├── tests/                      # Unit tests for the current pipeline
 ├── scripts/                    # Download, inspection, training, smoke-test, and plotting scripts
-├── notebooks/                  # Tutorial notebook for diagnostics and workflow exploration
+├── notebooks/                  # Newcomer walkthrough notebooks and older diagnostics notebook
 ├── slurm/                      # Cluster job scripts for setup, downloads, tests, and training
 ├── apptainer/                  # Container helper scripts
 ├── Panda_repo/                 # Panda reference submodule
@@ -122,10 +123,16 @@ Plot the saved metrics from a completed run into `<run_dir>/plots/`:
 uv run python scripts/plot_training_run.py runs/<run_name>
 ```
 
-Open the tutorial notebook:
+Open the dataset walkthrough notebook:
 
 ```bash
-uv run jupyter lab notebooks/plot_diagnostics_explorer.ipynb
+uv run jupyter lab notebooks/dataset_walkthrough.ipynb
+```
+
+Open the model and training walkthrough notebook:
+
+```bash
+uv run jupyter lab notebooks/model_walkthrough.ipynb
 ```
 
 ## Run outputs
@@ -157,7 +164,10 @@ There are two complementary plotting paths:
   - representation metrics
   - train/val gap plots
 
-The notebook in `notebooks/plot_diagnostics_explorer.ipynb` mirrors the same data-to-view-to-model flow and is intended to be the easiest place to understand the repo.
+The two main newcomer notebooks are:
+
+- `notebooks/dataset_walkthrough.ipynb` for the raw dataset and dataloader path
+- `notebooks/model_walkthrough.ipynb` for point views, augmentations, model internals, training, and SSL validation
 
 ## Development notes
 

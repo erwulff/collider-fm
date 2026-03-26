@@ -16,7 +16,8 @@ Implemented today:
 - `scripts/smoke_test_model.py`: GPU smoke test
 - `scripts/plot_diagnostics.py`: raw/view/model diagnostics
 - `scripts/plot_training_run.py`: run-level metric plotting
-- `notebooks/plot_diagnostics_explorer.ipynb`: tutorial notebook
+- `notebooks/dataset_walkthrough.ipynb`: dataset and dataloader tutorial notebook
+- `notebooks/model_walkthrough.ipynb`: model, training, and SSL tutorial notebook
 - `slurm/`: batch jobs for setup, download, smoke test, and short/medium training runs
 
 ## Source-of-truth docs

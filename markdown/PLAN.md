@@ -29,7 +29,7 @@ This document tracks the near-term roadmap for the current calo-only training pi
 - [x] Add a GPU smoke test for the current calo-only path
 - [x] Add checkpoint-backed diagnostics plots in `scripts/plot_diagnostics.py`
 - [x] Add run-level metric plotting in `scripts/plot_training_run.py`
-- [x] Update the tutorial notebook in `notebooks/plot_diagnostics_explorer.ipynb`
+- [x] Add newcomer walkthrough notebooks for the dataset/dataloader path and the model/training path
 - [x] Submit and validate short SLURM training runs
 
 ## Current limitations
