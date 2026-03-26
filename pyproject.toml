@@ -27,6 +27,9 @@ dependencies = [
     "tqdm",
     "comet-ml>=3.57.3",
     "omegaconf>=2.3.0",
+    "flash-attn",
+    "packaging",
+    "ninja",
 ]
 
 [tool.setuptools]
@@ -39,6 +42,7 @@ where = ["src"]
 # Match the existing cluster install flow, which builds torch-scatter from source.
 find-links = ["https://data.pyg.org/whl/torch-2.8.0+cu128.html"]
 no-binary-package = ["torch-scatter"]
+no-build-isolation-package = ["flash-attn"]
 
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["setuptools", "wheel", "torch"]
