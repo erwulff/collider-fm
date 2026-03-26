@@ -50,10 +50,29 @@ def build_config_arg_parser(
     description: str,
     *,
     epilog: str | None = None,
+    config_sections: Sequence[str] | None = None,
 ) -> argparse.ArgumentParser:
+    combined_epilog = epilog or ""
+    if config_sections:
+        config = to_plain_container(load_project_config(DEFAULT_CONFIG_PATH))
+        override_lines: list[str] = []
+        for section in config_sections:
+            section_value = config
+            for part in section.split("."):
+                section_value = section_value[part]
+            override_lines.extend(_collect_override_lines(section, section_value))
+        override_block = "Available overrides:\n" + "\n".join(
+            f"  {line}" for line in override_lines
+        )
+        combined_epilog = (
+            f"{combined_epilog}\n\n{override_block}"
+            if combined_epilog
+            else override_block
+        )
+
     parser = argparse.ArgumentParser(
         description=description,
-        epilog=epilog,
+        epilog=combined_epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -71,6 +90,23 @@ def build_config_arg_parser(
 
 def to_plain_container(config: Any) -> Any:
     return OmegaConf.to_container(config, resolve=True)
+
+
+def _format_override_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, list):
+        return "[" + ",".join(_format_override_value(item) for item in value) + "]"
+    return str(value)
+
+
+def _collect_override_lines(prefix: str, value: Any) -> list[str]:
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, nested_value in value.items():
+            lines.extend(_collect_override_lines(f"{prefix}.{key}", nested_value))
+        return lines
+    return [f"{prefix}={_format_override_value(value)}"]
 
 
 def model_factory_kwargs(

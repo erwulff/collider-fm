@@ -9,7 +9,7 @@ data:
   local_files_only: false
 
 views:
-  max_calo_hits: 512
+  max_calo_hits:
   coord_noise_scale: 0.5
   energy_jitter_scale: 0.01
   global_crop_ratio: 0.9
@@ -65,8 +65,8 @@ training:
   teacher_temperature_start: 0.04
   teacher_temperature_end: 0.07
   teacher_temperature_warmup_epochs: 1
-  max_train_batches: 20
-  max_val_batches: 5
+  max_train_batches:
+  max_val_batches:
   num_workers: 8
   prefetch_factor: 2
   pin_memory: true

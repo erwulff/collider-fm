@@ -47,6 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/train.py training.batch_size=16 training.num_epochs=10\n"
             "  uv run python scripts/train.py data.local_files_only=true training.log_backend=jsonl"
         ),
+        config_sections=("data", "views", "model.training", "training"),
     )
 
 

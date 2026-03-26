@@ -34,6 +34,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/smoke_test_model.py smoke_test.train_split=train[:4]\n"
             "  uv run python scripts/smoke_test_model.py data.local_files_only=true"
         ),
+        config_sections=("data", "model.diagnostics", "smoke_test"),
     )
 
 

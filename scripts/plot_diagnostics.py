@@ -59,6 +59,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/plot_diagnostics.py diagnostics.detail_split=train[0:2]\n"
             "  uv run python scripts/plot_diagnostics.py diagnostics.device=cpu data.local_files_only=true"
         ),
+        config_sections=(
+            "data",
+            "views",
+            "model.diagnostics",
+            "model.training",
+            "diagnostics",
+        ),
     )
 
 

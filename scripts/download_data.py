@@ -29,6 +29,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/download_data.py download.num_proc=12\n"
             "  uv run python scripts/download_data.py download.object_types=[calo_hits,tracker_hits]"
         ),
+        config_sections=("data", "download"),
     )
 
 
