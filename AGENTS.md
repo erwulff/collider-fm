@@ -1,74 +1,54 @@
 # AGENTS.md
 
-This file is the primary agent-facing guide for this repository. Use it as the operational source of truth for repo workflow and constraints. When other docs conflict with the current filesystem, prefer the current repo state.
+This is the short operational guide for coding agents working in this repository. Prefer the current filesystem and code over stale planning text.
 
-## Project Snapshot
+## Project snapshot
 
-This repository is an early-stage Python project for foundation-model work on particle collider data, with an initial focus on adapting Panda-style self-distillation workflows to ColliderML-style data.
+This repo currently implements a calo-only Panda-style self-distillation pipeline on ColliderML Release 1.
 
-Current implemented areas:
+Implemented today:
 
-- `src/collider_fm/data.py`: dataset loading and simple collate logic.
-- `src/collider_fm/model.py`: early Panda-style model scaffold with a mock test entrypoint.
-- `scripts/download_data.py`: dataset download helper.
-- `scripts/inspect_data.py`: basic event visualization.
-- `slurm/`: job scripts for environment setup, dependency installation, data download, and model smoke tests.
-- `apptainer/build_gemini_container.sh`: container build helper.
+- `src/collider_fm/data.py`: ColliderML loading and calorimeter energy alias normalization
+- `src/collider_fm/views.py`: point-view construction and masked-global view batching
+- `src/collider_fm/model.py`: point-level student/teacher scaffold
+- `src/collider_fm/diagnostics.py`: shared plotting and checkpoint helpers
+- `scripts/train.py`: checkpointed training loop with JSONL logging
+- `scripts/smoke_test_model.py`: GPU smoke test
+- `scripts/plot_diagnostics.py`: raw/view/model diagnostics
+- `scripts/plot_training_run.py`: run-level metric plotting
+- `notebooks/plot_diagnostics_explorer.ipynb`: tutorial notebook
+- `slurm/`: batch jobs for setup, download, smoke test, and short/medium training runs
 
-This repo is still in a scaffold/prototype phase. Some docs describe intended future structure that is not present yet.
+## Source-of-truth docs
 
-## Source Of Truth Docs
+- `README.md`: project overview and common workflows
+- `markdown/PLAN.md`: current roadmap
+- `markdown/HPC.md`: cluster-specific notes and SLURM usage
+- `markdown/IMPLEMENTATION_GUIDELINES.md`: current design target and implementation notes
+- `markdown/PANDA_SUMMARY.md`: short Panda background note for this repo
 
-- `README.md`: human-oriented project overview, setup notes, and common workflows.
-- `PLAN.md`: roadmap and task checklist.
-- `HPC.md`: cluster-specific usage, environment notes, and SLURM guidance.
+## Operating rules
 
-If a document mentions files or workflows that do not exist, treat them as planned or stale unless the filesystem confirms them.
+- Read relevant files before editing.
+- Prefer current repo state over aspirational or stale docs.
+- Keep the current runtime path calo-only unless the user explicitly asks for a different scope.
+- Use `Panda_repo/` as a reference implementation, not as the main runtime path.
+- Do not run long downloads or long GPU jobs interactively.
+- Prefer the checked-in SLURM jobs for heavyweight work.
+- Leave generated outputs in `runs/` and `diagnostics/` uncommitted unless the user explicitly asks otherwise.
+- Do not touch unrelated submodule changes in `Panda_repo/`.
 
-## Repo Map
+## Cluster notes
 
-Top-level layout at time of writing:
+- Load `uv` with `module load uv`.
+- The documented HF cache is `/mnt/ceph/users/ewulff/data/hf`.
+- Runtime SLURM jobs source `slurm/load_env.sh`.
+- Current training jobs target single-GPU `a100-40gb` nodes.
 
-- `src/collider_fm/`: Python package code.
-- `scripts/`: standalone utilities.
-- `slurm/`: batch jobs intended for the cluster.
-- `apptainer/`: container-related helper scripts.
-- `Panda_repo/`: git submodule checkout of the Panda reference implementation.
-- `main.py`: trivial placeholder entrypoint.
-- `pyproject.toml`: project metadata, dependencies, and tool configuration.
-- `uv.lock`: locked dependency resolution.
-
-Known doc/repo mismatches:
-
-- `.venv` is referenced in docs and SLURM scripts, but is not present in the repo.
-- `WORKING_NOTES.md` is referenced in docs, but is not present in the repo.
-
-Agents should not assume those paths exist unless they are created later.
-
-## Agent Operating Rules
-
-- Read relevant files before editing them.
-- Prefer current repository state over stale documentation.
-- Keep changes aligned with the existing project phase; avoid inventing full production infrastructure where only scaffolding exists.
-- Use the `Panda_repo/` submodule as the reference implementation when working on Panda-related model code.
-- When touching planning docs, preserve the distinction between implemented code and planned work.
-- Do not run compute-heavy training, large downloads, or long GPU jobs from the interactive terminal.
-- Prefer SLURM scripts for heavyweight tasks. If SLURM submission is required and unavailable to the agent, prepare the script changes and tell the user what to run.
-
-## Execution Notes
-
-- On this cluster, load `uv` with `module load uv` so `UV_CACHE_DIR=$HOME/.cache/uv` is set. The module appends its own binary to `PATH`, so a user-installed `uv` still takes precedence.
-- The Hugging Face cache location documented for this project is `/mnt/ceph/users/ewulff/data/hf`.
-- Heavy dataset download and GPU validation workflows are intended to run through files in `slurm/`.
-- `logs_slurm/` is tracked as a placeholder directory for SLURM stdout and stderr files.
-- CUDA versions and cluster details belong in `HPC.md`; do not duplicate large hardware reference tables in agent-facing docs.
-
-## Documentation Maintenance
-
-When updating repo docs:
+## Documentation maintenance
 
 - Keep `AGENTS.md` short and operational.
-- Put project background, developer setup, and common workflows in `README.md`.
-- Put cluster policy and example batch directives in `HPC.md`.
-- Put roadmap and task tracking in `PLAN.md`.
-- Remove or downgrade stale aspirational statements that read like current facts.
+- Keep all project markdown files except `README.md` and `AGENTS.md` under `markdown/`.
+- Put user-facing workflows in `README.md`.
+- Put cluster specifics in `markdown/HPC.md`.
+- Put roadmap items in `markdown/PLAN.md`.
