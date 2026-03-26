@@ -20,11 +20,11 @@ echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    --num-epochs 4 \
-    --batch-size 1 \
-    --max-train-batches 8 \
-    --max-val-batches 2 \
-    --train-split "train[:32]" \
-    --val-split "train[32:40]" \
-    --log-backend jsonl \
-    --run-name "slurm_debug_train_small"
+    training.num_epochs=4 \
+    training.batch_size=1 \
+    training.max_train_batches=8 \
+    training.max_val_batches=2 \
+    training.train_split=train[:32] \
+    training.val_split=train[32:40] \
+    training.log_backend=jsonl \
+    training.run_name=slurm_debug_train_small

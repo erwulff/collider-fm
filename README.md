@@ -40,6 +40,11 @@ This is still a research/prototype codebase, but the current calo-only training 
 - Dataset source: `CERN/ColliderML-Release-1`
 - Active modality: `calo_hits` only
 - Current point feature contract: `[x, y, z, energy]`
+- Project split convention on the single HF `train` split:
+  - `train` means `train[:950000]`
+  - `val` means `train[950000:1000000]`
+  - `val[:100]` means `train[950000:950100]`
+  - requests outside those windows, such as `train[:960000]`, raise an error
 - Current training recipe:
   - two teacher global views
   - two masked student global views
@@ -85,6 +90,8 @@ uv run python scripts/train.py data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b
 ```
 
 This prevents training or diagnostics from silently following newer dataset commits on the Hub after you already cached a known-good version.
+
+The dataset only exposes a Hugging Face `train` split, so the project reserves the final `50,000` events for validation. `ColliderMLDataset(split="val")` maps to `train[950000:1000000]`, and bounded slices like `split="val[:100]"` are translated inside that validation window.
 
 ## Shared config
 

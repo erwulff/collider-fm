@@ -12,6 +12,70 @@ from torch.utils.data import DataLoader, Dataset
 
 DEFAULT_OBJECT_TYPES = ("calo_hits",)
 CALO_ENERGY_KEYS = ("energy", "totalenergy", "total_energy")
+TRAIN_SPLIT_START = 0
+TRAIN_SPLIT_STOP = 950000
+VAL_SPLIT_START = 950000
+VAL_SPLIT_STOP = 1000000
+TRAIN_SPLIT_ALIAS = f"train[:{TRAIN_SPLIT_STOP}]"
+VAL_SPLIT_ALIAS = f"train[{VAL_SPLIT_START}:{VAL_SPLIT_STOP}]"
+
+
+def _parse_project_split_slice(split: str) -> tuple[str, int | None, int | None]:
+    if split in {"train", "val"}:
+        return split, None, None
+    if not split.endswith("]") or "[" not in split:
+        return split, None, None
+    prefix, slice_expr = split[:-1].split("[", maxsplit=1)
+    if prefix not in {"train", "val"} or ":" not in slice_expr:
+        return split, None, None
+    start_text, stop_text = slice_expr.split(":", maxsplit=1)
+    start = None if start_text == "" else int(start_text)
+    stop = None if stop_text == "" else int(stop_text)
+    return prefix, start, stop
+
+
+def _resolve_split_window(split_name: str) -> tuple[int, int]:
+    if split_name == "train":
+        return TRAIN_SPLIT_START, TRAIN_SPLIT_STOP
+    if split_name == "val":
+        return VAL_SPLIT_START, VAL_SPLIT_STOP
+    raise ValueError(f"Unsupported project split alias: {split_name}")
+
+
+def resolve_colliderml_split(split: str) -> str:
+    """Map project-level train/val aliases onto explicit HF `train[...]` slices.
+
+    The upstream dataset only exposes `train`, so we reserve the last 50k events for
+    validation and allow bounded slicing within the project-level `train` and `val`
+    windows.
+    """
+
+    split_name, start, stop = _parse_project_split_slice(split)
+    if split_name not in {"train", "val"}:
+        return split
+
+    window_start, window_stop = _resolve_split_window(split_name)
+    relative_start = 0 if start is None else start
+    relative_stop = (window_stop - window_start) if stop is None else stop
+
+    if relative_start < 0 or relative_stop < 0:
+        raise ValueError(f"Negative indices are not supported for split '{split}'.")
+    if relative_start > relative_stop:
+        raise ValueError(
+            f"Split '{split}' has start {relative_start} larger than stop {relative_stop}."
+        )
+
+    window_size = window_stop - window_start
+    if relative_stop > window_size:
+        raise ValueError(
+            f"Split '{split}' exceeds the project {split_name} window of {window_size} events."
+        )
+
+    absolute_start = window_start + relative_start
+    absolute_stop = window_start + relative_stop
+    if absolute_start == 0:
+        return f"train[:{absolute_stop}]"
+    return f"train[{absolute_start}:{absolute_stop}]"
 
 
 def _convert_list_value(value: list[Any]) -> Any:
@@ -74,6 +138,7 @@ class ColliderMLDataset(Dataset):
                 "'object_types' must contain at least one dataset configuration."
             )
         self.datasets = {}
+        resolved_split = resolve_colliderml_split(split)
 
         for obj_type in self.object_types:
             config_name = f"{dataset_type}_{pu_config}_{obj_type}"
@@ -81,7 +146,7 @@ class ColliderMLDataset(Dataset):
             self.datasets[obj_type] = load_dataset(
                 dataset_name,
                 config_name,
-                split=split,
+                split=resolved_split,
                 cache_dir=cache_dir,
                 revision=dataset_revision,
                 download_config=DownloadConfig(local_files_only=local_files_only),

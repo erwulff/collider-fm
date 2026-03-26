@@ -23,7 +23,7 @@ uv run python scripts/train.py \
     training.num_epochs=10 \
     training.batch_size=16 \
     training.train_split=train \
-    training.val_split=train[0:1000] \
+    training.val_split=val \
     data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 \
     data.local_files_only=true \
     training.num_workers=8 \

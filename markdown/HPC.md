@@ -70,6 +70,8 @@ sbatch slurm/train_medium.slurm
 - 1 GPU on `a100-40gb`
 - intended to produce more informative curves and checkpoints than the short recipe
 
+For the full training config, the project-level `val` split refers to the held-out tail of the Hugging Face `train` split: `train[950000:1000000]`.
+
 ## Dataset cache
 
 The documented Hugging Face cache for this project is:

@@ -22,6 +22,7 @@ Current status:
 - implemented in `src/collider_fm/data.py`
 - implemented in `src/collider_fm/views.py`
 - current bookkeeping fields include `offset`, `source_index`, `patch_id`, `mask`, and `view_kind`
+- project-level split aliases map `train` to `train[:950000]` and `val` to `train[950000:1000000]`, with bounded sub-slices such as `val[:100]`
 
 ## Backbone target
 
