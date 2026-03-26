@@ -435,20 +435,26 @@ def create_small_panda_model(
     device: torch.device | None = None,
     backbone_cls: type[nn.Module] = PandaEncoderBackbone,
     backbone_kwargs: Mapping[str, Any] | None = None,
+    **model_kwargs: Any,
 ) -> PandaSelfDistillation:
     """Construct the compact model shared by smoke tests and diagnostics."""
     resolved_backbone_kwargs = dict(SMALL_MODEL_BACKBONE_KWARGS)
     if backbone_kwargs is not None:
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
 
+    resolved_model_kwargs = {
+        "in_channels": POINT_FEATURE_DIM,
+        "embed_channels": 8,
+        "num_prototypes": 32,
+        "projection_dim": 8,
+        "prediction_dim": 16,
+    }
+    resolved_model_kwargs.update(model_kwargs)
+
     model = PandaSelfDistillation(
-        in_channels=POINT_FEATURE_DIM,
-        embed_channels=8,
-        num_prototypes=32,
-        projection_dim=8,
-        prediction_dim=16,
         backbone_cls=backbone_cls,
         backbone_kwargs=resolved_backbone_kwargs,
+        **resolved_model_kwargs,
     )
     model.normalize_prototypes()
     if device is not None:
@@ -460,20 +466,26 @@ def create_training_panda_model(
     device: torch.device | None = None,
     backbone_cls: type[nn.Module] = PandaEncoderBackbone,
     backbone_kwargs: Mapping[str, Any] | None = None,
+    **model_kwargs: Any,
 ) -> PandaSelfDistillation:
     """Construct a slightly larger model for the real training loop."""
     resolved_backbone_kwargs = dict(TRAINING_MODEL_BACKBONE_KWARGS)
     if backbone_kwargs is not None:
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
 
+    resolved_model_kwargs = {
+        "in_channels": POINT_FEATURE_DIM,
+        "embed_channels": 24,
+        "num_prototypes": 256,
+        "projection_dim": 64,
+        "prediction_dim": 96,
+    }
+    resolved_model_kwargs.update(model_kwargs)
+
     model = PandaSelfDistillation(
-        in_channels=POINT_FEATURE_DIM,
-        embed_channels=24,
-        num_prototypes=256,
-        projection_dim=64,
-        prediction_dim=96,
         backbone_cls=backbone_cls,
         backbone_kwargs=resolved_backbone_kwargs,
+        **resolved_model_kwargs,
     )
     model.normalize_prototypes()
     if device is not None:

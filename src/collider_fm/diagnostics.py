@@ -15,17 +15,23 @@ from .model import PandaSelfDistillation
 def create_dataloader(
     split: str,
     batch_size: int,
+    dataset_name: str = "CERN/ColliderML-Release-1",
     dataset_type: str = "ttbar",
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    dataset_revision: str | None = None,
+    local_files_only: bool = False,
 ) -> DataLoader:
     """Create a dataloader for ColliderML diagnostics workflows."""
     dataset = ColliderMLDataset(
+        dataset_name=dataset_name,
         split=split,
         dataset_type=dataset_type,
         pu_config=pu_config,
         object_types=["calo_hits"],
         cache_dir=cache_dir,
+        dataset_revision=dataset_revision,
+        local_files_only=local_files_only,
     )
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
@@ -35,17 +41,23 @@ def create_dataloader(
 def load_events(
     split: str,
     batch_size: int = 64,
+    dataset_name: str = "CERN/ColliderML-Release-1",
     dataset_type: str = "ttbar",
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    dataset_revision: str | None = None,
+    local_files_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load one batch of events for diagnostics or notebook exploration."""
     dataloader = create_dataloader(
         split=split,
         batch_size=batch_size,
+        dataset_name=dataset_name,
         dataset_type=dataset_type,
         pu_config=pu_config,
         cache_dir=cache_dir,
+        dataset_revision=dataset_revision,
+        local_files_only=local_files_only,
     )
     return next(iter(dataloader))
 

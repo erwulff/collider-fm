@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import DownloadConfig, load_dataset
 from torch.utils.data import DataLoader, Dataset
 
 DEFAULT_OBJECT_TYPES = ("calo_hits",)
@@ -61,10 +61,14 @@ class ColliderMLDataset(Dataset):
         object_types: Sequence[str] = DEFAULT_OBJECT_TYPES,
         split: str = "train",
         cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+        dataset_revision: str | None = None,
+        local_files_only: bool = False,
     ) -> None:
 
         self.dataset_name = dataset_name
         self.object_types = tuple(object_types)
+        self.dataset_revision = dataset_revision
+        self.local_files_only = local_files_only
         if not self.object_types:
             raise ValueError(
                 "'object_types' must contain at least one dataset configuration."
@@ -79,6 +83,8 @@ class ColliderMLDataset(Dataset):
                 config_name,
                 split=split,
                 cache_dir=cache_dir,
+                revision=dataset_revision,
+                download_config=DownloadConfig(local_files_only=local_files_only),
             )
 
         # All datasets should have the same number of rows (events)
