@@ -85,6 +85,7 @@ Current status:
 - current metrics include loss, prototype entropy, embedding norm, masked fraction, teacher schedules, and center norm
 - dataset loading can now pin a Hugging Face revision and optionally require local cached files only
 - project defaults are now centralized in `config/default.yaml` and loaded through OmegaConf
+- runtime scripts now keep the merged config as `DictConfig` and only materialize plain containers when writing JSON or logging artifacts
 
 ## Diagnostics target
 

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import comet_ml
+from omegaconf import DictConfig
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -51,33 +52,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
 
-def create_dataloader(
-    config: dict[str, object], split: str, shuffle: bool
-) -> DataLoader:
+def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoader:
     """Create the calo-only dataloader used by train and validation."""
 
-    data_config = config["data"]
-    training_config = config["training"]
+    data_config = config.data
+    training_config = config.training
     dataset = ColliderMLDataset(
-        dataset_name=data_config["dataset_name"],
+        dataset_name=data_config.dataset_name,
         split=split,
-        dataset_type=data_config["dataset_type"],
-        pu_config=data_config["pu_config"],
+        dataset_type=data_config.dataset_type,
+        pu_config=data_config.pu_config,
         object_types=["calo_hits"],
-        cache_dir=data_config["cache_dir"],
-        dataset_revision=data_config["dataset_revision"],
-        local_files_only=data_config["local_files_only"],
+        cache_dir=data_config.cache_dir,
+        dataset_revision=data_config.dataset_revision,
+        local_files_only=data_config.local_files_only,
     )
     dataloader_kwargs = {
-        "batch_size": training_config["batch_size"],
+        "batch_size": training_config.batch_size,
         "shuffle": shuffle,
         "collate_fn": collate_fn,
-        "num_workers": training_config["num_workers"],
-        "pin_memory": bool(training_config["pin_memory"] and torch.cuda.is_available()),
+        "num_workers": training_config.num_workers,
+        "pin_memory": bool(training_config.pin_memory and torch.cuda.is_available()),
     }
-    if training_config["num_workers"] > 0:
+    if training_config.num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
-        dataloader_kwargs["prefetch_factor"] = training_config["prefetch_factor"]
+        dataloader_kwargs["prefetch_factor"] = training_config.prefetch_factor
 
     return DataLoader(
         dataset,
@@ -112,24 +111,32 @@ def center_norm(model: PandaSelfDistillation) -> float:
     return float(torch.linalg.vector_norm(model.center).item())
 
 
-def current_teacher_temperature(args: argparse.Namespace, epoch_index: int) -> float:
+def current_teacher_temperature(training_config: DictConfig, epoch_index: int) -> float:
     """Warm the teacher temperature during the early epochs only."""
 
-    if args.teacher_temperature_warmup_epochs <= 0:
-        return args.teacher_temperature_end
-    if epoch_index >= args.teacher_temperature_warmup_epochs:
-        return args.teacher_temperature_end
-    progress = epoch_index / max(1, args.teacher_temperature_warmup_epochs - 1)
+    if training_config.teacher_temperature_warmup_epochs <= 0:
+        return training_config.teacher_temperature_end
+    if epoch_index >= training_config.teacher_temperature_warmup_epochs:
+        return training_config.teacher_temperature_end
+    progress = epoch_index / max(
+        1, training_config.teacher_temperature_warmup_epochs - 1
+    )
     return linear_warmup(
-        args.teacher_temperature_start, args.teacher_temperature_end, progress
+        training_config.teacher_temperature_start,
+        training_config.teacher_temperature_end,
+        progress,
     )
 
 
-def current_teacher_momentum(args: argparse.Namespace, global_progress: float) -> float:
+def current_teacher_momentum(
+    training_config: DictConfig, global_progress: float
+) -> float:
     """Increase EMA momentum smoothly over training."""
 
     return cosine_momentum(
-        args.teacher_momentum_start, args.teacher_momentum_end, global_progress
+        training_config.teacher_momentum_start,
+        training_config.teacher_momentum_end,
+        global_progress,
     )
 
 
@@ -325,11 +332,9 @@ def run_epoch(
 
 def main() -> None:
     cli_args = build_arg_parser().parse_args()
-    config = to_plain_container(
-        load_project_config(cli_args.config, cli_args.overrides)
-    )
-    training_config = config["training"]
-    view_config = config["views"]
+    config = load_project_config(cli_args.config, cli_args.overrides)
+    training_config = config.training
+    view_config = config.views
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -341,9 +346,9 @@ def main() -> None:
         return
 
     train_loader = create_dataloader(
-        config, training_config["train_split"], shuffle=training_config["train_shuffle"]
+        config, training_config.train_split, shuffle=training_config.train_shuffle
     )
-    val_loader = create_dataloader(config, training_config["val_split"], shuffle=False)
+    val_loader = create_dataloader(config, training_config.val_split, shuffle=False)
 
     run_dir, run_name = ensure_run_directory(
         PROJECT_ROOT,
@@ -351,9 +356,9 @@ def main() -> None:
         run_name=training_config.get("run_name"),
     )
     logger = create_experiment_logger(
-        training_config["log_backend"], run_dir=run_dir, run_name=run_name
+        training_config.log_backend, run_dir=run_dir, run_name=run_name
     )
-    run_config = config | {
+    run_config = to_plain_container(config) | {
         "device": str(device),
         "run_dir": str(run_dir),
         "run_name": run_name,
@@ -365,19 +370,17 @@ def main() -> None:
 
     model = create_training_panda_model(
         device=device,
-        **model_factory_kwargs(config["model"]["training"]),
+        **model_factory_kwargs(config.model.training),
     )
     optimizer = AdamW(
         model.parameters(),
-        lr=training_config["learning_rate"],
-        weight_decay=training_config["weight_decay"],
+        lr=training_config.learning_rate,
+        weight_decay=training_config.weight_decay,
     )
     lr_scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=max(
-            1, training_config["num_epochs"] * training_config["max_train_batches"]
-        ),
-        eta_min=training_config["min_learning_rate"],
+        T_max=max(1, training_config.num_epochs * training_config.max_train_batches),
+        eta_min=training_config.min_learning_rate,
     )
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params / 1e6:.2f}M")
@@ -385,18 +388,17 @@ def main() -> None:
     global_step = 0
     best_val_loss = float("inf")
     total_train_steps = max(
-        1, training_config["num_epochs"] * training_config["max_train_batches"]
+        1, training_config.num_epochs * training_config.max_train_batches
     )
-    schedule_args = argparse.Namespace(**training_config)
 
     try:
-        for epoch in range(training_config["num_epochs"]):
-            print(f"Epoch {epoch + 1}/{training_config['num_epochs']}")
+        for epoch in range(training_config.num_epochs):
+            print(f"Epoch {epoch + 1}/{training_config.num_epochs}")
             epoch_start = time.perf_counter()
 
             train_progress = global_step / total_train_steps
-            current_momentum = current_teacher_momentum(schedule_args, train_progress)
-            current_temperature = current_teacher_temperature(schedule_args, epoch)
+            current_momentum = current_teacher_momentum(training_config, train_progress)
+            current_temperature = current_teacher_temperature(training_config, epoch)
             model.temp_teacher = current_temperature
 
             train_metrics, train_batches = run_epoch(
@@ -405,13 +407,13 @@ def main() -> None:
                 device=device,
                 optimizer=optimizer,
                 lr_scheduler=lr_scheduler,
-                max_batches=training_config["max_train_batches"],
-                max_calo_hits=view_config["max_calo_hits"],
-                coord_noise_scale=view_config["coord_noise_scale"],
-                energy_jitter_scale=view_config["energy_jitter_scale"],
-                global_crop_ratio=view_config["global_crop_ratio"],
-                student_mask_fraction=view_config["student_mask_fraction"],
-                point_dropout=view_config["point_dropout"],
+                max_batches=training_config.max_train_batches,
+                max_calo_hits=view_config.max_calo_hits,
+                coord_noise_scale=view_config.coord_noise_scale,
+                energy_jitter_scale=view_config.energy_jitter_scale,
+                global_crop_ratio=view_config.global_crop_ratio,
+                student_mask_fraction=view_config.student_mask_fraction,
+                point_dropout=view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="train",
             )
@@ -423,13 +425,13 @@ def main() -> None:
                 device=device,
                 optimizer=None,
                 lr_scheduler=None,
-                max_batches=training_config["max_val_batches"],
-                max_calo_hits=view_config["max_calo_hits"],
-                coord_noise_scale=view_config["coord_noise_scale"],
-                energy_jitter_scale=view_config["energy_jitter_scale"],
-                global_crop_ratio=view_config["global_crop_ratio"],
-                student_mask_fraction=view_config["student_mask_fraction"],
-                point_dropout=view_config["point_dropout"],
+                max_batches=training_config.max_val_batches,
+                max_calo_hits=view_config.max_calo_hits,
+                coord_noise_scale=view_config.coord_noise_scale,
+                energy_jitter_scale=view_config.energy_jitter_scale,
+                global_crop_ratio=view_config.global_crop_ratio,
+                student_mask_fraction=view_config.student_mask_fraction,
+                point_dropout=view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="val",
             )
@@ -466,7 +468,7 @@ def main() -> None:
             is_best = epoch_metrics["val_loss"] < best_val_loss
             if is_best:
                 best_val_loss = epoch_metrics["val_loss"]
-            if (epoch + 1) % training_config["checkpoint_every_epochs"] == 0 or is_best:
+            if (epoch + 1) % training_config.checkpoint_every_epochs == 0 or is_best:
                 checkpoint_path = save_checkpoint(
                     run_dir=run_dir,
                     model=model,

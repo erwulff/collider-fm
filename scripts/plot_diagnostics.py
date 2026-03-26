@@ -8,9 +8,10 @@ import sys
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import matplotlib
+from matplotlib.figure import Figure
 
 matplotlib.use("Agg")
 
@@ -41,9 +42,11 @@ from collider_fm.project_config import (
     to_plain_container,
 )
 from collider_fm.views import (
+    PointView,
     augment_point_view,
     batch_point_views,
     build_point_view_from_event,
+    validate_point_view,
 )
 
 
@@ -103,10 +106,24 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def save_figure(fig: plt.Figure, path: Path) -> None:
+def save_figure(fig: Figure, path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+
+def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
+    normalized = validate_point_view(view)
+    return {
+        "coord": normalized["coord"],
+        "feat": normalized["feat"],
+        "offset": normalized["offset"],
+        "grid_size": normalized["grid_size"],
+        "source_index": normalized["source_index"],
+        "energy": normalized["energy"],
+        "patch_id": normalized["patch_id"],
+        "mask": normalized["mask"],
+    }
 
 
 def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
@@ -133,10 +150,10 @@ def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
     scatter = ax.scatter(
-        coord[:, 0],
-        coord[:, 1],
-        coord[:, 2],
-        s=marker_size,
+        cast(Any, coord[:, 0]),
+        cast(Any, coord[:, 1]),
+        cast(Any, coord[:, 2]),
+        s=cast(Any, marker_size),
         alpha=0.55,
         c=energy,
         cmap="inferno",
@@ -180,17 +197,24 @@ def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
     save_figure(fig, path)
 
 
-def plot_view_signal(view: dict[str, torch.Tensor], path: Path) -> None:
-    coord = to_numpy(view["coord"])
-    energy = to_numpy(view["energy"])
-    features = to_numpy(view["feat"])
-    mask = to_numpy(view["mask"]).astype(int)
+def plot_view_signal(view: PointView, path: Path) -> None:
+    normalized_view = normalize_tensor_view(view)
+    coord = to_numpy(normalized_view["coord"])
+    energy = to_numpy(normalized_view["energy"])
+    features = to_numpy(normalized_view["feat"])
+    mask = to_numpy(normalized_view["mask"]).astype(int)
 
     fig = plt.figure(figsize=(14, 12))
     grid = fig.add_gridspec(3, 2)
     ax_scatter = fig.add_subplot(grid[:, 0], projection="3d")
     scatter = ax_scatter.scatter(
-        coord[:, 2], coord[:, 0], coord[:, 1], c=energy, cmap="inferno", s=4, alpha=0.7
+        cast(Any, coord[:, 2]),
+        cast(Any, coord[:, 0]),
+        cast(Any, coord[:, 1]),
+        c=energy,
+        cmap="inferno",
+        s=4,
+        alpha=0.7,
     )
     fig.colorbar(scatter, ax=ax_scatter, shrink=0.7, pad=0.1, label="energy")
     ax_scatter.set_xlabel("z")
@@ -224,21 +248,22 @@ def plot_view_signal(view: dict[str, torch.Tensor], path: Path) -> None:
 
 
 def plot_augmentations(
-    base_view: dict[str, torch.Tensor],
-    aug_a: dict[str, torch.Tensor],
-    aug_b: dict[str, torch.Tensor],
-    path: Path,
+    base_view: PointView, aug_a: PointView, aug_b: PointView, path: Path
 ) -> None:
-    views = [("base", base_view), ("aug A", aug_a), ("aug B", aug_b)]
+    views = [
+        ("base", normalize_tensor_view(base_view)),
+        ("aug A", normalize_tensor_view(aug_a)),
+        ("aug B", normalize_tensor_view(aug_b)),
+    ]
     fig = plt.figure(figsize=(18, 6))
     for index, (label, view) in enumerate(views, start=1):
         coord = to_numpy(view["coord"])
         energy = to_numpy(view["energy"])
         ax = fig.add_subplot(1, 3, index, projection="3d")
         ax.scatter(
-            coord[:, 2],
-            coord[:, 0],
-            coord[:, 1],
+            cast(Any, coord[:, 2]),
+            cast(Any, coord[:, 0]),
+            cast(Any, coord[:, 1]),
             c=energy,
             cmap="inferno",
             s=4,
@@ -253,21 +278,24 @@ def plot_augmentations(
 
 
 def plot_augmentation_delta(
-    base_view: dict[str, torch.Tensor],
-    aug_a: dict[str, torch.Tensor],
-    aug_b: dict[str, torch.Tensor],
+    base_view: PointView,
+    aug_a: PointView,
+    aug_b: PointView,
     path: Path,
 ) -> None:
-    base_coord = base_view["coord"]
-    base_energy = base_view["energy"]
+    normalized_base_view = normalize_tensor_view(base_view)
+    normalized_aug_a = normalize_tensor_view(aug_a)
+    normalized_aug_b = normalize_tensor_view(aug_b)
+    base_coord = normalized_base_view["coord"]
+    base_energy = normalized_base_view["energy"]
     deltas = {
         "aug A": {
-            "coord": torch.linalg.norm(aug_a["coord"] - base_coord, dim=1),
-            "energy": aug_a["energy"] - base_energy,
+            "coord": torch.linalg.norm(normalized_aug_a["coord"] - base_coord, dim=1),
+            "energy": normalized_aug_a["energy"] - base_energy,
         },
         "aug B": {
-            "coord": torch.linalg.norm(aug_b["coord"] - base_coord, dim=1),
-            "energy": aug_b["energy"] - base_energy,
+            "coord": torch.linalg.norm(normalized_aug_b["coord"] - base_coord, dim=1),
+            "energy": normalized_aug_b["energy"] - base_energy,
         },
     }
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -282,9 +310,10 @@ def plot_augmentation_delta(
     save_figure(fig, path)
 
 
-def plot_batch_summary(views: list[dict[str, torch.Tensor]], path: Path) -> None:
-    total_counts = [view["coord"].shape[0] for view in views]
-    masked_counts = [int(view["mask"].sum().item()) for view in views]
+def plot_batch_summary(views: Sequence[PointView], path: Path) -> None:
+    normalized_views = [normalize_tensor_view(view) for view in views]
+    total_counts = [view["coord"].shape[0] for view in normalized_views]
+    masked_counts = [int(view["mask"].sum().item()) for view in normalized_views]
 
     indices = np.arange(len(views))
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -545,12 +574,10 @@ def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
 
 def main() -> None:
     cli_args = build_arg_parser().parse_args()
-    project_config = to_plain_container(
-        load_project_config(cli_args.config, cli_args.overrides)
-    )
-    data_config = project_config["data"]
-    diagnostics_config = project_config["diagnostics"]
-    set_seed(diagnostics_config["seed"])
+    project_config = load_project_config(cli_args.config, cli_args.overrides)
+    data_config = project_config.data
+    diagnostics_config = project_config.diagnostics
+    set_seed(diagnostics_config.seed)
 
     output_root = (
         Path(diagnostics_config.get("output_dir"))
@@ -559,39 +586,39 @@ def main() -> None:
     )
     output_dirs = ensure_output_dirs(output_root)
 
-    device = resolve_device(diagnostics_config["device"])
+    device = resolve_device(diagnostics_config.device)
     print(f"Using device: {device}")
 
     detail_events = load_events(
-        split=diagnostics_config["detail_split"],
-        dataset_name=data_config["dataset_name"],
-        dataset_type=data_config["dataset_type"],
-        pu_config=data_config["pu_config"],
-        cache_dir=data_config["cache_dir"],
-        dataset_revision=data_config["dataset_revision"],
-        local_files_only=data_config["local_files_only"],
+        split=diagnostics_config.detail_split,
+        dataset_name=data_config.dataset_name,
+        dataset_type=data_config.dataset_type,
+        pu_config=data_config.pu_config,
+        cache_dir=data_config.cache_dir,
+        dataset_revision=data_config.dataset_revision,
+        local_files_only=data_config.local_files_only,
     )
     if not detail_events:
         raise ValueError("The detailed diagnostic split returned no events.")
     detail_event = detail_events[0]
 
     representation_events = load_events(
-        split=diagnostics_config["representation_split"],
-        dataset_name=data_config["dataset_name"],
-        dataset_type=data_config["dataset_type"],
-        pu_config=data_config["pu_config"],
-        cache_dir=data_config["cache_dir"],
-        dataset_revision=data_config["dataset_revision"],
-        local_files_only=data_config["local_files_only"],
+        split=diagnostics_config.representation_split,
+        dataset_name=data_config.dataset_name,
+        dataset_type=data_config.dataset_type,
+        pu_config=data_config.pu_config,
+        cache_dir=data_config.cache_dir,
+        dataset_revision=data_config.dataset_revision,
+        local_files_only=data_config.local_files_only,
     )
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
     base_view = build_point_view_from_event(
-        detail_event, device=device, max_calo_hits=diagnostics_config["max_calo_hits"]
+        detail_event, device=device, max_calo_hits=diagnostics_config.max_calo_hits
     )
-    aug_a = augment_point_view(base_view)
-    aug_b = augment_point_view(base_view)
+    aug_a = augment_point_view(normalize_tensor_view(base_view))
+    aug_b = augment_point_view(normalize_tensor_view(base_view))
 
     plot_raw_geometry(detail_event, output_dirs["raw"] / "event_000_geometry.png")
     plot_raw_scalars(detail_event, output_dirs["raw"] / "event_000_scalars.png")
@@ -610,9 +637,13 @@ def main() -> None:
         build_point_view_from_event(
             event,
             device=device,
-            max_calo_hits=diagnostics_config["max_calo_hits"],
+            max_calo_hits=diagnostics_config.max_calo_hits,
         )
         for event in representation_events
+    ]
+    normalized_base_view = normalize_tensor_view(base_view)
+    normalized_representation_views = [
+        normalize_tensor_view(view) for view in representation_views
     ]
     plot_batch_summary(representation_views, output_dirs["views"] / "batch_summary.png")
 
@@ -623,21 +654,22 @@ def main() -> None:
         "model_plots_generated": False,
         "weights_source": "fresh initialization"
         if diagnostics_config.get("checkpoint") is None
-        else f"checkpoint: {diagnostics_config['checkpoint']}",
+        else f"checkpoint: {diagnostics_config.checkpoint}",
     }
     tensor_artifact: dict[str, Any] = {
         "detail_event": {
             "calo_hits": int(len(detail_event["calo_hits"]["x"])),
-            "base_view_coord": tensor_summary(base_view["coord"]),
-            "base_view_feat": tensor_summary(base_view["feat"]),
+            "base_view_coord": tensor_summary(normalized_base_view["coord"]),
+            "base_view_feat": tensor_summary(normalized_base_view["feat"]),
         },
         "representation_sample": {
-            "num_events": len(representation_views),
+            "num_events": len(normalized_representation_views),
             "point_counts": [
-                int(view["coord"].shape[0]) for view in representation_views
+                int(view["coord"].shape[0]) for view in normalized_representation_views
             ],
             "masked_counts": [
-                int(view["mask"].sum().item()) for view in representation_views
+                int(view["mask"].sum().item())
+                for view in normalized_representation_views
             ],
         },
     }
@@ -661,19 +693,17 @@ def main() -> None:
         model = (
             create_training_panda_model(
                 device=device,
-                **model_factory_kwargs(project_config["model"]["training"]),
+                **model_factory_kwargs(project_config.model.training),
             )
             if diagnostics_config.get("checkpoint") is not None
             else create_small_panda_model(
                 device=device,
-                **model_factory_kwargs(project_config["model"]["diagnostics"]),
+                **model_factory_kwargs(project_config.model.diagnostics),
             )
         )
         checkpoint_artifact = None
         if diagnostics_config.get("checkpoint") is not None:
-            checkpoint_artifact = load_checkpoint(
-                model, diagnostics_config["checkpoint"]
-            )
+            checkpoint_artifact = load_checkpoint(model, diagnostics_config.checkpoint)
         model.eval()
         num_params = sum(parameter.numel() for parameter in model.parameters())
         model_artifact.update(
@@ -684,11 +714,15 @@ def main() -> None:
             }
         )
 
-        detail_base_encoding = encode_view(model, base_view, use_teacher=False)
-        detail_aug_a_student = encode_view(model, aug_a, use_teacher=False)
-        detail_aug_b_student = encode_view(model, aug_b, use_teacher=False)
-        detail_aug_a_teacher = encode_view(model, aug_a, use_teacher=True)
-        detail_aug_b_teacher = encode_view(model, aug_b, use_teacher=True)
+        detail_base_encoding = encode_view(
+            model, normalized_base_view, use_teacher=False
+        )
+        normalized_aug_a = normalize_tensor_view(aug_a)
+        normalized_aug_b = normalize_tensor_view(aug_b)
+        detail_aug_a_student = encode_view(model, normalized_aug_a, use_teacher=False)
+        detail_aug_b_student = encode_view(model, normalized_aug_b, use_teacher=False)
+        detail_aug_a_teacher = encode_view(model, normalized_aug_a, use_teacher=True)
+        detail_aug_b_teacher = encode_view(model, normalized_aug_b, use_teacher=True)
 
         student_probs = [
             F.softmax(detail_aug_a_student["logits"][0], dim=-1),
@@ -703,7 +737,7 @@ def main() -> None:
             [to_numpy(prob) for prob in student_probs],
             [to_numpy(prob) for prob in teacher_probs],
             output_dirs["model"] / "event_000_logits.png",
-            top_k=diagnostics_config["top_k_prototypes"],
+            top_k=diagnostics_config.top_k_prototypes,
         )
         plot_view_agreement(
             detail_base_encoding["pooled"][0],
@@ -714,7 +748,9 @@ def main() -> None:
             output_dirs["model"] / "event_000_view_agreement.png",
         )
 
-        representation_batch = batch_point_views(representation_views)
+        representation_batch = normalize_tensor_view(
+            batch_point_views(normalized_representation_views)
+        )
         representation_encoding = encode_view(
             model, representation_batch, use_teacher=False
         )
@@ -730,8 +766,8 @@ def main() -> None:
         plot_point_feature_pca(
             representation_encoding["point_features"],
             output_dirs["model"] / "batch_point_feature_pca.png",
-            max_points=diagnostics_config["point_feature_sample_size"],
-            seed=diagnostics_config["seed"],
+            max_points=diagnostics_config.point_feature_sample_size,
+            seed=diagnostics_config.seed,
         )
 
         model_artifact["model_plots_generated"] = True
@@ -757,7 +793,7 @@ def main() -> None:
 
     write_json(
         output_dirs["artifacts"] / "run_config.json",
-        project_config | {"resolved_device": str(device)},
+        to_plain_container(project_config) | {"resolved_device": str(device)},
     )
     write_json(output_dirs["artifacts"] / "tensor_summary.json", tensor_artifact)
     write_json(output_dirs["artifacts"] / "model_summary.json", model_artifact)

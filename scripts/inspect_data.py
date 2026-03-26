@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 
@@ -14,17 +16,16 @@ from collider_fm.data import ColliderMLDataset
 from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
-    to_plain_container,
 )
 
 
-def plot_event_3d(event: dict[str, object], event_idx: int = 0) -> None:
+def plot_event_3d(event: Mapping[str, Any], event_idx: int = 0) -> None:
     """Save a simple 3D scatter plot for one raw calorimeter event."""
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
 
-    calo_hits = event["calo_hits"]
+    calo_hits = cast(Mapping[str, Any], event["calo_hits"])
     energy = calo_hits["energy"]
     mask = energy > 0
     ax.scatter(
@@ -56,19 +57,17 @@ if __name__ == "__main__":
         epilog="Example:\n  uv run python scripts/inspect_data.py data.local_files_only=true",
     )
     cli_args = parser.parse_args()
-    project_config = to_plain_container(
-        load_project_config(cli_args.config, cli_args.overrides)
-    )
-    data_config = project_config["data"]
+    project_config = load_project_config(cli_args.config, cli_args.overrides)
+    data_config = project_config.data
     dataset = ColliderMLDataset(
-        dataset_name=data_config["dataset_name"],
-        dataset_type=data_config["dataset_type"],
-        pu_config=data_config["pu_config"],
-        cache_dir=data_config["cache_dir"],
-        dataset_revision=data_config["dataset_revision"],
+        dataset_name=data_config.dataset_name,
+        dataset_type=data_config.dataset_type,
+        pu_config=data_config.pu_config,
+        cache_dir=data_config.cache_dir,
+        dataset_revision=data_config.dataset_revision,
         split="train[:5]",
         object_types=["calo_hits"],
-        local_files_only=True,
+        local_files_only=data_config.local_files_only,
     )
     print("Loading calorimeter event 0 for visualization...")
     sample = dataset[0]

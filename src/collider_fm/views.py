@@ -8,7 +8,7 @@ masking, batching, and teacher/student alignment easy to follow.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import torch
 
@@ -16,7 +16,7 @@ DEFAULT_POINT_GRID_SIZE = 10.0
 POINT_FEATURE_DIM = 4
 
 
-class PointView(TypedDict, total=False):
+class PointView(TypedDict):
     coord: torch.Tensor
     feat: torch.Tensor
     offset: torch.Tensor
@@ -241,7 +241,7 @@ def rotate_around_beam_axis(coord: torch.Tensor, angle: float) -> torch.Tensor:
     return rotated
 
 
-def crop_point_view(view: Mapping[str, torch.Tensor], keep_ratio: float) -> PointView:
+def crop_point_view(view: Mapping[str, Any], keep_ratio: float) -> PointView:
     """Keep the nearest points to a random center to create a contiguous crop."""
     base_view = validate_point_view(view)
     num_points = base_view["coord"].shape[0]
@@ -249,9 +249,9 @@ def crop_point_view(view: Mapping[str, torch.Tensor], keep_ratio: float) -> Poin
     if keep_count >= num_points:
         return base_view
 
-    center_index = torch.randint(
-        0, num_points, (1,), device=base_view["coord"].device
-    ).item()
+    center_index = int(
+        torch.randint(0, num_points, (1,), device=base_view["coord"].device).item()
+    )
     center = base_view["coord"][center_index]
     distances = torch.sum((base_view["coord"] - center) ** 2, dim=1)
     keep_indices = torch.argsort(distances)[:keep_count]
@@ -259,23 +259,22 @@ def crop_point_view(view: Mapping[str, torch.Tensor], keep_ratio: float) -> Poin
 
     return validate_point_view(
         {
-            key: value[keep_indices]
-            if key in {"coord", "feat", "source_index", "energy", "patch_id", "mask"}
-            else value
-            for key, value in base_view.items()
-        }
-        | {
+            "coord": cast(torch.Tensor, base_view["coord"])[keep_indices],
+            "feat": cast(torch.Tensor, base_view["feat"])[keep_indices],
             "offset": torch.tensor(
                 [keep_count], dtype=torch.long, device=base_view["coord"].device
             ),
-            "view_kind": base_view.get("view_kind", "base"),
+            "grid_size": base_view["grid_size"],
+            "source_index": cast(torch.Tensor, base_view["source_index"])[keep_indices],
+            "energy": cast(torch.Tensor, base_view["energy"])[keep_indices],
+            "patch_id": cast(torch.Tensor, base_view["patch_id"])[keep_indices],
+            "mask": cast(torch.Tensor, base_view["mask"])[keep_indices],
+            "view_kind": base_view["view_kind"],
         }
     )
 
 
-def apply_patch_mask(
-    view: Mapping[str, torch.Tensor], mask_fraction: float
-) -> PointView:
+def apply_patch_mask(view: Mapping[str, Any], mask_fraction: float) -> PointView:
     """Mask whole coarse patches so the student sees incomplete events."""
     base_view = validate_point_view(view)
     if mask_fraction <= 0.0:
@@ -292,16 +291,22 @@ def apply_patch_mask(
     masked_patch_ids = unique_patches[permutation[:num_masked_patches]]
     mask = torch.isin(base_view["patch_id"], masked_patch_ids)
 
-    masked_view = dict(base_view)
-    masked_view["mask"] = mask
-    masked_view["feat"] = assemble_point_features(
-        base_view["coord"], base_view["energy"]
-    )
+    masked_view: PointView = {
+        "coord": base_view["coord"],
+        "feat": assemble_point_features(base_view["coord"], base_view["energy"]),
+        "offset": base_view["offset"],
+        "grid_size": base_view["grid_size"],
+        "source_index": base_view["source_index"],
+        "energy": base_view["energy"],
+        "patch_id": base_view["patch_id"],
+        "mask": mask,
+        "view_kind": base_view["view_kind"],
+    }
     return validate_point_view(masked_view)
 
 
 def augment_point_view(
-    view: Mapping[str, torch.Tensor],
+    view: Mapping[str, Any],
     coord_noise_scale: float = 0.5,
     feat_noise_scale: float = 0.01,
     phi_rotation_max: float = 0.25,
@@ -364,12 +369,12 @@ def augment_point_view(
             "view_kind": view_kind,
         }
     )
-    return apply_patch_mask(masked_view, mask_fraction=mask_fraction) | {
-        "view_kind": view_kind
-    }
+    remasked_view = apply_patch_mask(masked_view, mask_fraction=mask_fraction)
+    remasked_view["view_kind"] = view_kind
+    return remasked_view
 
 
-def batch_point_views(views: Sequence[Mapping[str, torch.Tensor]]) -> PointView:
+def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     """Concatenate per-event point views into one batched mapping.
 
     Source indices and patch ids are offset so they remain unique across events.

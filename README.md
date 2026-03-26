@@ -2,7 +2,7 @@
 
 Collider Foundation Model is a calo-only self-supervised learning project built around ColliderML Release 1 and a Panda-style student-teacher training recipe. The current repository focus is a clean first-stage pipeline for calorimeter hits only: build point-cloud views from raw events, train a masked global self-distillation model, save checkpoints, and generate diagnostics and training-run plots.
 
-The project now uses a shared OmegaConf config file at `config/default.yaml`. That file defines the project defaults for data loading, view construction, model setup, training, diagnostics, and download settings. Script command-line arguments override the config when both are provided.
+The project now uses a shared OmegaConf config file at `config/default.yaml`. That file defines the project defaults for data loading, view construction, model setup, training, diagnostics, and download settings. Runtime scripts keep the merged config as a `DictConfig` during execution and only convert to plain containers at JSON or logging boundaries.
 
 ## Current status
 
@@ -24,7 +24,7 @@ This is still a research/prototype codebase, but the current calo-only training 
 ├── src/collider_fm/            # Package code for data, views, model, and diagnostics
 ├── tests/                      # Unit tests for the current pipeline
 ├── scripts/                    # Download, inspection, training, smoke-test, and plotting scripts
-├── notebooks/                  # Newcomer walkthrough notebooks and older diagnostics notebook
+├── notebooks/                  # Newcomer walkthrough notebooks
 ├── slurm/                      # Cluster job scripts for setup, downloads, tests, and training
 ├── apptainer/                  # Container helper scripts
 ├── Panda_repo/                 # Panda reference submodule
@@ -104,6 +104,8 @@ uv run python scripts/train.py --config config/default.yaml
 ```
 
 Any explicit OmegaConf dotlist overrides override values loaded from the config file.
+
+When extending the runtime code, prefer keeping the merged config as a `DictConfig` and use dot access such as `cfg.data.dataset_revision` or `cfg.training.batch_size`.
 
 Inspect a sample event:
 
@@ -225,7 +227,7 @@ export COMET_PROJECT_NAME=collider-fm
 export COMET_WORKSPACE=...
 ```
 
-Then run training with the default `--log-backend auto` or force Comet with `--log-backend comet`.
+Then run training with the default `training.log_backend=auto` or force Comet with `training.log_backend=comet`.
 
 ## Other docs
 

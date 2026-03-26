@@ -54,13 +54,15 @@ def build_config_arg_parser(
 ) -> argparse.ArgumentParser:
     combined_epilog = epilog or ""
     if config_sections:
-        config = to_plain_container(load_project_config(DEFAULT_CONFIG_PATH))
+        config = load_project_config()
         override_lines: list[str] = []
         for section in config_sections:
             section_value = config
             for part in section.split("."):
                 section_value = section_value[part]
-            override_lines.extend(_collect_override_lines(section, section_value))
+            override_lines.extend(
+                _collect_override_lines(section, to_plain_container(section_value))
+            )
         override_block = "Available overrides:\n" + "\n".join(
             f"  {line}" for line in override_lines
         )
@@ -89,6 +91,8 @@ def build_config_arg_parser(
 
 
 def to_plain_container(config: Any) -> Any:
+    if not OmegaConf.is_config(config):
+        return config
     return OmegaConf.to_container(config, resolve=True)
 
 
