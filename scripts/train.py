@@ -84,6 +84,23 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
     )
 
 
+def resolve_epoch_batch_limit(
+    dataloader: DataLoader, requested_max_batches: int | None, phase: str
+) -> int:
+    """Resolve an epoch batch limit, using the full dataloader when unset."""
+
+    total_batches = len(dataloader)
+    if total_batches <= 0:
+        raise ValueError(f"The {phase} dataloader produced zero batches.")
+    if requested_max_batches is None:
+        return total_batches
+    if requested_max_batches <= 0:
+        raise ValueError(
+            f"{phase} max_batches must be a positive integer or None, got {requested_max_batches}."
+        )
+    return min(total_batches, requested_max_batches)
+
+
 def linear_warmup(value_start: float, value_end: float, progress: float) -> float:
     """Linearly interpolate between two values on `[0, 1]` progress."""
 
@@ -349,6 +366,12 @@ def main() -> None:
         config, training_config.train_split, shuffle=training_config.train_shuffle
     )
     val_loader = create_dataloader(config, training_config.val_split, shuffle=False)
+    max_train_batches = resolve_epoch_batch_limit(
+        train_loader, training_config.max_train_batches, "train"
+    )
+    max_val_batches = resolve_epoch_batch_limit(
+        val_loader, training_config.max_val_batches, "val"
+    )
 
     run_dir, run_name = ensure_run_directory(
         PROJECT_ROOT,
@@ -379,7 +402,7 @@ def main() -> None:
     )
     lr_scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=max(1, training_config.num_epochs * training_config.max_train_batches),
+        T_max=max(1, training_config.num_epochs * max_train_batches),
         eta_min=training_config.min_learning_rate,
     )
     num_params = sum(parameter.numel() for parameter in model.parameters())
@@ -387,9 +410,7 @@ def main() -> None:
 
     global_step = 0
     best_val_loss = float("inf")
-    total_train_steps = max(
-        1, training_config.num_epochs * training_config.max_train_batches
-    )
+    total_train_steps = max(1, training_config.num_epochs * max_train_batches)
 
     try:
         for epoch in range(training_config.num_epochs):
@@ -407,7 +428,7 @@ def main() -> None:
                 device=device,
                 optimizer=optimizer,
                 lr_scheduler=lr_scheduler,
-                max_batches=training_config.max_train_batches,
+                max_batches=max_train_batches,
                 max_calo_hits=view_config.max_calo_hits,
                 coord_noise_scale=view_config.coord_noise_scale,
                 energy_jitter_scale=view_config.energy_jitter_scale,
@@ -425,7 +446,7 @@ def main() -> None:
                 device=device,
                 optimizer=None,
                 lr_scheduler=None,
-                max_batches=training_config.max_val_batches,
+                max_batches=max_val_batches,
                 max_calo_hits=view_config.max_calo_hits,
                 coord_noise_scale=view_config.coord_noise_scale,
                 energy_jitter_scale=view_config.energy_jitter_scale,
