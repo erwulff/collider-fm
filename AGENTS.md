@@ -40,7 +40,8 @@ Implemented today:
 
 ## Cluster notes
 
-- Load `uv` with `module load uv`.
+- Load `uv` with `module load uv` before using `uv` in a session.
+- You only need to run `module load uv` once at the beginning of the session.
 - The documented HF cache is `/mnt/ceph/users/ewulff/data/hf`.
 - Runtime SLURM jobs source `slurm/load_env.sh`.
 - Current training jobs target single-GPU `a100-40gb` nodes.
