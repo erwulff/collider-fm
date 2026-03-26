@@ -53,6 +53,8 @@ model:
       enable_flash: false
 
 training:
+  run_dir:
+  run_name:
   train_split: train
   val_split: val
   batch_size: 2
