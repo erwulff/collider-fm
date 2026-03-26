@@ -82,7 +82,7 @@ Current scripts and SLURM jobs default to that path.
 
 ## Logging and outputs
 
-- training runs are written under `runs/<run_name>/`
+- training runs are written under `runs/<run_name>_<timestamp>/`
 - SLURM logs go to `logs_slurm/log_<jobname>_<jobid>.out` and `.err`
 - diagnostics are typically written under `diagnostics/`
 

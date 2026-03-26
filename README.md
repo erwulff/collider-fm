@@ -114,13 +114,13 @@ sbatch slurm/train_medium.slurm
 Generate checkpoint-backed diagnostics:
 
 ```bash
-uv run python scripts/plot_diagnostics.py --checkpoint runs/<run_name>/checkpoints/best.pt
+uv run python scripts/plot_diagnostics.py --checkpoint runs/<run_name>_<timestamp>/checkpoints/best.pt
 ```
 
 Plot the saved metrics from a completed run into `<run_dir>/plots/`:
 
 ```bash
-uv run python scripts/plot_training_run.py runs/<run_name>
+uv run python scripts/plot_training_run.py runs/<run_name>_<timestamp>
 ```
 
 Open the dataset walkthrough notebook:
@@ -137,7 +137,7 @@ uv run jupyter lab notebooks/model_walkthrough.ipynb
 
 ## Run outputs
 
-Training runs are written under `runs/<run_name>/` and currently include:
+Training runs are written under `runs/<run_name>_<timestamp>/` and currently include:
 
 - `config.json`
 - `metrics.jsonl`
@@ -145,7 +145,7 @@ Training runs are written under `runs/<run_name>/` and currently include:
 - `checkpoints/latest.pt`
 - epoch checkpoints such as `checkpoints/epoch_001.pt`
 
-Run-level metric plots can be generated into `runs/<run_name>/plots/`.
+Run-level metric plots can be generated into `runs/<run_name>_<timestamp>/plots/`.
 
 Checkpoint-backed diagnostics are typically written under `diagnostics/`.
 

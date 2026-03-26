@@ -80,7 +80,7 @@ Still missing relative to the full intended recipe:
 Current status:
 
 - implemented in `scripts/train.py`
-- current outputs include `config.json`, `metrics.jsonl`, and checkpoints under `runs/<run_name>/checkpoints/`
+- current outputs include `config.json`, `metrics.jsonl`, and checkpoints under `runs/<run_name>_<timestamp>/checkpoints/`
 - current metrics include loss, prototype entropy, embedding norm, masked fraction, teacher schedules, and center norm
 
 ## Diagnostics target
