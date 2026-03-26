@@ -102,10 +102,14 @@ def cosine_decay(value_start: float, value_end: float, progress: float) -> float
 
 
 def learning_rate(optimizer: AdamW) -> float:
+    """Return the optimizer learning rate from the first parameter group."""
+
     return float(optimizer.param_groups[0]["lr"])
 
 
 def center_norm(model: PandaSelfDistillation) -> float:
+    """Return the current norm of the running teacher center."""
+
     return float(model.center.norm().item())
 
 
@@ -145,6 +149,8 @@ def prototype_usage(
 
 
 def prototype_entropy(probabilities: torch.Tensor) -> float:
+    """Compute entropy for a normalized prototype-usage distribution."""
+
     probabilities = probabilities.clamp_min(1.0e-8)
     entropy = -(probabilities * probabilities.log()).sum()
     return float(entropy.item())
@@ -160,6 +166,8 @@ def embedding_norm(outputs: list[dict[str, torch.Tensor]]) -> float:
 
 
 def apply_learning_rate(optimizer: AdamW, lr_value: float) -> None:
+    """Apply one scalar learning rate to every optimizer parameter group."""
+
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr_value
 

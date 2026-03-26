@@ -1,10 +1,16 @@
+from __future__ import annotations
+
+"""Download ColliderML subsets into the shared Hugging Face cache."""
+
 import argparse
+
 from datasets import load_dataset
 
 
-def main():
-    # Set up argument parser
-    parser = argparse.ArgumentParser(description="Download datasets with configurable options.")
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Download selected ColliderML dataset configurations."
+    )
     parser.add_argument(
         "--object-types",
         nargs="+",
@@ -33,10 +39,12 @@ def main():
         default=4,
         help="Number of processes to use for downloading (default: 4).",
     )
-    # Parse arguments
-    args = parser.parse_args()
+    return parser
 
-    # Download datasets
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+
     for dataset_type in args.dataset_types:
         for obj_type in args.object_types:
             dataset_name = f"{dataset_type}_{args.pu_config}_{obj_type}"
@@ -45,7 +53,7 @@ def main():
                 "CERN/ColliderML-Release-1",
                 dataset_name,
                 cache_dir=args.cache_dir,
-                num_proc=args.num_proc,  # Use configurable number of processes for faster downloading
+                num_proc=args.num_proc,
             )
 
 

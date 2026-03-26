@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Shared helpers for diagnostics scripts and notebooks."""
+
 from typing import Any
 
 import numpy as np
@@ -125,7 +127,11 @@ def encode_view(
     view: dict[str, torch.Tensor],
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Encode one point-view through the student or teacher pathway."""
+    """Encode one point-view through the student or teacher pathway.
+
+    The return value keeps a stable, plotting-friendly field set so the notebook and
+    scripts do not need to care about internal model naming details.
+    """
     encoded = (
         model.encode_teacher_view(view)
         if use_teacher

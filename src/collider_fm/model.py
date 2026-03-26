@@ -396,6 +396,8 @@ class PandaSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def update_teacher(self, momentum: float) -> None:
+        """Apply the EMA student-to-teacher update for one optimization step."""
+
         if not 0.0 <= momentum <= 1.0:
             raise ValueError("Momentum must be between 0 and 1.")
 

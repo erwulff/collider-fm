@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-# Add src to sys.path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(project_root, "src"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from collider_fm.data import ColliderMLDataset
 
 
 def plot_event_3d(event: dict[str, object], event_idx: int = 0) -> None:
+    """Save a simple 3D scatter plot for one raw calorimeter event."""
+
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -36,8 +39,10 @@ def plot_event_3d(event: dict[str, object], event_idx: int = 0) -> None:
     ax.set_title(f"ColliderML calorimeter event {event_idx} - ttbar pu0")
     ax.legend()
 
-    plt.savefig(f"event_{event_idx}_3d.png")
-    print(f"Saved event visualization to event_{event_idx}_3d.png")
+    output_path = PROJECT_ROOT / f"event_{event_idx}_3d.png"
+    plt.savefig(output_path)
+    print(f"Saved event visualization to {output_path}")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -53,4 +58,6 @@ if __name__ == "__main__":
     print(f"Calo x range: [{calo_hits['x'].min():.2f}, {calo_hits['x'].max():.2f}]")
     print(f"Calo y range: [{calo_hits['y'].min():.2f}, {calo_hits['y'].max():.2f}]")
     print(f"Calo z range: [{calo_hits['z'].min():.2f}, {calo_hits['z'].max():.2f}]")
-    print(f"Calo energy range: [{calo_hits['energy'].min():.2f}, {calo_hits['energy'].max():.2f}]")
+    print(
+        f"Calo energy range: [{calo_hits['energy'].min():.2f}, {calo_hits['energy'].max():.2f}]"
+    )

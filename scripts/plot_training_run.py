@@ -33,10 +33,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def read_json(path: Path) -> dict[str, Any]:
+    """Read a small JSON file into a dictionary."""
+
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
+    """Load JSONL metric records written by the training script."""
+
     records = []
     for line in metrics_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -51,6 +55,8 @@ def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
 def metric_series(
     records: list[dict[str, Any]], key: str
 ) -> tuple[list[float], list[float]]:
+    """Extract one metric series against epoch index."""
+
     xs = []
     ys = []
     for index, record in enumerate(records, start=1):
@@ -64,6 +70,8 @@ def metric_series(
 def metric_gap(
     records: list[dict[str, Any]], train_key: str, val_key: str
 ) -> tuple[list[float], list[float]]:
+    """Compute the validation-minus-training gap for one metric pair."""
+
     xs = []
     ys = []
     for index, record in enumerate(records, start=1):
@@ -81,6 +89,8 @@ def save_figure(fig: plt.Figure, path: Path) -> None:
 
 
 def best_epoch(records: list[dict[str, Any]]) -> int | None:
+    """Return the epoch with the lowest recorded validation loss."""
+
     candidates = [record for record in records if "val_loss" in record]
     if not candidates:
         return None
@@ -258,6 +268,8 @@ def summarize_run(
     config: dict[str, Any],
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Build a compact machine-readable summary for a completed run."""
+
     best_epoch_index = best_epoch(records)
     best_record = next(
         (

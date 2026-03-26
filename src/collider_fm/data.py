@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+"""Dataset helpers for the calo-only ColliderFM pipeline."""
+
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import torch
@@ -9,7 +14,9 @@ DEFAULT_OBJECT_TYPES = ("calo_hits",)
 CALO_ENERGY_KEYS = ("energy", "totalenergy", "total_energy")
 
 
-def _convert_list_value(value):
+def _convert_list_value(value: list[Any]) -> Any:
+    """Convert flat numeric lists to tensors while keeping ragged lists intact."""
+
     if len(value) > 0 and isinstance(value[0], list):
         return value
 
@@ -19,7 +26,9 @@ def _convert_list_value(value):
     return torch.tensor(array)
 
 
-def _apply_object_aliases(obj_type: str, row: dict[str, object]) -> dict[str, object]:
+def _apply_object_aliases(obj_type: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Add stable field aliases used by the rest of the project."""
+
     if obj_type != "calo_hits":
         return row
 
@@ -46,37 +55,46 @@ class ColliderMLDataset(Dataset):
 
     def __init__(
         self,
-        dataset_name="CERN/ColliderML-Release-1",
-        dataset_type="ttbar",
-        pu_config="pu0",
+        dataset_name: str = "CERN/ColliderML-Release-1",
+        dataset_type: str = "ttbar",
+        pu_config: str = "pu0",
         object_types: Sequence[str] = DEFAULT_OBJECT_TYPES,
-        split="train",
-        cache_dir="/mnt/ceph/users/ewulff/data/hf",
-    ):
+        split: str = "train",
+        cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    ) -> None:
 
         self.dataset_name = dataset_name
         self.object_types = tuple(object_types)
         if not self.object_types:
-            raise ValueError("'object_types' must contain at least one dataset configuration.")
+            raise ValueError(
+                "'object_types' must contain at least one dataset configuration."
+            )
         self.datasets = {}
 
         for obj_type in self.object_types:
             config_name = f"{dataset_type}_{pu_config}_{obj_type}"
             print(f"Loading {config_name}...")
-            self.datasets[obj_type] = load_dataset(dataset_name, config_name, split=split, cache_dir=cache_dir)
+            self.datasets[obj_type] = load_dataset(
+                dataset_name,
+                config_name,
+                split=split,
+                cache_dir=cache_dir,
+            )
 
         # All datasets should have the same number of rows (events)
         self.num_events = len(self.datasets[self.object_types[0]])
         for obj_type in self.object_types:
             dataset_length = len(self.datasets[obj_type])
             if dataset_length != self.num_events:
-                raise ValueError(f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}.")
+                raise ValueError(
+                    f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
+                )
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_events
 
-    def __getitem__(self, idx):
-        event = {}
+    def __getitem__(self, idx: int) -> dict[str, dict[str, Any]]:
+        event: dict[str, dict[str, Any]] = {}
         for obj_type, ds in self.datasets.items():
             # Get the row (event) from the dataset
             row = ds[idx]
@@ -94,7 +112,9 @@ class ColliderMLDataset(Dataset):
         return event
 
 
-def collate_fn(batch):
+def collate_fn(
+    batch: list[dict[str, dict[str, Any]]],
+) -> list[dict[str, dict[str, Any]]]:
     """
     Custom collate function to handle variable-length events.
     ColliderML events have variable numbers of calorimeter cells, so we keep events
