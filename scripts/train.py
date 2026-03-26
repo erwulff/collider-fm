@@ -13,6 +13,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+# Import Comet early for its import-time side effects; then remove unused name; the name is unused here.
 del comet_ml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,8 +35,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train the beginner-friendly ColliderFM self-distillation model."
     )
-    parser.add_argument("--train-split", default="train[:64]")
-    parser.add_argument("--val-split", default="train[64:80]")
+    parser.add_argument("--train-split", default="train")
+    parser.add_argument("--val-split", default="val")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
