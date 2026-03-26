@@ -16,8 +16,7 @@
 #SBATCH -e logs_slurm/log_%x_%j.err
 
 # Load modules if necessary
-module --force purge; module load modules/2.2-20230808
-module load slurm gcc cmake cuda/12.1.1 cudnn/8.9.2.26-12.x nccl openmpi apptainer uv
+module load slurm uv
 
 # Activate the local virtual environment
 source .venv/bin/activate
@@ -25,7 +24,8 @@ source .venv/bin/activate
 # Run the Python script to download the pu0 datasets
 uv run python scripts/download_data.py \
     --dataset-types ttbar \
-    --object-types calo_hits \
+    --object-types calo_hits tracker_hits particles \
     --pu-config pu0 \
     --cache-dir /mnt/ceph/users/ewulff/data/hf \
+    --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 \
     --num-proc 12

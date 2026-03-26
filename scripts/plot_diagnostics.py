@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from argparse import SUPPRESS
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,12 @@ from collider_fm.diagnostics import (
     to_numpy,
 )
 from collider_fm.model import create_small_panda_model, create_training_panda_model
+from collider_fm.project_config import (
+    DEFAULT_CONFIG_PATH,
+    load_project_config_from_cli,
+    model_factory_kwargs,
+    to_plain_container,
+)
 from collider_fm.views import (
     augment_point_view,
     batch_point_views,
@@ -48,20 +55,61 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "By default the script traces one detailed event and separately summarizes a 10-event sample for PCA plots."
         )
     )
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--detail-split", default="train[0:1]")
-    parser.add_argument("--representation-split", default="train[:10]")
-    parser.add_argument("--max-calo-hits", type=int, default=256)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--detail-split", default=SUPPRESS)
+    parser.add_argument("--representation-split", default=SUPPRESS)
+    parser.add_argument("--max-calo-hits", type=int, default=SUPPRESS)
+    parser.add_argument("--device", default=SUPPRESS)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--metrics-file", default=None)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--dataset-type", default="ttbar")
-    parser.add_argument("--pu-config", default="pu0")
-    parser.add_argument("--cache-dir", default="/mnt/ceph/users/ewulff/data/hf")
-    parser.add_argument("--point-feature-sample-size", type=int, default=2000)
-    parser.add_argument("--top-k-prototypes", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=SUPPRESS)
+    parser.add_argument("--dataset-name", default=SUPPRESS)
+    parser.add_argument("--dataset-type", default=SUPPRESS)
+    parser.add_argument("--pu-config", default=SUPPRESS)
+    parser.add_argument("--cache-dir", default=SUPPRESS)
+    parser.add_argument("--dataset-revision", default=SUPPRESS)
+    parser.add_argument(
+        "--local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=SUPPRESS,
+        help="Load ColliderML only from the local cache.",
+    )
+    parser.add_argument("--point-feature-sample-size", type=int, default=SUPPRESS)
+    parser.add_argument("--top-k-prototypes", type=int, default=SUPPRESS)
     return parser
+
+
+def resolve_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, dict[str, Any]]:
+    project_config, resolved_config_path = load_project_config_from_cli(argv)
+    parser = build_arg_parser()
+    parsed_args = parser.parse_args(argv)
+    cli_values = vars(parsed_args)
+    data_config = to_plain_container(project_config.data)
+    diagnostics_config = to_plain_container(project_config.diagnostics)
+    view_config = to_plain_container(project_config.views)
+    merged = {
+        "config": str(resolved_config_path),
+        "output_dir": None,
+        "detail_split": diagnostics_config["detail_split"],
+        "representation_split": diagnostics_config["representation_split"],
+        "max_calo_hits": diagnostics_config["max_calo_hits"],
+        "device": diagnostics_config["device"],
+        "checkpoint": None,
+        "metrics_file": None,
+        "seed": diagnostics_config["seed"],
+        "dataset_name": data_config["dataset_name"],
+        "dataset_type": data_config["dataset_type"],
+        "pu_config": data_config["pu_config"],
+        "cache_dir": data_config["cache_dir"],
+        "dataset_revision": data_config["dataset_revision"],
+        "local_files_only": data_config["local_files_only"],
+        "point_feature_sample_size": diagnostics_config["point_feature_sample_size"],
+        "top_k_prototypes": diagnostics_config["top_k_prototypes"],
+    } | cli_values
+    return argparse.Namespace(**merged), to_plain_container(project_config)
 
 
 def default_output_dir() -> Path:
@@ -539,7 +587,7 @@ def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
+    args, project_config = resolve_args()
     set_seed(args.seed)
 
     output_root = (
@@ -552,9 +600,12 @@ def main() -> None:
 
     detail_events = load_events(
         split=args.detail_split,
+        dataset_name=args.dataset_name,
         dataset_type=args.dataset_type,
         pu_config=args.pu_config,
         cache_dir=args.cache_dir,
+        dataset_revision=args.dataset_revision,
+        local_files_only=args.local_files_only,
     )
     if not detail_events:
         raise ValueError("The detailed diagnostic split returned no events.")
@@ -562,9 +613,12 @@ def main() -> None:
 
     representation_events = load_events(
         split=args.representation_split,
+        dataset_name=args.dataset_name,
         dataset_type=args.dataset_type,
         pu_config=args.pu_config,
         cache_dir=args.cache_dir,
+        dataset_revision=args.dataset_revision,
+        local_files_only=args.local_files_only,
     )
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
@@ -637,9 +691,15 @@ def main() -> None:
 
     if device.type == "cuda":
         model = (
-            create_training_panda_model(device=device)
+            create_training_panda_model(
+                device=device,
+                **model_factory_kwargs(project_config["model"]["training"]),
+            )
             if args.checkpoint is not None
-            else create_small_panda_model(device=device)
+            else create_small_panda_model(
+                device=device,
+                **model_factory_kwargs(project_config["model"]["diagnostics"]),
+            )
         )
         checkpoint_artifact = None
         if args.checkpoint is not None:

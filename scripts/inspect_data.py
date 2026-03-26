@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from collider_fm.data import ColliderMLDataset
+from collider_fm.project_config import load_project_config, to_plain_container
 
 
 def plot_event_3d(event: dict[str, object], event_idx: int = 0) -> None:
@@ -46,7 +47,18 @@ def plot_event_3d(event: dict[str, object], event_idx: int = 0) -> None:
 
 
 if __name__ == "__main__":
-    dataset = ColliderMLDataset(split="train[:5]", object_types=["calo_hits"])
+    project_config = to_plain_container(load_project_config())
+    data_config = project_config["data"]
+    dataset = ColliderMLDataset(
+        dataset_name=data_config["dataset_name"],
+        dataset_type=data_config["dataset_type"],
+        pu_config=data_config["pu_config"],
+        cache_dir=data_config["cache_dir"],
+        dataset_revision=data_config["dataset_revision"],
+        split="train[:5]",
+        object_types=["calo_hits"],
+        local_files_only=True,
+    )
     print("Loading calorimeter event 0 for visualization...")
     sample = dataset[0]
     plot_event_3d(sample, 0)

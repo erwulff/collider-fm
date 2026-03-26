@@ -5,11 +5,13 @@ import json
 import math
 import sys
 import time
+from argparse import SUPPRESS
 from pathlib import Path
 
 import comet_ml
 import torch
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -28,6 +30,12 @@ from collider_fm.experiment_logging import (
     write_run_config,
 )
 from collider_fm.model import PandaSelfDistillation, create_training_panda_model
+from collider_fm.project_config import (
+    DEFAULT_CONFIG_PATH,
+    load_project_config_from_cli,
+    model_factory_kwargs,
+    to_plain_container,
+)
 from collider_fm.views import build_distillation_views
 
 
@@ -35,36 +43,121 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train the beginner-friendly ColliderFM self-distillation model."
     )
-    parser.add_argument("--train-split", default="train")
-    parser.add_argument("--val-split", default="val")
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--num-epochs", type=int, default=2)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--min-learning-rate", type=float, default=3e-5)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--teacher-momentum-start", type=float, default=0.99)
-    parser.add_argument("--teacher-momentum-end", type=float, default=0.999)
-    parser.add_argument("--teacher-temperature-start", type=float, default=0.04)
-    parser.add_argument("--teacher-temperature-end", type=float, default=0.07)
-    parser.add_argument("--teacher-temperature-warmup-epochs", type=int, default=1)
-    parser.add_argument("--max-train-batches", type=int, default=20)
-    parser.add_argument("--max-val-batches", type=int, default=5)
-    parser.add_argument("--max-calo-hits", type=int, default=512)
-    parser.add_argument("--coord-noise-scale", type=float, default=0.5)
-    parser.add_argument("--energy-jitter-scale", type=float, default=0.01)
-    parser.add_argument("--global-crop-ratio", type=float, default=0.9)
-    parser.add_argument("--student-mask-fraction", type=float, default=0.4)
-    parser.add_argument("--point-dropout", type=float, default=0.05)
-    parser.add_argument("--dataset-type", default="ttbar")
-    parser.add_argument("--pu-config", default="pu0")
-    parser.add_argument("--cache-dir", default="/mnt/ceph/users/ewulff/data/hf")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--train-split", default=SUPPRESS)
+    parser.add_argument("--val-split", default=SUPPRESS)
+    parser.add_argument("--batch-size", type=int, default=SUPPRESS)
+    parser.add_argument("--num-epochs", type=int, default=SUPPRESS)
+    parser.add_argument("--learning-rate", type=float, default=SUPPRESS)
+    parser.add_argument("--min-learning-rate", type=float, default=SUPPRESS)
+    parser.add_argument("--weight-decay", type=float, default=SUPPRESS)
+    parser.add_argument("--teacher-momentum-start", type=float, default=SUPPRESS)
+    parser.add_argument("--teacher-momentum-end", type=float, default=SUPPRESS)
+    parser.add_argument("--teacher-temperature-start", type=float, default=SUPPRESS)
+    parser.add_argument("--teacher-temperature-end", type=float, default=SUPPRESS)
     parser.add_argument(
-        "--log-backend", choices=["none", "jsonl", "auto", "comet"], default="auto"
+        "--teacher-temperature-warmup-epochs", type=int, default=SUPPRESS
     )
-    parser.add_argument("--run-dir", default=None)
-    parser.add_argument("--run-name", default=None)
-    parser.add_argument("--checkpoint-every-epochs", type=int, default=1)
+    parser.add_argument("--max-train-batches", type=int, default=SUPPRESS)
+    parser.add_argument("--max-val-batches", type=int, default=SUPPRESS)
+    parser.add_argument("--max-calo-hits", type=int, default=SUPPRESS)
+    parser.add_argument("--coord-noise-scale", type=float, default=SUPPRESS)
+    parser.add_argument("--energy-jitter-scale", type=float, default=SUPPRESS)
+    parser.add_argument("--global-crop-ratio", type=float, default=SUPPRESS)
+    parser.add_argument("--student-mask-fraction", type=float, default=SUPPRESS)
+    parser.add_argument("--point-dropout", type=float, default=SUPPRESS)
+    parser.add_argument("--dataset-name", default=SUPPRESS)
+    parser.add_argument("--dataset-type", default=SUPPRESS)
+    parser.add_argument("--pu-config", default=SUPPRESS)
+    parser.add_argument("--cache-dir", default=SUPPRESS)
+    parser.add_argument(
+        "--dataset-revision",
+        default=SUPPRESS,
+        help="Pinned Hugging Face dataset revision (tag or commit hash).",
+    )
+    parser.add_argument(
+        "--local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=SUPPRESS,
+        help="Load the dataset only from the local Hugging Face cache.",
+    )
+    parser.add_argument("--num-workers", type=int, default=SUPPRESS)
+    parser.add_argument("--prefetch-factor", type=int, default=SUPPRESS)
+    parser.add_argument(
+        "--pin-memory",
+        action=argparse.BooleanOptionalAction,
+        default=SUPPRESS,
+        help="Use pinned host memory for faster CPU-to-GPU transfer.",
+    )
+    parser.add_argument(
+        "--train-shuffle",
+        action=argparse.BooleanOptionalAction,
+        default=SUPPRESS,
+        help="Shuffle training events before batching.",
+    )
+    parser.add_argument(
+        "--log-backend",
+        choices=["none", "jsonl", "auto", "comet"],
+        default=SUPPRESS,
+    )
+    parser.add_argument("--run-dir", default=SUPPRESS)
+    parser.add_argument("--run-name", default=SUPPRESS)
+    parser.add_argument("--checkpoint-every-epochs", type=int, default=SUPPRESS)
     return parser
+
+
+def resolve_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, dict[str, object]]:
+    project_config, resolved_config_path = load_project_config_from_cli(argv)
+    parser = build_arg_parser()
+    parsed_args = parser.parse_args(argv)
+    cli_values = vars(parsed_args)
+
+    data_config = to_plain_container(project_config.data)
+    view_config = to_plain_container(project_config.views)
+    training_config = to_plain_container(project_config.training)
+    config_defaults = {
+        "config": str(resolved_config_path),
+        "train_split": training_config["train_split"],
+        "val_split": training_config["val_split"],
+        "batch_size": training_config["batch_size"],
+        "num_epochs": training_config["num_epochs"],
+        "learning_rate": training_config["learning_rate"],
+        "min_learning_rate": training_config["min_learning_rate"],
+        "weight_decay": training_config["weight_decay"],
+        "teacher_momentum_start": training_config["teacher_momentum_start"],
+        "teacher_momentum_end": training_config["teacher_momentum_end"],
+        "teacher_temperature_start": training_config["teacher_temperature_start"],
+        "teacher_temperature_end": training_config["teacher_temperature_end"],
+        "teacher_temperature_warmup_epochs": training_config[
+            "teacher_temperature_warmup_epochs"
+        ],
+        "max_train_batches": training_config["max_train_batches"],
+        "max_val_batches": training_config["max_val_batches"],
+        "max_calo_hits": view_config["max_calo_hits"],
+        "coord_noise_scale": view_config["coord_noise_scale"],
+        "energy_jitter_scale": view_config["energy_jitter_scale"],
+        "global_crop_ratio": view_config["global_crop_ratio"],
+        "student_mask_fraction": view_config["student_mask_fraction"],
+        "point_dropout": view_config["point_dropout"],
+        "dataset_name": data_config["dataset_name"],
+        "dataset_type": data_config["dataset_type"],
+        "pu_config": data_config["pu_config"],
+        "cache_dir": data_config["cache_dir"],
+        "dataset_revision": data_config["dataset_revision"],
+        "local_files_only": data_config["local_files_only"],
+        "num_workers": training_config["num_workers"],
+        "prefetch_factor": training_config["prefetch_factor"],
+        "pin_memory": training_config["pin_memory"],
+        "train_shuffle": training_config["train_shuffle"],
+        "log_backend": training_config["log_backend"],
+        "run_dir": None,
+        "run_name": None,
+        "checkpoint_every_epochs": training_config["checkpoint_every_epochs"],
+    }
+    merged_args = argparse.Namespace(**(config_defaults | cli_values))
+    return merged_args, to_plain_container(project_config)
 
 
 def create_dataloader(
@@ -73,17 +166,29 @@ def create_dataloader(
     """Create the calo-only dataloader used by train and validation."""
 
     dataset = ColliderMLDataset(
+        dataset_name=args.dataset_name,
         split=split,
         dataset_type=args.dataset_type,
         pu_config=args.pu_config,
         object_types=["calo_hits"],
         cache_dir=args.cache_dir,
+        dataset_revision=args.dataset_revision,
+        local_files_only=args.local_files_only,
     )
+    dataloader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": shuffle,
+        "collate_fn": collate_fn,
+        "num_workers": args.num_workers,
+        "pin_memory": bool(args.pin_memory and torch.cuda.is_available()),
+    }
+    if args.num_workers > 0:
+        dataloader_kwargs["persistent_workers"] = True
+        dataloader_kwargs["prefetch_factor"] = args.prefetch_factor
+
     return DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=shuffle,
-        collate_fn=collate_fn,
+        **dataloader_kwargs,
     )
 
 
@@ -94,8 +199,8 @@ def linear_warmup(value_start: float, value_end: float, progress: float) -> floa
     return value_start + progress * (value_end - value_start)
 
 
-def cosine_decay(value_start: float, value_end: float, progress: float) -> float:
-    """Cosine decay schedule from `value_start` to `value_end`."""
+def cosine_momentum(value_start: float, value_end: float, progress: float) -> float:
+    """Cosine schedule used for the teacher EMA momentum."""
 
     progress = min(max(progress, 0.0), 1.0)
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
@@ -111,7 +216,7 @@ def learning_rate(optimizer: AdamW) -> float:
 def center_norm(model: PandaSelfDistillation) -> float:
     """Return the current norm of the running teacher center."""
 
-    return float(model.center.norm().item())
+    return float(torch.linalg.vector_norm(model.center).item())
 
 
 def current_teacher_temperature(args: argparse.Namespace, epoch_index: int) -> float:
@@ -130,7 +235,7 @@ def current_teacher_temperature(args: argparse.Namespace, epoch_index: int) -> f
 def current_teacher_momentum(args: argparse.Namespace, global_progress: float) -> float:
     """Increase EMA momentum smoothly over training."""
 
-    return cosine_decay(
+    return cosine_momentum(
         args.teacher_momentum_start, args.teacher_momentum_end, global_progress
     )
 
@@ -166,13 +271,6 @@ def embedding_norm(outputs: list[dict[str, torch.Tensor]]) -> float:
     return float(embeddings.norm(dim=-1).mean().item())
 
 
-def apply_learning_rate(optimizer: AdamW, lr_value: float) -> None:
-    """Apply one scalar learning rate to every optimizer parameter group."""
-
-    for param_group in optimizer.param_groups:
-        param_group["lr"] = lr_value
-
-
 def save_checkpoint(
     run_dir: Path,
     model: PandaSelfDistillation,
@@ -206,6 +304,7 @@ def run_epoch(
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
+    lr_scheduler: CosineAnnealingLR | None,
     max_batches: int,
     max_calo_hits: int,
     coord_noise_scale: float,
@@ -230,11 +329,15 @@ def run_epoch(
         "prototype_entropy": 0.0,
         "embedding_norm": 0.0,
         "masked_fraction": 0.0,
+        "data_wait_seconds": 0.0,
+        "view_build_seconds": 0.0,
+        "model_step_seconds": 0.0,
     }
     processed_batches = 0
+    processed_events = 0
 
     progress_bar = tqdm(
-        dataloader,
+        range(max_batches),
         total=max_batches,
         desc=phase,
         leave=True,
@@ -242,10 +345,17 @@ def run_epoch(
         ascii=True,
     )
 
-    for batch_index, events in enumerate(progress_bar):
-        if batch_index >= max_batches:
-            break
+    data_iter = iter(dataloader)
 
+    for batch_index in progress_bar:
+        data_wait_start = time.perf_counter()
+        try:
+            events = next(data_iter)
+        except StopIteration:
+            break
+        data_wait_seconds = time.perf_counter() - data_wait_start
+
+        view_start = time.perf_counter()
         distillation_batch = build_distillation_views(
             events,
             device=device,
@@ -256,6 +366,11 @@ def run_epoch(
             student_mask_fraction=student_mask_fraction,
             point_dropout=point_dropout,
         )
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        view_build_seconds = time.perf_counter() - view_start
+
+        model_step_start = time.perf_counter()
 
         with torch.set_grad_enabled(is_training):
             student_outputs, teacher_outputs = model(distillation_batch)
@@ -265,8 +380,14 @@ def run_epoch(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
+            if lr_scheduler is not None:
+                lr_scheduler.step()
             model.update_center(teacher_outputs)
             model.update_teacher(momentum=teacher_momentum)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        model_step_seconds = time.perf_counter() - model_step_start
 
         usage = prototype_usage(student_outputs, num_prototypes=model.num_prototypes)
         masked_fraction = (
@@ -278,11 +399,17 @@ def run_epoch(
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(student_outputs)
         totals["masked_fraction"] += float(masked_fraction)
+        totals["data_wait_seconds"] += data_wait_seconds
+        totals["view_build_seconds"] += view_build_seconds
+        totals["model_step_seconds"] += model_step_seconds
         processed_batches += 1
+        processed_events += len(events)
 
         progress_bar.set_postfix(
+            data=f"{data_wait_seconds:.1f}s",
+            view=f"{view_build_seconds:.1f}s",
+            model=f"{model_step_seconds:.1f}s",
             loss=f"{loss.item():.4f}",
-            entropy=f"{prototype_entropy(usage):.3f}",
             masked=f"{masked_fraction:.3f}",
         )
 
@@ -293,13 +420,18 @@ def run_epoch(
             f"No {phase} batches were processed. Check the chosen split and max batch count."
         )
 
-    return {
-        key: value / processed_batches for key, value in totals.items()
-    }, processed_batches
+    averaged_metrics = {key: value / processed_batches for key, value in totals.items()}
+    averaged_metrics["events_per_second"] = processed_events / max(
+        1.0e-6,
+        totals["data_wait_seconds"]
+        + totals["view_build_seconds"]
+        + totals["model_step_seconds"],
+    )
+    return averaged_metrics, processed_batches
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
+    args, project_config = resolve_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -310,7 +442,7 @@ def main() -> None:
         print("Run this script on a GPU node, for example through a SLURM job.")
         return
 
-    train_loader = create_dataloader(args, args.train_split, shuffle=True)
+    train_loader = create_dataloader(args, args.train_split, shuffle=args.train_shuffle)
     val_loader = create_dataloader(args, args.val_split, shuffle=False)
 
     run_dir, run_name = ensure_run_directory(
@@ -323,15 +455,24 @@ def main() -> None:
         "device": str(device),
         "run_dir": str(run_dir),
         "run_name": run_name,
+        "project_config": project_config,
     }
     config_path = write_run_config(run_dir, config)
     logger.log_params(config)
     print(f"Run directory: {run_dir}")
     print(f"Run config: {config_path}")
 
-    model = create_training_panda_model(device=device)
+    model = create_training_panda_model(
+        device=device,
+        **model_factory_kwargs(project_config["model"]["training"]),
+    )
     optimizer = AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+    )
+    lr_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, args.num_epochs * args.max_train_batches),
+        eta_min=args.min_learning_rate,
     )
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params / 1e6:.2f}M")
@@ -346,19 +487,16 @@ def main() -> None:
             epoch_start = time.perf_counter()
 
             train_progress = global_step / total_train_steps
-            current_lr = cosine_decay(
-                args.learning_rate, args.min_learning_rate, train_progress
-            )
             current_momentum = current_teacher_momentum(args, train_progress)
             current_temperature = current_teacher_temperature(args, epoch)
             model.temp_teacher = current_temperature
-            apply_learning_rate(optimizer, current_lr)
 
             train_metrics, train_batches = run_epoch(
                 model=model,
                 dataloader=train_loader,
                 device=device,
                 optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
                 max_batches=args.max_train_batches,
                 max_calo_hits=args.max_calo_hits,
                 coord_noise_scale=args.coord_noise_scale,
@@ -376,6 +514,7 @@ def main() -> None:
                 dataloader=val_loader,
                 device=device,
                 optimizer=None,
+                lr_scheduler=None,
                 max_batches=args.max_val_batches,
                 max_calo_hits=args.max_calo_hits,
                 coord_noise_scale=args.coord_noise_scale,
@@ -399,6 +538,14 @@ def main() -> None:
                 "val_embedding_norm": val_metrics["embedding_norm"],
                 "train_masked_fraction": train_metrics["masked_fraction"],
                 "val_masked_fraction": val_metrics["masked_fraction"],
+                "train_data_wait_seconds": train_metrics["data_wait_seconds"],
+                "val_data_wait_seconds": val_metrics["data_wait_seconds"],
+                "train_view_build_seconds": train_metrics["view_build_seconds"],
+                "val_view_build_seconds": val_metrics["view_build_seconds"],
+                "train_model_step_seconds": train_metrics["model_step_seconds"],
+                "val_model_step_seconds": val_metrics["model_step_seconds"],
+                "train_events_per_second": train_metrics["events_per_second"],
+                "val_events_per_second": val_metrics["events_per_second"],
                 "learning_rate": learning_rate(optimizer),
                 "teacher_momentum": current_momentum,
                 "teacher_temperature": current_temperature,

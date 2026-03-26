@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from argparse import SUPPRESS
+from typing import Any
 from pathlib import Path
 
 import torch
@@ -13,6 +15,12 @@ if str(SRC_ROOT) not in sys.path:
 
 from collider_fm.data import ColliderMLDataset
 from collider_fm.model import create_small_panda_model
+from collider_fm.project_config import (
+    DEFAULT_CONFIG_PATH,
+    load_project_config_from_cli,
+    model_factory_kwargs,
+    to_plain_container,
+)
 from collider_fm.views import build_distillation_views
 
 SMOKE_TEST_MAX_CALO_HITS = 256
@@ -22,10 +30,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a compact Panda-style smoke test on ColliderML point views."
     )
-    parser.add_argument("--train-split", default="train[:1]")
-    parser.add_argument("--dataset-type", default="ttbar")
-    parser.add_argument("--pu-config", default="pu0")
-    parser.add_argument("--cache-dir", default="/mnt/ceph/users/ewulff/data/hf")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--train-split", default=SUPPRESS)
+    parser.add_argument("--dataset-name", default=SUPPRESS)
+    parser.add_argument("--dataset-type", default=SUPPRESS)
+    parser.add_argument("--pu-config", default=SUPPRESS)
+    parser.add_argument("--cache-dir", default=SUPPRESS)
+    parser.add_argument("--dataset-revision", default=SUPPRESS)
+    parser.add_argument(
+        "--local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=SUPPRESS,
+        help="Load ColliderML only from the local cache.",
+    )
     parser.add_argument(
         "--allow-synthetic-fallback",
         action="store_true",
@@ -34,16 +51,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, dict[str, object]]:
+    project_config, resolved_config_path = load_project_config_from_cli(argv)
+    parser = build_arg_parser()
+    parsed_args = parser.parse_args(argv)
+    cli_values = vars(parsed_args)
+    data_config = to_plain_container(project_config.data)
+    smoke_config = to_plain_container(project_config.smoke_test)
+    merged = {
+        "config": str(resolved_config_path),
+        "train_split": smoke_config["train_split"],
+        "dataset_name": data_config["dataset_name"],
+        "dataset_type": data_config["dataset_type"],
+        "pu_config": data_config["pu_config"],
+        "cache_dir": data_config["cache_dir"],
+        "dataset_revision": data_config["dataset_revision"],
+        "local_files_only": data_config["local_files_only"],
+        "allow_synthetic_fallback": False,
+    } | cli_values
+    return argparse.Namespace(**merged), to_plain_container(project_config)
+
+
 def load_smoke_test_views(
     args: argparse.Namespace, device: torch.device
-) -> tuple[dict[str, object], str]:
+) -> tuple[dict[str, Any], str]:
     try:
         dataset = ColliderMLDataset(
+            dataset_name=args.dataset_name,
             split=args.train_split,
             dataset_type=args.dataset_type,
             pu_config=args.pu_config,
             cache_dir=args.cache_dir,
             object_types=["calo_hits"],
+            dataset_revision=args.dataset_revision,
+            local_files_only=args.local_files_only,
         )
         event = dataset[0]
         distillation_batch = build_distillation_views(
@@ -77,11 +120,14 @@ def load_smoke_test_views(
         return distillation_batch, f"synthetic fallback ({type(exc).__name__}: {exc})"
 
 
-def run_smoke_test(args: argparse.Namespace) -> None:
+def run_smoke_test(args: argparse.Namespace, project_config: dict[str, Any]) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = create_small_panda_model(device=device)
+    model = create_small_panda_model(
+        device=device,
+        **model_factory_kwargs(project_config["model"]["diagnostics"]),
+    )
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Total parameters: {num_params / 1e6:.2f}M")
 
@@ -108,4 +154,5 @@ def run_smoke_test(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    run_smoke_test(build_arg_parser().parse_args())
+    resolved_args, resolved_project_config = resolve_args()
+    run_smoke_test(resolved_args, resolved_project_config)
