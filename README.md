@@ -74,14 +74,14 @@ If you prefer a batch setup path, use the SLURM helpers in `slurm/`.
 Download the calo-hit subset used by the current pipeline:
 
 ```bash
-uv run python scripts/download_data.py --dataset-types ttbar --object-types calo_hits --pu-config pu0 --num-proc 12
+uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.pu_config=pu0 download.num_proc=12
 ```
 
 For reproducible runs, you can pin the dataset revision and then load only from the local cache:
 
 ```bash
-uv run python scripts/download_data.py --dataset-types ttbar --object-types calo_hits --pu-config pu0 --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 --num-proc 12
-uv run python scripts/train.py --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 --local-files-only
+uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.pu_config=pu0 download.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 download.num_proc=12
+uv run python scripts/train.py data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 data.local_files_only=true
 ```
 
 This prevents training or diagnostics from silently following newer dataset commits on the Hub after you already cached a known-good version.
@@ -96,7 +96,7 @@ Use a custom config file with:
 uv run python scripts/train.py --config config/default.yaml
 ```
 
-Any explicit CLI arguments override values loaded from the config file.
+Any explicit OmegaConf dotlist overrides override values loaded from the config file.
 
 Inspect a sample event:
 
@@ -119,7 +119,7 @@ sbatch slurm/test_model.slurm
 Run a tiny tracked training pass:
 
 ```bash
-uv run python scripts/train.py --num-epochs 1 --max-train-batches 1 --max-val-batches 1 --batch-size 1 --log-backend jsonl
+uv run python scripts/train.py training.num_epochs=1 training.max_train_batches=1 training.max_val_batches=1 training.batch_size=1 training.log_backend=jsonl
 ```
 
 Run the short SLURM training recipe:
@@ -137,7 +137,7 @@ sbatch slurm/train_medium.slurm
 Generate checkpoint-backed diagnostics:
 
 ```bash
-uv run python scripts/plot_diagnostics.py --checkpoint runs/<run_name>_<timestamp>/checkpoints/best.pt
+uv run python scripts/plot_diagnostics.py diagnostics.checkpoint=runs/<run_name>_<timestamp>/checkpoints/best.pt
 ```
 
 Plot the saved metrics from a completed run into `<run_dir>/plots/`:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from argparse import SUPPRESS
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -36,8 +35,8 @@ from collider_fm.diagnostics import (
 )
 from collider_fm.model import create_small_panda_model, create_training_panda_model
 from collider_fm.project_config import (
-    DEFAULT_CONFIG_PATH,
-    load_project_config_from_cli,
+    build_config_arg_parser,
+    load_project_config,
     model_factory_kwargs,
     to_plain_container,
 )
@@ -49,67 +48,18 @@ from collider_fm.views import (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    return build_config_arg_parser(
         description=(
             "Generate diagnostic plots for the ColliderFM calorimeter data-to-view-to-representation pipeline. "
             "By default the script traces one detailed event and separately summarizes a 10-event sample for PCA plots."
-        )
+        ),
+        epilog=(
+            "Examples:\n"
+            "  uv run python scripts/plot_diagnostics.py\n"
+            "  uv run python scripts/plot_diagnostics.py diagnostics.detail_split=train[0:2]\n"
+            "  uv run python scripts/plot_diagnostics.py diagnostics.device=cpu data.local_files_only=true"
+        ),
     )
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--detail-split", default=SUPPRESS)
-    parser.add_argument("--representation-split", default=SUPPRESS)
-    parser.add_argument("--max-calo-hits", type=int, default=SUPPRESS)
-    parser.add_argument("--device", default=SUPPRESS)
-    parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--metrics-file", default=None)
-    parser.add_argument("--seed", type=int, default=SUPPRESS)
-    parser.add_argument("--dataset-name", default=SUPPRESS)
-    parser.add_argument("--dataset-type", default=SUPPRESS)
-    parser.add_argument("--pu-config", default=SUPPRESS)
-    parser.add_argument("--cache-dir", default=SUPPRESS)
-    parser.add_argument("--dataset-revision", default=SUPPRESS)
-    parser.add_argument(
-        "--local-files-only",
-        action=argparse.BooleanOptionalAction,
-        default=SUPPRESS,
-        help="Load ColliderML only from the local cache.",
-    )
-    parser.add_argument("--point-feature-sample-size", type=int, default=SUPPRESS)
-    parser.add_argument("--top-k-prototypes", type=int, default=SUPPRESS)
-    return parser
-
-
-def resolve_args(
-    argv: list[str] | None = None,
-) -> tuple[argparse.Namespace, dict[str, Any]]:
-    project_config, resolved_config_path = load_project_config_from_cli(argv)
-    parser = build_arg_parser()
-    parsed_args = parser.parse_args(argv)
-    cli_values = vars(parsed_args)
-    data_config = to_plain_container(project_config.data)
-    diagnostics_config = to_plain_container(project_config.diagnostics)
-    view_config = to_plain_container(project_config.views)
-    merged = {
-        "config": str(resolved_config_path),
-        "output_dir": None,
-        "detail_split": diagnostics_config["detail_split"],
-        "representation_split": diagnostics_config["representation_split"],
-        "max_calo_hits": diagnostics_config["max_calo_hits"],
-        "device": diagnostics_config["device"],
-        "checkpoint": None,
-        "metrics_file": None,
-        "seed": diagnostics_config["seed"],
-        "dataset_name": data_config["dataset_name"],
-        "dataset_type": data_config["dataset_type"],
-        "pu_config": data_config["pu_config"],
-        "cache_dir": data_config["cache_dir"],
-        "dataset_revision": data_config["dataset_revision"],
-        "local_files_only": data_config["local_files_only"],
-        "point_feature_sample_size": diagnostics_config["point_feature_sample_size"],
-        "top_k_prototypes": diagnostics_config["top_k_prototypes"],
-    } | cli_values
-    return argparse.Namespace(**merged), to_plain_container(project_config)
 
 
 def default_output_dir() -> Path:
@@ -587,44 +537,51 @@ def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
 
 
 def main() -> None:
-    args, project_config = resolve_args()
-    set_seed(args.seed)
+    cli_args = build_arg_parser().parse_args()
+    project_config = to_plain_container(
+        load_project_config(cli_args.config, cli_args.overrides)
+    )
+    data_config = project_config["data"]
+    diagnostics_config = project_config["diagnostics"]
+    set_seed(diagnostics_config["seed"])
 
     output_root = (
-        Path(args.output_dir) if args.output_dir is not None else default_output_dir()
+        Path(diagnostics_config.get("output_dir"))
+        if diagnostics_config.get("output_dir") is not None
+        else default_output_dir()
     )
     output_dirs = ensure_output_dirs(output_root)
 
-    device = resolve_device(args.device)
+    device = resolve_device(diagnostics_config["device"])
     print(f"Using device: {device}")
 
     detail_events = load_events(
-        split=args.detail_split,
-        dataset_name=args.dataset_name,
-        dataset_type=args.dataset_type,
-        pu_config=args.pu_config,
-        cache_dir=args.cache_dir,
-        dataset_revision=args.dataset_revision,
-        local_files_only=args.local_files_only,
+        split=diagnostics_config["detail_split"],
+        dataset_name=data_config["dataset_name"],
+        dataset_type=data_config["dataset_type"],
+        pu_config=data_config["pu_config"],
+        cache_dir=data_config["cache_dir"],
+        dataset_revision=data_config["dataset_revision"],
+        local_files_only=data_config["local_files_only"],
     )
     if not detail_events:
         raise ValueError("The detailed diagnostic split returned no events.")
     detail_event = detail_events[0]
 
     representation_events = load_events(
-        split=args.representation_split,
-        dataset_name=args.dataset_name,
-        dataset_type=args.dataset_type,
-        pu_config=args.pu_config,
-        cache_dir=args.cache_dir,
-        dataset_revision=args.dataset_revision,
-        local_files_only=args.local_files_only,
+        split=diagnostics_config["representation_split"],
+        dataset_name=data_config["dataset_name"],
+        dataset_type=data_config["dataset_type"],
+        pu_config=data_config["pu_config"],
+        cache_dir=data_config["cache_dir"],
+        dataset_revision=data_config["dataset_revision"],
+        local_files_only=data_config["local_files_only"],
     )
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
     base_view = build_point_view_from_event(
-        detail_event, device=device, max_calo_hits=args.max_calo_hits
+        detail_event, device=device, max_calo_hits=diagnostics_config["max_calo_hits"]
     )
     aug_a = augment_point_view(base_view)
     aug_b = augment_point_view(base_view)
@@ -644,7 +601,9 @@ def main() -> None:
 
     representation_views = [
         build_point_view_from_event(
-            event, device=device, max_calo_hits=args.max_calo_hits
+            event,
+            device=device,
+            max_calo_hits=diagnostics_config["max_calo_hits"],
         )
         for event in representation_events
     ]
@@ -652,12 +611,12 @@ def main() -> None:
 
     model_artifact: dict[str, Any] = {
         "device": str(device),
-        "checkpoint_path": args.checkpoint,
-        "metrics_path": args.metrics_file,
+        "checkpoint_path": diagnostics_config.get("checkpoint"),
+        "metrics_path": diagnostics_config.get("metrics_file"),
         "model_plots_generated": False,
         "weights_source": "fresh initialization"
-        if args.checkpoint is None
-        else f"checkpoint: {args.checkpoint}",
+        if diagnostics_config.get("checkpoint") is None
+        else f"checkpoint: {diagnostics_config['checkpoint']}",
     }
     tensor_artifact: dict[str, Any] = {
         "detail_event": {
@@ -676,7 +635,9 @@ def main() -> None:
         },
     }
 
-    metrics_path = infer_metrics_path(args.checkpoint, args.metrics_file)
+    metrics_path = infer_metrics_path(
+        diagnostics_config.get("checkpoint"), diagnostics_config.get("metrics_file")
+    )
     if metrics_path is not None and metrics_path.exists():
         metric_records = load_metric_records(metrics_path)
         if metric_records:
@@ -695,15 +656,17 @@ def main() -> None:
                 device=device,
                 **model_factory_kwargs(project_config["model"]["training"]),
             )
-            if args.checkpoint is not None
+            if diagnostics_config.get("checkpoint") is not None
             else create_small_panda_model(
                 device=device,
                 **model_factory_kwargs(project_config["model"]["diagnostics"]),
             )
         )
         checkpoint_artifact = None
-        if args.checkpoint is not None:
-            checkpoint_artifact = load_checkpoint(model, args.checkpoint)
+        if diagnostics_config.get("checkpoint") is not None:
+            checkpoint_artifact = load_checkpoint(
+                model, diagnostics_config["checkpoint"]
+            )
         model.eval()
         num_params = sum(parameter.numel() for parameter in model.parameters())
         model_artifact.update(
@@ -733,7 +696,7 @@ def main() -> None:
             [to_numpy(prob) for prob in student_probs],
             [to_numpy(prob) for prob in teacher_probs],
             output_dirs["model"] / "event_000_logits.png",
-            top_k=args.top_k_prototypes,
+            top_k=diagnostics_config["top_k_prototypes"],
         )
         plot_view_agreement(
             detail_base_encoding["pooled"][0],
@@ -760,8 +723,8 @@ def main() -> None:
         plot_point_feature_pca(
             representation_encoding["point_features"],
             output_dirs["model"] / "batch_point_feature_pca.png",
-            max_points=args.point_feature_sample_size,
-            seed=args.seed,
+            max_points=diagnostics_config["point_feature_sample_size"],
+            seed=diagnostics_config["seed"],
         )
 
         model_artifact["model_plots_generated"] = True
@@ -787,7 +750,7 @@ def main() -> None:
 
     write_json(
         output_dirs["artifacts"] / "run_config.json",
-        vars(args) | {"resolved_device": str(device)},
+        project_config | {"resolved_device": str(device)},
     )
     write_json(output_dirs["artifacts"] / "tensor_summary.json", tensor_artifact)
     write_json(output_dirs["artifacts"] / "model_summary.json", model_artifact)

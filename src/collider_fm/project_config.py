@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.yaml"
-DEFAULT_DATASET_REVISION = "e28a24cc9c1641a478ae4e5bc3b376eb624b7283"
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
@@ -22,23 +21,52 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
     return PROJECT_ROOT / candidate
 
 
-def load_project_config(config_path: str | Path | None = None) -> DictConfig:
+def load_project_config(
+    config_path: str | Path | None = None,
+    overrides: Sequence[str] | None = None,
+) -> DictConfig:
     base_config = OmegaConf.load(DEFAULT_CONFIG_PATH)
     resolved_path = resolve_config_path(config_path)
-    if resolved_path == DEFAULT_CONFIG_PATH:
-        return base_config
-    override_config = OmegaConf.load(resolved_path)
-    return OmegaConf.merge(base_config, override_config)
+    merged_config = base_config
+    if resolved_path != DEFAULT_CONFIG_PATH:
+        override_config = OmegaConf.load(resolved_path)
+        merged_config = OmegaConf.merge(merged_config, override_config)
+    if overrides:
+        invalid_overrides = [override for override in overrides if "=" not in override]
+        if invalid_overrides:
+            invalid_str = ", ".join(invalid_overrides)
+            raise ValueError(
+                "OmegaConf CLI overrides must use key=value syntax. "
+                f"Invalid overrides: {invalid_str}. "
+                "Example: training.batch_size=16"
+            )
+        merged_config = OmegaConf.merge(
+            merged_config, OmegaConf.from_dotlist(list(overrides))
+        )
+    return merged_config
 
 
-def load_project_config_from_cli(
-    argv: list[str] | None = None,
-) -> tuple[DictConfig, Path]:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    args, _ = parser.parse_known_args(argv)
-    resolved_path = resolve_config_path(args.config)
-    return load_project_config(resolved_path), resolved_path
+def build_config_arg_parser(
+    description: str,
+    *,
+    epilog: str | None = None,
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=description,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Path to an OmegaConf YAML file to merge on top of config/default.yaml.",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="OmegaConf dotlist overrides such as training.batch_size=16 or data.local_files_only=true.",
+    )
+    return parser
 
 
 def to_plain_container(config: Any) -> Any:

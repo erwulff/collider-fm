@@ -5,7 +5,6 @@ import json
 import math
 import sys
 import time
-from argparse import SUPPRESS
 from pathlib import Path
 
 import comet_ml
@@ -31,8 +30,8 @@ from collider_fm.experiment_logging import (
 )
 from collider_fm.model import PandaSelfDistillation, create_training_panda_model
 from collider_fm.project_config import (
-    DEFAULT_CONFIG_PATH,
-    load_project_config_from_cli,
+    build_config_arg_parser,
+    load_project_config,
     model_factory_kwargs,
     to_plain_container,
 )
@@ -40,151 +39,44 @@ from collider_fm.views import build_distillation_views
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Train the beginner-friendly ColliderFM self-distillation model."
+    return build_config_arg_parser(
+        description="Train the beginner-friendly ColliderFM self-distillation model.",
+        epilog=(
+            "Examples:\n"
+            "  uv run python scripts/train.py\n"
+            "  uv run python scripts/train.py training.batch_size=16 training.num_epochs=10\n"
+            "  uv run python scripts/train.py data.local_files_only=true training.log_backend=jsonl"
+        ),
     )
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    parser.add_argument("--train-split", default=SUPPRESS)
-    parser.add_argument("--val-split", default=SUPPRESS)
-    parser.add_argument("--batch-size", type=int, default=SUPPRESS)
-    parser.add_argument("--num-epochs", type=int, default=SUPPRESS)
-    parser.add_argument("--learning-rate", type=float, default=SUPPRESS)
-    parser.add_argument("--min-learning-rate", type=float, default=SUPPRESS)
-    parser.add_argument("--weight-decay", type=float, default=SUPPRESS)
-    parser.add_argument("--teacher-momentum-start", type=float, default=SUPPRESS)
-    parser.add_argument("--teacher-momentum-end", type=float, default=SUPPRESS)
-    parser.add_argument("--teacher-temperature-start", type=float, default=SUPPRESS)
-    parser.add_argument("--teacher-temperature-end", type=float, default=SUPPRESS)
-    parser.add_argument(
-        "--teacher-temperature-warmup-epochs", type=int, default=SUPPRESS
-    )
-    parser.add_argument("--max-train-batches", type=int, default=SUPPRESS)
-    parser.add_argument("--max-val-batches", type=int, default=SUPPRESS)
-    parser.add_argument("--max-calo-hits", type=int, default=SUPPRESS)
-    parser.add_argument("--coord-noise-scale", type=float, default=SUPPRESS)
-    parser.add_argument("--energy-jitter-scale", type=float, default=SUPPRESS)
-    parser.add_argument("--global-crop-ratio", type=float, default=SUPPRESS)
-    parser.add_argument("--student-mask-fraction", type=float, default=SUPPRESS)
-    parser.add_argument("--point-dropout", type=float, default=SUPPRESS)
-    parser.add_argument("--dataset-name", default=SUPPRESS)
-    parser.add_argument("--dataset-type", default=SUPPRESS)
-    parser.add_argument("--pu-config", default=SUPPRESS)
-    parser.add_argument("--cache-dir", default=SUPPRESS)
-    parser.add_argument(
-        "--dataset-revision",
-        default=SUPPRESS,
-        help="Pinned Hugging Face dataset revision (tag or commit hash).",
-    )
-    parser.add_argument(
-        "--local-files-only",
-        action=argparse.BooleanOptionalAction,
-        default=SUPPRESS,
-        help="Load the dataset only from the local Hugging Face cache.",
-    )
-    parser.add_argument("--num-workers", type=int, default=SUPPRESS)
-    parser.add_argument("--prefetch-factor", type=int, default=SUPPRESS)
-    parser.add_argument(
-        "--pin-memory",
-        action=argparse.BooleanOptionalAction,
-        default=SUPPRESS,
-        help="Use pinned host memory for faster CPU-to-GPU transfer.",
-    )
-    parser.add_argument(
-        "--train-shuffle",
-        action=argparse.BooleanOptionalAction,
-        default=SUPPRESS,
-        help="Shuffle training events before batching.",
-    )
-    parser.add_argument(
-        "--log-backend",
-        choices=["none", "jsonl", "auto", "comet"],
-        default=SUPPRESS,
-    )
-    parser.add_argument("--run-dir", default=SUPPRESS)
-    parser.add_argument("--run-name", default=SUPPRESS)
-    parser.add_argument("--checkpoint-every-epochs", type=int, default=SUPPRESS)
-    return parser
-
-
-def resolve_args(
-    argv: list[str] | None = None,
-) -> tuple[argparse.Namespace, dict[str, object]]:
-    project_config, resolved_config_path = load_project_config_from_cli(argv)
-    parser = build_arg_parser()
-    parsed_args = parser.parse_args(argv)
-    cli_values = vars(parsed_args)
-
-    data_config = to_plain_container(project_config.data)
-    view_config = to_plain_container(project_config.views)
-    training_config = to_plain_container(project_config.training)
-    config_defaults = {
-        "config": str(resolved_config_path),
-        "train_split": training_config["train_split"],
-        "val_split": training_config["val_split"],
-        "batch_size": training_config["batch_size"],
-        "num_epochs": training_config["num_epochs"],
-        "learning_rate": training_config["learning_rate"],
-        "min_learning_rate": training_config["min_learning_rate"],
-        "weight_decay": training_config["weight_decay"],
-        "teacher_momentum_start": training_config["teacher_momentum_start"],
-        "teacher_momentum_end": training_config["teacher_momentum_end"],
-        "teacher_temperature_start": training_config["teacher_temperature_start"],
-        "teacher_temperature_end": training_config["teacher_temperature_end"],
-        "teacher_temperature_warmup_epochs": training_config[
-            "teacher_temperature_warmup_epochs"
-        ],
-        "max_train_batches": training_config["max_train_batches"],
-        "max_val_batches": training_config["max_val_batches"],
-        "max_calo_hits": view_config["max_calo_hits"],
-        "coord_noise_scale": view_config["coord_noise_scale"],
-        "energy_jitter_scale": view_config["energy_jitter_scale"],
-        "global_crop_ratio": view_config["global_crop_ratio"],
-        "student_mask_fraction": view_config["student_mask_fraction"],
-        "point_dropout": view_config["point_dropout"],
-        "dataset_name": data_config["dataset_name"],
-        "dataset_type": data_config["dataset_type"],
-        "pu_config": data_config["pu_config"],
-        "cache_dir": data_config["cache_dir"],
-        "dataset_revision": data_config["dataset_revision"],
-        "local_files_only": data_config["local_files_only"],
-        "num_workers": training_config["num_workers"],
-        "prefetch_factor": training_config["prefetch_factor"],
-        "pin_memory": training_config["pin_memory"],
-        "train_shuffle": training_config["train_shuffle"],
-        "log_backend": training_config["log_backend"],
-        "run_dir": None,
-        "run_name": None,
-        "checkpoint_every_epochs": training_config["checkpoint_every_epochs"],
-    }
-    merged_args = argparse.Namespace(**(config_defaults | cli_values))
-    return merged_args, to_plain_container(project_config)
 
 
 def create_dataloader(
-    args: argparse.Namespace, split: str, shuffle: bool
+    config: dict[str, object], split: str, shuffle: bool
 ) -> DataLoader:
     """Create the calo-only dataloader used by train and validation."""
 
+    data_config = config["data"]
+    training_config = config["training"]
     dataset = ColliderMLDataset(
-        dataset_name=args.dataset_name,
+        dataset_name=data_config["dataset_name"],
         split=split,
-        dataset_type=args.dataset_type,
-        pu_config=args.pu_config,
+        dataset_type=data_config["dataset_type"],
+        pu_config=data_config["pu_config"],
         object_types=["calo_hits"],
-        cache_dir=args.cache_dir,
-        dataset_revision=args.dataset_revision,
-        local_files_only=args.local_files_only,
+        cache_dir=data_config["cache_dir"],
+        dataset_revision=data_config["dataset_revision"],
+        local_files_only=data_config["local_files_only"],
     )
     dataloader_kwargs = {
-        "batch_size": args.batch_size,
+        "batch_size": training_config["batch_size"],
         "shuffle": shuffle,
         "collate_fn": collate_fn,
-        "num_workers": args.num_workers,
-        "pin_memory": bool(args.pin_memory and torch.cuda.is_available()),
+        "num_workers": training_config["num_workers"],
+        "pin_memory": bool(training_config["pin_memory"] and torch.cuda.is_available()),
     }
-    if args.num_workers > 0:
+    if training_config["num_workers"] > 0:
         dataloader_kwargs["persistent_workers"] = True
-        dataloader_kwargs["prefetch_factor"] = args.prefetch_factor
+        dataloader_kwargs["prefetch_factor"] = training_config["prefetch_factor"]
 
     return DataLoader(
         dataset,
@@ -431,7 +323,12 @@ def run_epoch(
 
 
 def main() -> None:
-    args, project_config = resolve_args()
+    cli_args = build_arg_parser().parse_args()
+    config = to_plain_container(
+        load_project_config(cli_args.config, cli_args.overrides)
+    )
+    training_config = config["training"]
+    view_config = config["views"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -442,53 +339,63 @@ def main() -> None:
         print("Run this script on a GPU node, for example through a SLURM job.")
         return
 
-    train_loader = create_dataloader(args, args.train_split, shuffle=args.train_shuffle)
-    val_loader = create_dataloader(args, args.val_split, shuffle=False)
+    train_loader = create_dataloader(
+        config, training_config["train_split"], shuffle=training_config["train_shuffle"]
+    )
+    val_loader = create_dataloader(config, training_config["val_split"], shuffle=False)
 
     run_dir, run_name = ensure_run_directory(
-        PROJECT_ROOT, run_dir=args.run_dir, run_name=args.run_name
+        PROJECT_ROOT,
+        run_dir=training_config.get("run_dir"),
+        run_name=training_config.get("run_name"),
     )
     logger = create_experiment_logger(
-        args.log_backend, run_dir=run_dir, run_name=run_name
+        training_config["log_backend"], run_dir=run_dir, run_name=run_name
     )
-    config = vars(args) | {
+    run_config = config | {
         "device": str(device),
         "run_dir": str(run_dir),
         "run_name": run_name,
-        "project_config": project_config,
     }
-    config_path = write_run_config(run_dir, config)
-    logger.log_params(config)
+    config_path = write_run_config(run_dir, run_config)
+    logger.log_params(run_config)
     print(f"Run directory: {run_dir}")
     print(f"Run config: {config_path}")
 
     model = create_training_panda_model(
         device=device,
-        **model_factory_kwargs(project_config["model"]["training"]),
+        **model_factory_kwargs(config["model"]["training"]),
     )
     optimizer = AdamW(
-        model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+        model.parameters(),
+        lr=training_config["learning_rate"],
+        weight_decay=training_config["weight_decay"],
     )
     lr_scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=max(1, args.num_epochs * args.max_train_batches),
-        eta_min=args.min_learning_rate,
+        T_max=max(
+            1, training_config["num_epochs"] * training_config["max_train_batches"]
+        ),
+        eta_min=training_config["min_learning_rate"],
     )
     num_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Model parameters: {num_params / 1e6:.2f}M")
 
     global_step = 0
     best_val_loss = float("inf")
-    total_train_steps = max(1, args.num_epochs * args.max_train_batches)
+    total_train_steps = max(
+        1, training_config["num_epochs"] * training_config["max_train_batches"]
+    )
+    schedule_args = argparse.Namespace(**training_config)
 
     try:
-        for epoch in range(args.num_epochs):
-            print(f"Epoch {epoch + 1}/{args.num_epochs}")
+        for epoch in range(training_config["num_epochs"]):
+            print(f"Epoch {epoch + 1}/{training_config['num_epochs']}")
             epoch_start = time.perf_counter()
 
             train_progress = global_step / total_train_steps
-            current_momentum = current_teacher_momentum(args, train_progress)
-            current_temperature = current_teacher_temperature(args, epoch)
+            current_momentum = current_teacher_momentum(schedule_args, train_progress)
+            current_temperature = current_teacher_temperature(schedule_args, epoch)
             model.temp_teacher = current_temperature
 
             train_metrics, train_batches = run_epoch(
@@ -497,13 +404,13 @@ def main() -> None:
                 device=device,
                 optimizer=optimizer,
                 lr_scheduler=lr_scheduler,
-                max_batches=args.max_train_batches,
-                max_calo_hits=args.max_calo_hits,
-                coord_noise_scale=args.coord_noise_scale,
-                energy_jitter_scale=args.energy_jitter_scale,
-                global_crop_ratio=args.global_crop_ratio,
-                student_mask_fraction=args.student_mask_fraction,
-                point_dropout=args.point_dropout,
+                max_batches=training_config["max_train_batches"],
+                max_calo_hits=view_config["max_calo_hits"],
+                coord_noise_scale=view_config["coord_noise_scale"],
+                energy_jitter_scale=view_config["energy_jitter_scale"],
+                global_crop_ratio=view_config["global_crop_ratio"],
+                student_mask_fraction=view_config["student_mask_fraction"],
+                point_dropout=view_config["point_dropout"],
                 teacher_momentum=current_momentum,
                 phase="train",
             )
@@ -515,13 +422,13 @@ def main() -> None:
                 device=device,
                 optimizer=None,
                 lr_scheduler=None,
-                max_batches=args.max_val_batches,
-                max_calo_hits=args.max_calo_hits,
-                coord_noise_scale=args.coord_noise_scale,
-                energy_jitter_scale=args.energy_jitter_scale,
-                global_crop_ratio=args.global_crop_ratio,
-                student_mask_fraction=args.student_mask_fraction,
-                point_dropout=args.point_dropout,
+                max_batches=training_config["max_val_batches"],
+                max_calo_hits=view_config["max_calo_hits"],
+                coord_noise_scale=view_config["coord_noise_scale"],
+                energy_jitter_scale=view_config["energy_jitter_scale"],
+                global_crop_ratio=view_config["global_crop_ratio"],
+                student_mask_fraction=view_config["student_mask_fraction"],
+                point_dropout=view_config["point_dropout"],
                 teacher_momentum=current_momentum,
                 phase="val",
             )
@@ -558,7 +465,7 @@ def main() -> None:
             is_best = epoch_metrics["val_loss"] < best_val_loss
             if is_best:
                 best_val_loss = epoch_metrics["val_loss"]
-            if (epoch + 1) % args.checkpoint_every_epochs == 0 or is_best:
+            if (epoch + 1) % training_config["checkpoint_every_epochs"] == 0 or is_best:
                 checkpoint_path = save_checkpoint(
                     run_dir=run_dir,
                     model=model,

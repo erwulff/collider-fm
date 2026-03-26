@@ -20,14 +20,14 @@ echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    --num-epochs 10 \
-    --batch-size 16 \
-    --train-split "train" \
-    --val-split "train[0:1000]" \
-    --dataset-revision e28a24cc9c1641a478ae4e5bc3b376eb624b7283 \
-    --local-files-only \
-    --num-workers 8 \
-    --prefetch-factor 2 \
-    --pin-memory \
-    --log-backend comet \
-    --run-name "bs16-epoch10"
+    training.num_epochs=10 \
+    training.batch_size=16 \
+    training.train_split=train \
+    training.val_split=train[0:1000] \
+    data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 \
+    data.local_files_only=true \
+    training.num_workers=8 \
+    training.prefetch_factor=2 \
+    training.pin_memory=true \
+    training.log_backend=comet \
+    training.run_name=bs16-epoch10
