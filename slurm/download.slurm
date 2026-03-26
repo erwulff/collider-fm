@@ -5,7 +5,7 @@
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p genx
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=1000G
 
 # Job name
@@ -27,4 +27,4 @@ uv run python scripts/download_data.py \
     download.object_types=[calo_hits,tracker_hits,particles] \
     download.pu_config=pu0 \
     download.cache_dir=/mnt/ceph/users/ewulff/data/hf \
-    download.num_proc=30
+    download.num_proc=8
