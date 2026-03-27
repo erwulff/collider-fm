@@ -3,7 +3,8 @@ from __future__ import annotations
 """Model and loss helpers for the calo-only masked distillation pipeline."""
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -20,15 +21,17 @@ SMALL_MODEL_BACKBONE_KWARGS = {
     "enc_patch_size": (4, 4, 4, 4, 4),
     "shuffle_orders": False,
     "enable_flash": False,
+    "flash_backend": "torch",
 }
 
 TRAINING_MODEL_BACKBONE_KWARGS = {
     "enc_depths": (1, 1, 2, 2, 1),
-    "enc_channels": (24, 48, 96, 128, 192),
-    "enc_num_head": (1, 2, 4, 8, 8),
+    "enc_channels": (16, 32, 64, 96, 128),
+    "enc_num_head": (1, 2, 4, 4, 8),
     "enc_patch_size": (8, 8, 8, 8, 8),
     "shuffle_orders": False,
     "enable_flash": False,
+    "flash_backend": "torch",
 }
 
 
@@ -176,7 +179,7 @@ class IdentityBackbone(nn.Module):
 
     def forward(self, point: Any) -> Any:
         point = as_point_cloud(point)
-        encoded = type("EncodedPoint", (), {})()
+        encoded: Any = SimpleNamespace()
         encoded.feat = self.proj(point.feat)
         encoded.offset = point.offset
         return encoded
@@ -231,7 +234,7 @@ class PandaSelfDistillation(nn.Module):
             ),
             "enc_patch_size": (48, 48, 48, 48, 48),
             "enc_mode": True,
-            "enable_flash": False,
+            "enable_flash": True,
             "mask_token": True,
             "traceable": True,
         }
@@ -254,6 +257,14 @@ class PandaSelfDistillation(nn.Module):
         self.temp_teacher = temp_teacher
         self.center_momentum = center_momentum
         self.num_prototypes = num_prototypes
+        self.flash_attention_enabled = bool(
+            default_backbone_kwargs.get("enable_flash", False)
+        )
+        self.flash_attention_backend = (
+            str(default_backbone_kwargs.get("flash_backend", "flash_attn"))
+            if self.flash_attention_enabled
+            else "disabled"
+        )
 
         self.student_backbone = backbone_cls(**default_backbone_kwargs)
         self.teacher_backbone = backbone_cls(**default_backbone_kwargs)
@@ -285,7 +296,7 @@ class PandaSelfDistillation(nn.Module):
         backbone: nn.Module,
         projector: nn.Module,
         predictor: nn.Module | None = None,
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, Any]:
         """Encode one teacher or student view into point and pooled outputs."""
 
         point = as_point_cloud(view, default_grid_size=self.grid_size)
@@ -327,19 +338,19 @@ class PandaSelfDistillation(nn.Module):
 
     def encode_student_view(
         self, view: Mapping[str, Any] | PointView
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, Any]:
         return self._encode_view(
             view, self.student_backbone, self.student_projector, self.student_predictor
         )
 
     def encode_teacher_view(
         self, view: Mapping[str, Any] | PointView
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, Any]:
         return self._encode_view(view, self.teacher_backbone, self.teacher_projector)
 
     def forward(
         self, batch: Mapping[str, Sequence[Mapping[str, Any] | PointView]]
-    ) -> tuple[list[dict[str, torch.Tensor]], list[dict[str, torch.Tensor]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Encode all student and teacher views from one distillation batch."""
 
         student_views = list(batch["student_views"])
@@ -356,8 +367,8 @@ class PandaSelfDistillation(nn.Module):
 
     def distillation_loss(
         self,
-        student_outputs: Sequence[dict[str, torch.Tensor]],
-        teacher_outputs: Sequence[dict[str, torch.Tensor]],
+        student_outputs: Sequence[dict[str, Any]],
+        teacher_outputs: Sequence[dict[str, Any]],
     ) -> torch.Tensor:
         """Average point-level and masked pooled losses across all view pairs."""
 
@@ -375,7 +386,7 @@ class PandaSelfDistillation(nn.Module):
                     student_source_index=student_output["source_index"],
                     teacher_source_index=teacher_output["source_index"],
                     student_mask=student_output["mask"],
-                    center=self.center,
+                    center=cast(torch.Tensor, self.center),
                     temp_s=self.temp_student,
                     temp_t=self.temp_teacher,
                 )
@@ -384,7 +395,7 @@ class PandaSelfDistillation(nn.Module):
                 total_loss = total_loss + panda_loss(
                     student_output["masked_logits"],
                     teacher_output["masked_logits"].detach(),
-                    self.center,
+                    cast(torch.Tensor, self.center),
                     self.temp_student,
                     self.temp_teacher,
                 )
@@ -416,7 +427,7 @@ class PandaSelfDistillation(nn.Module):
         self.normalize_prototypes()
 
     @torch.no_grad()
-    def update_center(self, teacher_outputs: Sequence[dict[str, torch.Tensor]]) -> None:
+    def update_center(self, teacher_outputs: Sequence[dict[str, Any]]) -> None:
         """Update the running teacher-logit center used for stabilization."""
 
         if not teacher_outputs:
@@ -475,10 +486,10 @@ def create_training_panda_model(
 
     resolved_model_kwargs = {
         "in_channels": POINT_FEATURE_DIM,
-        "embed_channels": 24,
+        "embed_channels": 16,
         "num_prototypes": 256,
-        "projection_dim": 64,
-        "prediction_dim": 96,
+        "projection_dim": 48,
+        "prediction_dim": 64,
     }
     resolved_model_kwargs.update(model_kwargs)
 
@@ -501,6 +512,9 @@ def panda_loss(
     temp_t: float,
 ) -> torch.Tensor:
     """Cross-entropy between centered teacher probabilities and student logits."""
+    student_logits = student_logits.float()
+    teacher_logits = teacher_logits.float()
+    center = center.float()
     teacher_probs = F.softmax((teacher_logits - center) / temp_t, dim=-1)
     student_log_probs = F.log_softmax(student_logits / temp_s, dim=-1)
     return -(teacher_probs * student_log_probs).sum(dim=-1).mean()
@@ -523,26 +537,35 @@ def pointwise_panda_loss(
     point-level loss. Student masks simply restrict the student side to masked points
     when they exist; otherwise we fall back to all shared points.
     """
-    teacher_lookup = {
-        int(index.item()): row for row, index in enumerate(teacher_source_index)
-    }
+    if teacher_source_index.numel() == 0:
+        return student_logits.new_tensor(0.0)
+
     candidate_rows = torch.nonzero(student_mask, as_tuple=False).flatten()
     if candidate_rows.numel() == 0:
         candidate_rows = torch.arange(
             student_source_index.shape[0], device=student_source_index.device
         )
-
-    student_rows = []
-    teacher_rows = []
-    for row in candidate_rows.tolist():
-        source_index = int(student_source_index[row].item())
-        if source_index in teacher_lookup:
-            student_rows.append(row)
-            teacher_rows.append(teacher_lookup[source_index])
-
-    if not student_rows:
+    if candidate_rows.numel() == 0:
         return student_logits.new_tensor(0.0)
 
-    matched_student = student_logits[student_rows]
-    matched_teacher = teacher_logits[teacher_rows].detach()
+    candidate_source_index = student_source_index[candidate_rows]
+    sorted_teacher_index, teacher_order = torch.sort(teacher_source_index)
+    teacher_positions = (
+        torch.searchsorted(sorted_teacher_index, candidate_source_index, right=True) - 1
+    )
+    valid_positions = teacher_positions >= 0
+    if not torch.any(valid_positions):
+        return student_logits.new_tensor(0.0)
+
+    safe_teacher_positions = teacher_positions.clamp_min(0)
+    matched_values = sorted_teacher_index[safe_teacher_positions]
+    valid_positions = valid_positions & (matched_values == candidate_source_index)
+
+    if not torch.any(valid_positions):
+        return student_logits.new_tensor(0.0)
+
+    matched_student_rows = candidate_rows[valid_positions]
+    matched_teacher_rows = teacher_order[safe_teacher_positions[valid_positions]]
+    matched_student = student_logits[matched_student_rows]
+    matched_teacher = teacher_logits[matched_teacher_rows].detach()
     return panda_loss(matched_student, matched_teacher, center, temp_s, temp_t)

@@ -6,6 +6,7 @@ import math
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import comet_ml
 from omegaconf import DictConfig
@@ -83,6 +84,42 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
         dataset,
         **dataloader_kwargs,
     )
+
+
+def resolve_mixed_precision_dtype(
+    training_config: DictConfig, device: torch.device
+) -> torch.dtype | None:
+    """Resolve the requested mixed-precision mode for this device."""
+
+    mode = str(training_config.get("mixed_precision", "none")).lower()
+    if mode == "none":
+        return None
+    if device.type != "cuda":
+        print("Mixed precision requested without CUDA; disabling mixed precision.")
+        return None
+    if mode in {"bf16", "bfloat16"}:
+        if torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        print(
+            "BF16 mixed precision is not supported on this GPU; disabling mixed precision."
+        )
+        return None
+    if mode in {"fp16", "float16"}:
+        return torch.float16
+    raise ValueError(
+        f"Unsupported training.mixed_precision value: {training_config.mixed_precision}. "
+        "Use one of: none, bf16, fp16."
+    )
+
+
+def mixed_precision_name(dtype: torch.dtype | None) -> str:
+    if dtype is None:
+        return "none"
+    if dtype is torch.bfloat16:
+        return "bf16"
+    if dtype is torch.float16:
+        return "fp16"
+    return str(dtype)
 
 
 def resolve_epoch_batch_limit(
@@ -223,8 +260,10 @@ def run_epoch(
     device: torch.device,
     optimizer: AdamW | None,
     lr_scheduler: CosineAnnealingLR | None,
+    grad_scaler: Any,
+    mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
-    max_calo_hits: int,
+    max_calo_hits: int | None,
     coord_noise_scale: float,
     energy_jitter_scale: float,
     global_crop_ratio: float,
@@ -241,6 +280,7 @@ def run_epoch(
     """
 
     is_training = optimizer is not None
+    autocast_enabled = mixed_precision_dtype is not None and device.type == "cuda"
     model.train(mode=is_training)
     totals = {
         "loss": 0.0,
@@ -291,13 +331,23 @@ def run_epoch(
         model_step_start = time.perf_counter()
 
         with torch.set_grad_enabled(is_training):
-            student_outputs, teacher_outputs = model(distillation_batch)
-            loss = model.distillation_loss(student_outputs, teacher_outputs)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=mixed_precision_dtype or torch.float32,
+                enabled=autocast_enabled,
+            ):
+                student_outputs, teacher_outputs = model(distillation_batch)
+                loss = model.distillation_loss(student_outputs, teacher_outputs)
 
         if is_training:
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
+            if grad_scaler is not None and grad_scaler.is_enabled():
+                grad_scaler.scale(loss).backward()
+                grad_scaler.step(optimizer)
+                grad_scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
             model.update_center(teacher_outputs)
@@ -387,15 +437,27 @@ def main() -> None:
         "run_dir": str(run_dir),
         "run_name": run_name,
     }
-    config_path = write_run_config(run_dir, run_config)
-    logger.log_params(run_config)
     print(f"Run directory: {run_dir}")
-    print(f"Run config: {config_path}")
+
+    mixed_precision_dtype = resolve_mixed_precision_dtype(training_config, device)
 
     model = create_training_panda_model(
         device=device,
         **model_factory_kwargs(config.model.training),
     )
+    grad_scaler = torch.amp.GradScaler('cuda',
+        enabled=mixed_precision_dtype is torch.float16
+    )
+    print(f"Mixed precision: {mixed_precision_name(mixed_precision_dtype)}")
+    print(
+        f"Flash attention: {model.flash_attention_enabled} ({model.flash_attention_backend})"
+    )
+    run_config["resolved_mixed_precision"] = mixed_precision_name(mixed_precision_dtype)
+    run_config["resolved_flash_attention"] = bool(model.flash_attention_enabled)
+    run_config["resolved_flash_attention_backend"] = model.flash_attention_backend
+    config_path = write_run_config(run_dir, run_config)
+    logger.log_params(run_config)
+    print(f"Run config: {config_path}")
     optimizer = AdamW(
         model.parameters(),
         lr=training_config.learning_rate,
@@ -429,6 +491,8 @@ def main() -> None:
                 device=device,
                 optimizer=optimizer,
                 lr_scheduler=lr_scheduler,
+                grad_scaler=grad_scaler,
+                mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_train_batches,
                 max_calo_hits=view_config.max_calo_hits,
                 coord_noise_scale=view_config.coord_noise_scale,
@@ -447,6 +511,8 @@ def main() -> None:
                 device=device,
                 optimizer=None,
                 lr_scheduler=None,
+                grad_scaler=None,
+                mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_val_batches,
                 max_calo_hits=view_config.max_calo_hits,
                 coord_noise_scale=view_config.coord_noise_scale,

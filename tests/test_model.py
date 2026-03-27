@@ -1,7 +1,9 @@
 import unittest
+from typing import cast
 
 import torch
 
+from collider_fm._panda.model_base import PointTransformerV3
 from collider_fm.model import (
     IdentityBackbone,
     PandaSelfDistillation,
@@ -9,6 +11,7 @@ from collider_fm.model import (
     create_small_panda_model,
     create_training_panda_model,
     mean_pool_features,
+    panda_loss,
     pointwise_panda_loss,
 )
 from collider_fm.views import DEFAULT_POINT_GRID_SIZE, POINT_FEATURE_DIM
@@ -106,6 +109,76 @@ class ModelTests(unittest.TestCase):
 
         self.assertGreaterEqual(loss.item(), 0.0)
 
+    def test_pointwise_panda_loss_uses_masked_matches_only(self):
+        student_logits = torch.tensor(
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]], dtype=torch.float32
+        )
+        teacher_logits = torch.tensor(
+            [[0.7, 0.8], [0.9, 1.0], [1.1, 1.2]], dtype=torch.float32
+        )
+        student_source_index = torch.tensor([10, 11, 12])
+        teacher_source_index = torch.tensor([11, 12, 15])
+        student_mask = torch.tensor([0, 1, 1], dtype=torch.bool)
+        center = torch.zeros(1, 2)
+
+        loss = pointwise_panda_loss(
+            student_logits=student_logits,
+            teacher_logits=teacher_logits,
+            student_source_index=student_source_index,
+            teacher_source_index=teacher_source_index,
+            student_mask=student_mask,
+            center=center,
+            temp_s=0.1,
+            temp_t=0.04,
+        )
+
+        expected = panda_loss(
+            student_logits[1:3], teacher_logits[0:2], center, temp_s=0.1, temp_t=0.04
+        )
+        self.assertTrue(torch.allclose(loss, expected))
+
+    def test_pointwise_panda_loss_falls_back_to_all_points_when_mask_empty(self):
+        student_logits = torch.tensor(
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]], dtype=torch.float32
+        )
+        teacher_logits = torch.tensor(
+            [[0.7, 0.8], [0.9, 1.0], [1.1, 1.2]], dtype=torch.float32
+        )
+        student_source_index = torch.tensor([10, 11, 12])
+        teacher_source_index = torch.tensor([11, 12, 15])
+        student_mask = torch.zeros(3, dtype=torch.bool)
+        center = torch.zeros(1, 2)
+
+        loss = pointwise_panda_loss(
+            student_logits=student_logits,
+            teacher_logits=teacher_logits,
+            student_source_index=student_source_index,
+            teacher_source_index=teacher_source_index,
+            student_mask=student_mask,
+            center=center,
+            temp_s=0.1,
+            temp_t=0.04,
+        )
+
+        expected = panda_loss(
+            student_logits[1:3], teacher_logits[0:2], center, temp_s=0.1, temp_t=0.04
+        )
+        self.assertTrue(torch.allclose(loss, expected))
+
+    def test_pointwise_panda_loss_returns_zero_without_overlap(self):
+        loss = pointwise_panda_loss(
+            student_logits=torch.randn(3, 4),
+            teacher_logits=torch.randn(2, 4),
+            student_source_index=torch.tensor([1, 2, 3]),
+            teacher_source_index=torch.tensor([10, 11]),
+            student_mask=torch.tensor([1, 1, 1], dtype=torch.bool),
+            center=torch.zeros(1, 4),
+            temp_s=0.1,
+            temp_t=0.04,
+        )
+
+        self.assertEqual(loss.item(), 0.0)
+
     def test_teacher_update_and_center_update(self):
         model = PandaSelfDistillation(
             in_channels=POINT_FEATURE_DIM,
@@ -117,15 +190,21 @@ class ModelTests(unittest.TestCase):
             backbone_kwargs={"output_dim": 10},
         )
         with torch.no_grad():
-            model.student_projector[0].weight.add_(1.0)
+            student_linear = cast(torch.nn.Linear, model.student_projector[0])
+            student_linear.weight.add_(1.0)
 
-        teacher_before = model.teacher_projector[0].weight.detach().clone()
-        student_weight = model.student_projector[0].weight.detach().clone()
+        teacher_before = (
+            cast(torch.nn.Linear, model.teacher_projector[0]).weight.detach().clone()
+        )
+        student_weight = student_linear.weight.detach().clone()
         model.update_teacher(momentum=0.5)
 
         expected_teacher = teacher_before * 0.5 + student_weight * 0.5
         self.assertTrue(
-            torch.allclose(model.teacher_projector[0].weight, expected_teacher)
+            torch.allclose(
+                cast(torch.nn.Linear, model.teacher_projector[0]).weight,
+                expected_teacher,
+            )
         )
 
         teacher_outputs = [
@@ -133,9 +212,11 @@ class ModelTests(unittest.TestCase):
                 "point_logits": torch.randn(3, 7),
             }
         ]
-        center_before = model.center.detach().clone()
+        center_before = cast(torch.Tensor, model.center).detach().clone()
         model.update_center(teacher_outputs)
-        self.assertFalse(torch.allclose(center_before, model.center))
+        self.assertFalse(
+            torch.allclose(center_before, cast(torch.Tensor, model.center))
+        )
 
     def test_small_model_factory_uses_shared_defaults(self):
         model = create_small_panda_model(
@@ -152,6 +233,26 @@ class ModelTests(unittest.TestCase):
 
         self.assertEqual(model.grid_size, DEFAULT_POINT_GRID_SIZE)
         self.assertEqual(model.prototype_head.out_features, 256)
+
+    def test_point_transformer_accepts_torch_flash_backend(self):
+        model = PointTransformerV3(
+            in_channels=POINT_FEATURE_DIM,
+            enc_channels=(8, 12, 16, 24, 32),
+            enc_num_head=(1, 1, 2, 4, 4),
+            enc_patch_size=(4, 4, 4, 4, 4),
+            enc_depths=(1, 1, 1, 1, 1),
+            enable_flash=True,
+            flash_backend="torch",
+            upcast_attention=False,
+            upcast_softmax=False,
+            enable_rpe=False,
+            enc_mode=True,
+        )
+
+        first_stage = model.enc[0]
+        first_block = first_stage[0]
+        self.assertTrue(first_block.attn.enable_flash)
+        self.assertEqual(first_block.attn.flash_backend, "torch")
 
 
 if __name__ == "__main__":
