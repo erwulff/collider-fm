@@ -1,0 +1,104 @@
+data:
+  dataset_name: CERN/ColliderML-Release-1
+  dataset_type: ttbar
+  pu_config: pu0
+  object_types:
+    - calo_hits
+  cache_dir: /mnt/ceph/users/ewulff/data/hf
+  dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+  local_files_only: false
+
+views:
+  max_calo_hits:
+  coord_noise_scale: 0.5
+  energy_jitter_scale: 0.01
+  global_crop_ratio: 0.9
+  student_mask_fraction: 0.4
+  point_dropout: 0.05
+
+model:
+  training:
+    in_channels: 4
+    embed_channels: 16
+    num_prototypes: 256
+    projection_dim: 48
+    prediction_dim: 64
+    temp_student: 0.1
+    temp_teacher: 0.04
+    center_momentum: 0.9
+    grid_size: 10.0
+    backbone:
+      enc_depths: [1, 1, 2, 2, 1]
+      enc_channels: [16, 32, 64, 96, 128]
+      enc_num_head: [1, 2, 4, 4, 8]
+      enc_patch_size: [8, 8, 8, 8, 8]
+      shuffle_orders: false
+      enable_flash: false
+      flash_backend: torch  # Options: "torch", "flash_attn"
+  diagnostics:
+    in_channels: 4
+    embed_channels: 8
+    num_prototypes: 32
+    projection_dim: 8
+    prediction_dim: 16
+    temp_student: 0.1
+    temp_teacher: 0.04
+    center_momentum: 0.9
+    grid_size: 10.0
+    backbone:
+      enc_depths: [1, 1, 1, 1, 1]
+      enc_channels: [8, 12, 16, 24, 32]
+      enc_num_head: [1, 1, 2, 4, 4]
+      enc_patch_size: [4, 4, 4, 4, 4]
+      shuffle_orders: false
+      enable_flash: false
+      flash_backend: torch  # Options: "torch", "flash_attn"
+
+training:
+  run_dir:
+  run_name:
+  train_split: train
+  val_split: val
+  batch_size: 8
+  num_epochs: 2
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  weight_decay: 0.0001
+  teacher_momentum_start: 0.99
+  teacher_momentum_end: 0.999
+  teacher_temperature_start: 0.04
+  teacher_temperature_end: 0.07
+  teacher_temperature_warmup_epochs: 1
+  max_train_batches:
+  max_val_batches:
+  num_workers: 8
+  prefetch_factor: 2
+  pin_memory: true
+  mixed_precision: bf16
+  train_shuffle: true
+  checkpoint_every_epochs: 1
+  log_backend: auto
+
+diagnostics:
+  detail_split: train[0:1]
+  representation_split: train[:10]
+  max_calo_hits: 256
+  device: cuda
+  seed: 7
+  point_feature_sample_size: 2000
+  top_k_prototypes: 8
+
+download:
+  dataset_types:
+    - ttbar
+  object_types:
+    - calo_hits
+  pu_config: pu0
+  cache_dir: /mnt/ceph/users/ewulff/data/hf
+  dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+  num_proc: 4
+
+smoke_test:
+  train_split: train[:1]
+  max_calo_hits: 256
+  allow_synthetic_fallback: false

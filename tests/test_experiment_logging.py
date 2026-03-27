@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from collider_fm.experiment_logging import (
     CompositeLogger,
@@ -37,11 +38,56 @@ class ExperimentLoggingTests(unittest.TestCase):
     def test_ensure_run_directory_defaults_under_runs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            run_dir, run_name = ensure_run_directory(root)
+            with patch(
+                "collider_fm.experiment_logging.timestamp_suffix",
+                return_value="20260326_123456",
+            ):
+                run_dir, run_name = ensure_run_directory(root)
 
             self.assertTrue(run_dir.exists())
             self.assertEqual(run_dir.parent, root / "runs")
             self.assertEqual(run_dir.name, run_name)
+            self.assertEqual(run_name, "run_20260326_123456")
+
+    def test_ensure_run_directory_appends_suffix_to_named_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch(
+                "collider_fm.experiment_logging.timestamp_suffix",
+                return_value="20260326_234500",
+            ):
+                run_dir, run_name = ensure_run_directory(root, run_name="demo")
+
+            self.assertEqual(run_name, "demo_20260326_234500")
+            self.assertEqual(run_dir, root / "runs" / "demo_20260326_234500")
+
+    def test_explicit_run_dir_keeps_directory_but_suffixes_logged_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            explicit = root / "custom-location"
+            with patch(
+                "collider_fm.experiment_logging.timestamp_suffix",
+                return_value="20260326_235959",
+            ):
+                run_dir, run_name = ensure_run_directory(
+                    root, run_dir=str(explicit), run_name="manual"
+                )
+
+            self.assertEqual(run_dir, explicit)
+            self.assertEqual(run_name, "manual_20260326_235959")
+
+    def test_explicit_run_dir_without_run_name_uses_directory_name_with_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            explicit = root / "custom-location"
+            with patch(
+                "collider_fm.experiment_logging.timestamp_suffix",
+                return_value="20260326_101010",
+            ):
+                run_dir, run_name = ensure_run_directory(root, run_dir=str(explicit))
+
+            self.assertEqual(run_dir, explicit)
+            self.assertEqual(run_name, "custom-location_20260326_101010")
 
     def test_write_run_config_writes_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -54,11 +100,16 @@ class ExperimentLoggingTests(unittest.TestCase):
 
     def test_jsonl_logger_writes_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger = create_experiment_logger("jsonl", Path(tmpdir), run_name="test-run")
+            logger = create_experiment_logger(
+                "jsonl", Path(tmpdir), run_name="test-run"
+            )
             logger.log_metrics({"epoch": 1, "train_loss": 1.23}, step=4)
             logger.finish()
 
-            records = [json.loads(line) for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()]
+            records = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()
+            ]
             self.assertEqual(records, [{"epoch": 1, "step": 4, "train_loss": 1.23}])
 
     def test_auto_logger_combines_jsonl_and_comet_when_configured(self):
@@ -90,10 +141,15 @@ class ExperimentLoggingTests(unittest.TestCase):
             logger.log_metrics({"epoch": 1, "val_loss": 0.5}, step=2)
             logger.finish()
 
-            records = [json.loads(line) for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()]
+            records = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()
+            ]
             self.assertEqual(records, [{"epoch": 1, "step": 2, "val_loss": 0.5}])
             self.assertEqual(fake_experiment.params, {"batch_size": 1})
-            self.assertEqual(fake_experiment.metrics, [({"epoch": 1, "val_loss": 0.5}, 2)])
+            self.assertEqual(
+                fake_experiment.metrics, [({"epoch": 1, "val_loss": 0.5}, 2)]
+            )
             self.assertTrue(fake_experiment.finished)
             self.assertEqual(fake_experiment.name, "demo-run")
 

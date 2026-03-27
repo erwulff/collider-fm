@@ -1,53 +1,70 @@
 from __future__ import annotations
 
+"""Shared helpers for diagnostics scripts and notebooks."""
+
 from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .data import ColliderMLDataset, collate_fn
-from .model import PandaSelfDistillation, as_point_cloud, mean_pool_features
+from .model import PandaSelfDistillation
 
 
 def create_dataloader(
     split: str,
     batch_size: int,
+    dataset_name: str = "CERN/ColliderML-Release-1",
     dataset_type: str = "ttbar",
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    dataset_revision: str | None = None,
+    local_files_only: bool = False,
 ) -> DataLoader:
     """Create a dataloader for ColliderML diagnostics workflows."""
     dataset = ColliderMLDataset(
+        dataset_name=dataset_name,
         split=split,
         dataset_type=dataset_type,
         pu_config=pu_config,
-        object_types=["tracker_hits", "calo_hits", "particles"],
+        object_types=["calo_hits"],
         cache_dir=cache_dir,
+        dataset_revision=dataset_revision,
+        local_files_only=local_files_only,
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    return DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
 
 def load_events(
     split: str,
     batch_size: int = 64,
+    dataset_name: str = "CERN/ColliderML-Release-1",
     dataset_type: str = "ttbar",
     pu_config: str = "pu0",
     cache_dir: str = "/mnt/ceph/users/ewulff/data/hf",
+    dataset_revision: str | None = None,
+    local_files_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load one batch of events for diagnostics or notebook exploration."""
     dataloader = create_dataloader(
         split=split,
         batch_size=batch_size,
+        dataset_name=dataset_name,
         dataset_type=dataset_type,
         pu_config=pu_config,
         cache_dir=cache_dir,
+        dataset_revision=dataset_revision,
+        local_files_only=local_files_only,
     )
     return next(iter(dataloader))
 
 
-def load_checkpoint(model: PandaSelfDistillation, checkpoint_path: str) -> dict[str, Any]:
+def load_checkpoint(
+    model: PandaSelfDistillation, checkpoint_path: str
+) -> dict[str, Any]:
     """Load a checkpoint into the model and report key mismatches."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint
@@ -72,7 +89,9 @@ def to_numpy(tensor: torch.Tensor) -> np.ndarray:
 
 def radius(values: dict[str, torch.Tensor]) -> torch.Tensor:
     """Compute the radial distance for hit dictionaries with x/y/z coordinates."""
-    return torch.linalg.norm(torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1)
+    return torch.linalg.norm(
+        torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1
+    )
 
 
 def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
@@ -120,23 +139,24 @@ def encode_view(
     view: dict[str, torch.Tensor],
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Encode one point-view through the student or teacher pathway."""
-    point = as_point_cloud(view, default_grid_size=model.grid_size)
-    backbone = model.teacher_backbone if use_teacher else model.student_backbone
-    projector = model.teacher_projector if use_teacher else model.student_projector
-    predictor = None if use_teacher else model.student_predictor
+    """Encode one point-view through the student or teacher pathway.
 
-    encoded = backbone(point)
-    pooled = mean_pool_features(encoded.feat, getattr(encoded, "offset", None))
-    projection = projector(pooled)
-    if predictor is not None:
-        projection = predictor(projection)
-    projection = F.normalize(projection, dim=-1)
-    logits = model.prototype_head(projection)
+    The return value keeps a stable, plotting-friendly field set so the notebook and
+    scripts do not need to care about internal model naming details.
+    """
+    encoded = (
+        model.encode_teacher_view(view)
+        if use_teacher
+        else model.encode_student_view(view)
+    )
     return {
-        "point_features": encoded.feat,
-        "pooled": pooled,
-        "projection": projection,
-        "logits": logits,
-        "offset": point.offset,
+        "point_features": encoded["point_features"],
+        "point_projection": encoded["point_projection"],
+        "pooled": encoded["pooled"],
+        "projection": encoded["masked_pooled_projection"],
+        "logits": encoded["masked_logits"],
+        "point_logits": encoded["point_logits"],
+        "offset": encoded["offset"],
+        "source_index": encoded["source_index"],
+        "mask": encoded["mask"],
     }

@@ -91,6 +91,7 @@ class SerializedAttention(PointModule):
         order_index=0,
         enable_rpe=False,
         enable_flash=True,
+        flash_backend="flash_attn",
         upcast_attention=True,
         upcast_softmax=True,
         full_attention=False,
@@ -105,12 +106,32 @@ class SerializedAttention(PointModule):
         self.upcast_softmax = upcast_softmax
         self.enable_rpe = enable_rpe
         self.enable_flash = enable_flash
+        self.flash_backend = flash_backend
         self.full_attention = full_attention
         if enable_flash:
-            assert enable_rpe is False, "Set enable_rpe to False when enable Flash Attention"
-            assert upcast_attention is False, "Set upcast_attention to False when enable Flash Attention"
-            assert upcast_softmax is False, "Set upcast_softmax to False when enable Flash Attention"
-            assert flash_attn is not None, "Make sure flash_attn is installed."
+            assert enable_rpe is False, (
+                "Set enable_rpe to False when enable Flash Attention"
+            )
+            assert upcast_attention is False, (
+                "Set upcast_attention to False when enable Flash Attention"
+            )
+            assert upcast_softmax is False, (
+                "Set upcast_softmax to False when enable Flash Attention"
+            )
+            if flash_backend == "flash_attn":
+                assert flash_attn is not None, "Make sure flash_attn is installed."
+            elif flash_backend == "torch":
+                assert hasattr(torch.nn.functional, "scaled_dot_product_attention"), (
+                    "This PyTorch build does not provide scaled_dot_product_attention."
+                )
+                assert patch_size != -1, (
+                    "The torch flash backend currently requires a fixed patch size."
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported flash backend: {flash_backend}. "
+                    "Use 'flash_attn' or 'torch'."
+                )
             self.patch_size = patch_size
             self.attn_drop = attn_drop
         else:
@@ -142,7 +163,11 @@ class SerializedAttention(PointModule):
         pad_key = "pad"
         unpad_key = "unpad"
         cu_seqlens_key = "cu_seqlens_key"
-        if pad_key not in point.keys() or unpad_key not in point.keys() or cu_seqlens_key not in point.keys():
+        if (
+            pad_key not in point.keys()
+            or unpad_key not in point.keys()
+            or cu_seqlens_key not in point.keys()
+        ):
             if self.patch_size == -1:
                 cu_seqlens = torch.cat([point.offset.new_zeros(1), point.offset]).int()
                 point[pad_key] = None
@@ -171,8 +196,15 @@ class SerializedAttention(PointModule):
             for i in range(len(offset)):
                 unpad[_offset[i] : _offset[i + 1]] += _offset_pad[i] - _offset[i]
                 if bincount[i] != bincount_pad[i]:
-                    pad[_offset_pad[i + 1] - self.patch_size + (bincount[i] % self.patch_size) : _offset_pad[i + 1]] = pad[
-                        _offset_pad[i + 1] - 2 * self.patch_size + (bincount[i] % self.patch_size) : _offset_pad[i + 1] - self.patch_size
+                    pad[
+                        _offset_pad[i + 1]
+                        - self.patch_size
+                        + (bincount[i] % self.patch_size) : _offset_pad[i + 1]
+                    ] = pad[
+                        _offset_pad[i + 1]
+                        - 2 * self.patch_size
+                        + (bincount[i] % self.patch_size) : _offset_pad[i + 1]
+                        - self.patch_size
                     ]
                 pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
                 cu_seqlens.append(
@@ -186,12 +218,16 @@ class SerializedAttention(PointModule):
                 )
             point[pad_key] = pad
             point[unpad_key] = unpad
-            point[cu_seqlens_key] = nn.functional.pad(torch.concat(cu_seqlens), (0, 1), value=_offset_pad[-1])
+            point[cu_seqlens_key] = nn.functional.pad(
+                torch.concat(cu_seqlens), (0, 1), value=_offset_pad[-1]
+            )
         return point[pad_key], point[unpad_key], point[cu_seqlens_key]
 
     def forward(self, point, return_attn=False):
         if not self.enable_flash:
-            self.patch_size = min(offset2bincount(point.offset).min().tolist(), self.patch_size_max)
+            self.patch_size = min(
+                offset2bincount(point.offset).min().tolist(), self.patch_size_max
+            )
 
         H = self.num_heads
         K = self.patch_size
@@ -210,7 +246,9 @@ class SerializedAttention(PointModule):
 
         if not self.enable_flash:
             # encode and reshape qkv: (N', K, 3, H, C') => (3, N', H, K, C')
-            q, k, v = qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
+            q, k, v = (
+                qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
+            )
             # attn
             if self.upcast_attention:
                 q = q.float()
@@ -223,7 +261,7 @@ class SerializedAttention(PointModule):
             attn = self.softmax(attn)
             attn = self.attn_drop(attn).to(qkv.dtype)
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
-        else:
+        elif self.flash_backend == "flash_attn":
             feat = flash_attn.flash_attn_varlen_qkvpacked_func(
                 qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
                 cu_seqlens,
@@ -232,6 +270,21 @@ class SerializedAttention(PointModule):
                 softmax_scale=self.scale,
             ).reshape(-1, C)
             feat = feat.to(qkv.dtype)
+        elif self.flash_backend == "torch":
+            q, k, v = (
+                qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
+            )
+            feat = torch.nn.functional.scaled_dot_product_attention(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                dropout_p=self.attn_drop if self.training else 0.0,
+                scale=self.scale,
+            )
+            feat = feat.transpose(1, 2).reshape(-1, C)
+            feat = feat.to(qkv.dtype)
+        else:
+            raise ValueError(f"Unsupported flash backend: {self.flash_backend}")
 
         if pad is not None:
             feat = feat[inverse]
@@ -289,6 +342,7 @@ class Block(PointModule):
         cpe_indice_key=None,
         enable_rpe=False,
         enable_flash=True,
+        flash_backend="flash_attn",
         full_attention=False,
         upcast_attention=True,
         upcast_softmax=True,
@@ -324,7 +378,11 @@ class Block(PointModule):
             self.cpe = None
 
         self.norm1 = PointSequential(norm_layer(channels))
-        self.ls1 = PointSequential(LayerScale(channels, init_values=layer_scale) if layer_scale is not None else nn.Identity())
+        self.ls1 = PointSequential(
+            LayerScale(channels, init_values=layer_scale)
+            if layer_scale is not None
+            else nn.Identity()
+        )
         self.attn = SerializedAttention(
             channels=channels,
             patch_size=patch_size,
@@ -337,11 +395,16 @@ class Block(PointModule):
             full_attention=full_attention,
             enable_rpe=enable_rpe,
             enable_flash=enable_flash,
+            flash_backend=flash_backend,
             upcast_attention=upcast_attention,
             upcast_softmax=upcast_softmax,
         )
         self.norm2 = PointSequential(norm_layer(channels))
-        self.ls2 = PointSequential(LayerScale(channels, init_values=layer_scale) if layer_scale is not None else nn.Identity())
+        self.ls2 = PointSequential(
+            LayerScale(channels, init_values=layer_scale)
+            if layer_scale is not None
+            else nn.Identity()
+        )
         self.mlp = PointSequential(
             MLP(
                 in_channels=channels,
@@ -351,18 +414,28 @@ class Block(PointModule):
                 drop=proj_drop,
             )
         )
-        self.drop_path = PointSequential(DropPath(drop_path) if drop_path > 0.0 else nn.Identity())
+        self.drop_path = PointSequential(
+            DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        )
 
     def forward(self, point: Point):
         if self.cpe is not None:
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=False):
+            with torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=False
+            ):
                 orig_dtype = point.feat.dtype
                 point.feat = point.feat.to(dtype=torch.float32)
-                point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.sparse_conv_feat.features.to(torch.float32).to(dtype=torch.float32))
+                point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(
+                    point.sparse_conv_feat.features.to(torch.float32).to(
+                        dtype=torch.float32
+                    )
+                )
                 shortcut = point.feat
                 point = self.cpe(point)
                 point.feat = shortcut + point.feat
-                assert point.feat.dtype == torch.float32, f"point.feat.dtype: {point.feat.dtype} != torch.float32"
+                assert point.feat.dtype == torch.float32, (
+                    f"point.feat.dtype: {point.feat.dtype} != torch.float32"
+                )
                 point.feat = point.feat.to(orig_dtype)
         shortcut = point.feat
 
@@ -422,7 +495,9 @@ class GridPooling(PointModule):
                 rounding_mode="trunc",
             ).int()
         else:
-            raise AssertionError("[gird_coord] or [coord, grid_size] should be include in the Point")
+            raise AssertionError(
+                "[gird_coord] or [coord, grid_size] should be include in the Point"
+            )
         grid_coord = torch.div(grid_coord, self.stride, rounding_mode="trunc")
         grid_coord = grid_coord | point.batch.view(-1, 1) << 48
         grid_coord, cluster, counts = torch.unique(
@@ -440,13 +515,19 @@ class GridPooling(PointModule):
         # head_indices of each cluster, for reduce attr e.g. code, batch
         head_indices = indices[idx_ptr[:-1]]
         point_dict = Dict(
-            feat=torch_scatter.segment_csr(self.proj(point.feat)[indices], idx_ptr, reduce=self.reduce),
-            coord=torch_scatter.segment_csr(point.coord[indices], idx_ptr, reduce="mean"),
+            feat=torch_scatter.segment_csr(
+                self.proj(point.feat)[indices], idx_ptr, reduce=self.reduce
+            ),
+            coord=torch_scatter.segment_csr(
+                point.coord[indices], idx_ptr, reduce="mean"
+            ),
             grid_coord=grid_coord,
             batch=point.batch[head_indices],
         )
         if "origin_coord" in point.keys():
-            point_dict["origin_coord"] = torch_scatter.segment_csr(point.origin_coord[indices], idx_ptr, reduce="mean")
+            point_dict["origin_coord"] = torch_scatter.segment_csr(
+                point.origin_coord[indices], idx_ptr, reduce="mean"
+            )
         if "condition" in point.keys():
             point_dict["condition"] = point.condition
         if "context" in point.keys():
@@ -574,6 +655,7 @@ class PointTransformerV3(PointModule, PyTorchModelHubMixin):
         shuffle_orders=True,
         enable_rpe=False,
         enable_flash=True,
+        flash_backend="flash_attn",
         full_attention=False,
         upcast_attention=False,
         upcast_softmax=False,
@@ -639,10 +721,14 @@ class PointTransformerV3(PointModule, PyTorchModelHubMixin):
                     )
 
         # encoder
-        enc_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(enc_depths))]
+        enc_drop_path = [
+            x.item() for x in torch.linspace(0, drop_path, sum(enc_depths))
+        ]
         self.enc = PointSequential()
         for s in range(self.num_stages):
-            enc_drop_path_ = enc_drop_path[sum(enc_depths[:s]) : sum(enc_depths[: s + 1])]
+            enc_drop_path_ = enc_drop_path[
+                sum(enc_depths[:s]) : sum(enc_depths[: s + 1])
+            ]
             enc = PointSequential()
             if s > 0:
                 enc.add(
@@ -676,10 +762,13 @@ class PointTransformerV3(PointModule, PyTorchModelHubMixin):
                         full_attention=full_attention,
                         enable_rpe=enable_rpe,
                         enable_flash=enable_flash,
+                        flash_backend=flash_backend,
                         upcast_attention=upcast_attention,
                         upcast_softmax=upcast_softmax,
                         enable_cpe=False if cpe_first_layer_only and i != 0 else True,
-                        shared_cpe_conv=self.shared_cpe_convs[f"enc_stage{s}"] if cpe_shared_weight else None,
+                        shared_cpe_conv=self.shared_cpe_convs[f"enc_stage{s}"]
+                        if cpe_shared_weight
+                        else None,
                     ),
                     name=f"block{i}",
                 )
@@ -688,11 +777,15 @@ class PointTransformerV3(PointModule, PyTorchModelHubMixin):
 
         # decoder
         if not self.enc_mode:
-            dec_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(dec_depths))]
+            dec_drop_path = [
+                x.item() for x in torch.linspace(0, drop_path, sum(dec_depths))
+            ]
             self.dec = PointSequential()
             dec_channels = list(dec_channels) + [enc_channels[-1]]
             for s in reversed(range(self.num_stages - 1)):
-                dec_drop_path_ = dec_drop_path[sum(dec_depths[:s]) : sum(dec_depths[: s + 1])]
+                dec_drop_path_ = dec_drop_path[
+                    sum(dec_depths[:s]) : sum(dec_depths[: s + 1])
+                ]
                 dec_drop_path_.reverse()
                 dec = PointSequential()
                 dec.add(
@@ -727,10 +820,15 @@ class PointTransformerV3(PointModule, PyTorchModelHubMixin):
                             full_attention=full_attention,
                             enable_rpe=enable_rpe,
                             enable_flash=enable_flash,
+                            flash_backend=flash_backend,
                             upcast_attention=upcast_attention,
                             upcast_softmax=upcast_softmax,
-                            enable_cpe=False if cpe_first_layer_only and i != 0 else True,
-                            shared_cpe_conv=self.shared_cpe_convs[f"dec_stage{s}"] if cpe_shared_weight else None,
+                            enable_cpe=False
+                            if cpe_first_layer_only and i != 0
+                            else True,
+                            shared_cpe_conv=self.shared_cpe_convs[f"dec_stage{s}"]
+                            if cpe_shared_weight
+                            else None,
                         ),
                         name=f"block{i}",
                     )

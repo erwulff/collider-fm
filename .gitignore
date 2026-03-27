@@ -11,3 +11,7 @@ wheels/
 
 # SLURM logs
 logs_slurm/*
+
+# Generated local outputs
+runs/
+diagnostics/

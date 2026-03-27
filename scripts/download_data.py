@@ -1,37 +1,53 @@
+from __future__ import annotations
+
+"""Download ColliderML subsets into the shared Hugging Face cache."""
+
 import argparse
+import sys
+from pathlib import Path
+
 from datasets import load_dataset
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-def main():
-    # Set up argument parser
-    parser = argparse.ArgumentParser(description="Download datasets with configurable options.")
-    parser.add_argument(
-        "--object-types",
-        nargs="+",
-        default=["particles", "tracker_hits", "calo_hits", "tracks"],
-        help="List of object types to download (default: ['particles', 'tracker_hits', 'calo_hits', 'tracks']).",
-    )
-    parser.add_argument(
-        "--dataset-types", nargs="+", default=["ttbar"], help="List of dataset types (default: ['ttbar'], options: 'ttbar', 'dihiggs', 'ggf', 'higgs_portal')."
-    )
-    parser.add_argument("--pu-config", default="pu200", help="PU configuration for the dataset (default: 'pu200', options: 'pu0').")
-    parser.add_argument(
-        "--cache-dir", default="/mnt/ceph/users/ewulff/data/hf", help="Directory to cache the datasets (default: '/mnt/ceph/users/ewulff/data/hf')."
-    )
-    parser.add_argument("--num-proc", type=int, default=4, help="Number of processes to use for downloading (default: 4).")
-    # Parse arguments
-    args = parser.parse_args()
+from collider_fm.project_config import (
+    build_config_arg_parser,
+    load_project_config,
+)
 
-    # Download datasets
-    for dataset_type in args.dataset_types:
-        for obj_type in args.object_types:
-            dataset_name = f"{dataset_type}_{args.pu_config}_{obj_type}"
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    return build_config_arg_parser(
+        description="Download selected ColliderML dataset configurations.",
+        epilog=(
+            "Examples:\n"
+            "  uv run python scripts/download_data.py\n"
+            "  uv run python scripts/download_data.py download.num_proc=12\n"
+            "  uv run python scripts/download_data.py download.object_types=[calo_hits,tracker_hits]"
+        ),
+        config_sections=("data", "download"),
+    )
+
+
+def main() -> None:
+    cli_args = build_arg_parser().parse_args()
+    config = load_project_config(cli_args.config, cli_args.overrides)
+    data_config = config.data
+    download_config = config.download
+
+    for dataset_type in download_config.dataset_types:
+        for obj_type in download_config.object_types:
+            dataset_name = f"{dataset_type}_{download_config.pu_config}_{obj_type}"
             print(f"Downloading {dataset_name}...")
             load_dataset(
-                "CERN/ColliderML-Release-1",
+                data_config.dataset_name,
                 dataset_name,
-                cache_dir=args.cache_dir,
-                num_proc=args.num_proc,  # Use configurable number of processes for faster downloading
+                cache_dir=download_config.cache_dir,
+                revision=download_config.dataset_revision,
+                num_proc=download_config.num_proc,
             )
 
 

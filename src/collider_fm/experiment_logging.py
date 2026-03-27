@@ -72,7 +72,9 @@ def comet_config_path(home_dir: Path | None = None) -> Path:
     return resolved_home / ".comet.config"
 
 
-def comet_is_configured(env: Mapping[str, str] | None = None, home_dir: Path | None = None) -> bool:
+def comet_is_configured(
+    env: Mapping[str, str] | None = None, home_dir: Path | None = None
+) -> bool:
     env = os.environ if env is None else env
     return bool(env.get("COMET_API_KEY")) or comet_config_path(home_dir).exists()
 
@@ -138,7 +140,9 @@ def create_experiment_logger(
     if wants_comet:
         if not comet_is_configured(env=env, home_dir=home_dir):
             if backend == "comet":
-                raise ValueError("Comet logging requested, but neither COMET_API_KEY nor ~/.comet.config was found.")
+                raise ValueError(
+                    "Comet logging requested, but neither COMET_API_KEY nor ~/.comet.config was found."
+                )
         else:
             comet_config = resolve_comet_config(env)
             factory = experiment_factory or _default_comet_experiment_factory
@@ -157,12 +161,24 @@ def create_experiment_logger(
     return CompositeLogger(loggers)
 
 
-def ensure_run_directory(project_root: Path, run_dir: str | None = None, run_name: str | None = None) -> tuple[Path, str]:
+def timestamp_suffix(timestamp: datetime | None = None) -> str:
+    resolved_timestamp = datetime.now() if timestamp is None else timestamp
+    return resolved_timestamp.strftime("%Y%m%d_%H%M%S")
+
+
+def ensure_run_directory(
+    project_root: Path, run_dir: str | None = None, run_name: str | None = None
+) -> tuple[Path, str]:
+    """Create or resolve the run directory and attach a timestamped run name."""
+
+    suffix = timestamp_suffix()
     if run_dir is not None:
         resolved_run_dir = Path(run_dir)
-        resolved_run_name = run_name or resolved_run_dir.name
+        base_run_name = run_name or resolved_run_dir.name
+        resolved_run_name = f"{base_run_name}_{suffix}"
     else:
-        resolved_run_name = run_name or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        base_run_name = run_name or "run"
+        resolved_run_name = f"{base_run_name}_{suffix}"
         resolved_run_dir = project_root / "runs" / resolved_run_name
 
     resolved_run_dir.mkdir(parents=True, exist_ok=True)
@@ -171,5 +187,7 @@ def ensure_run_directory(project_root: Path, run_dir: str | None = None, run_nam
 
 def write_run_config(run_dir: Path, config: Mapping[str, Any]) -> Path:
     config_path = run_dir / "config.json"
-    config_path.write_text(json.dumps(dict(config), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    config_path.write_text(
+        json.dumps(dict(config), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return config_path
