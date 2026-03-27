@@ -1,115 +1,96 @@
-# HPC resources and SLURM
+# HPC and SLURM
 
-This repository is developed and tested on an HPC cluster. Use this document for cluster-specific setup, recommended job order, and the SLURM jobs that match the current codebase.
+This document covers cluster-specific setup, cache paths, and the checked-in SLURM jobs. For the project overview, use `README.md`. For runtime details and local commands, use `markdown/WORKFLOWS.md`.
 
-## General guidance
+## Cluster assumptions
 
-- Prefer SLURM for heavy downloads, dependency builds, smoke tests, and real training runs.
-- Keep SLURM stdout and stderr under `logs_slurm/`.
-- Avoid over-requesting CPUs or system memory, especially on shared A100 and H100 nodes.
-- The current PTv3 and `spconv` runtime path is GPU-only for real model execution.
+- prefer SLURM for dependency builds, heavy downloads, smoke tests, and real training runs
+- keep SLURM stdout and stderr under `logs_slurm/`
+- the PTv3 plus `spconv` runtime path is GPU-only for real model execution
+- the documented Hugging Face cache is `/mnt/ceph/users/ewulff/data/hf`
 
-## uv on the cluster
+## Interactive setup
 
-Load the cluster `uv` module first:
+Load `uv` once at the start of the session:
 
 ```bash
 module load uv
+uv venv --python 3.12
+source .venv/bin/activate
+uv sync --dev
 ```
 
-The module sets `UV_CACHE_DIR=$HOME/.cache/uv` and appends its own binary to `PATH`, so a user-installed `uv` can still remain first in `PATH`.
+The shared batch bootstrap lives in `slurm/load_env.sh`. Runtime jobs source that file and fail early if `.venv` has not been created yet.
 
-## Environment setup jobs
-
-The repository includes these setup jobs:
+## Environment bootstrap jobs
 
 - `slurm/create_uv_venv.slurm`
   - creates `.venv`
   - runs `uv sync`
-- `slurm/install_deps.slurm`
-  - rebuilds selected packages on a compute node
 - `slurm/download.slurm`
-  - downloads the documented calo-hit subset into the shared HF cache
+  - generic bulk-cache download job
+  - currently requests `tracker_hits` and `particles`, so edit it if you want a calo-only cache warmup for the current runtime path
 
-The shared runtime bootstrap lives in `slurm/load_env.sh` and is sourced by the runtime jobs. It now fails early if `.venv` has not been created yet.
+## Recommended first-pass job order
 
-## Recommended job order
-
-For a fresh environment and first validation pass, use:
+For a fresh cluster environment:
 
 ```bash
 sbatch slurm/create_uv_venv.slurm
-sbatch slurm/install_deps.slurm
-sbatch slurm/download.slurm
 sbatch slurm/test_model.slurm
 sbatch slurm/train_small.slurm
 ```
 
-For a more informative debug training run after the short pass succeeds:
+If you want to prewarm the dataset cache first, either edit `slurm/download.slurm` for `calo_hits` or use `scripts/download_data.py` directly with the desired object types.
 
-```bash
-sbatch slurm/train_medium.slurm
-```
-
-## Current training jobs
+## Checked-in runtime jobs
 
 ### `slurm/test_model.slurm`
 
 - runs `scripts/smoke_test_model.py`
-- checks the real calo-only data path on GPU when cached data is available
+- currently targets H100 nodes
+- the checked-in resource request is larger than the script strictly needs, so treat it as a cluster-specific example
 
 ### `slurm/train_small.slurm`
 
 - short debug run
 - 1 GPU on `a100-40gb`
-- useful for validating the trainer, checkpointing, and metric logging quickly
+- tiny train and validation slices
+- useful for validating trainer, checkpointing, and metric logging quickly
 
 ### `slurm/train_medium.slurm`
 
-- medium-length debug run
+- medium debug run
 - 1 GPU on `a100-40gb`
-- intended to produce more informative curves and checkpoints than the short recipe
+- still intentionally small enough for quick turnaround and curve inspection
 
-For the full training config, the project-level `val` split refers to the held-out tail of the Hugging Face `train` split: `train[950000:1000000]`.
+### `slurm/train.slurm`
 
-## Dataset cache
+- longer example training job
+- currently targets 1 GPU on `h100`
+- overrides `training.batch_size=32`, uses `data.local_files_only=true`, and logs to Comet
+- best treated as a starting point rather than the tuned project default, which now lives in `config/default.yaml`
 
-The documented Hugging Face cache for this project is:
+## Reproducibility and cache usage
 
-```text
-/mnt/ceph/users/ewulff/data/hf
-```
-
-Current scripts and SLURM jobs default to that path.
-
-For reproducible training, prefer pinning a Hugging Face dataset revision and then running with local-cache-only loading. The long training job is set up that way so it does not silently move to a newer Hub snapshot during later submissions.
-
-The checked-in default pinned revision is:
+The checked-in default dataset revision is:
 
 ```text
 e28a24cc9c1641a478ae4e5bc3b376eb624b7283
 ```
 
-## Logging and outputs
+For reproducible training, prefer pinning that revision and using `data.local_files_only=true` once the cache is populated.
 
-- training runs are written under `runs/<run_name>_<timestamp>/`
+## Node guidance
+
+The checked-in jobs currently split across two hardware patterns:
+
+- `slurm/train_small.slurm` and `slurm/train_medium.slurm`: single-GPU `a100-40gb`
+- setup, smoke-test, and long-train jobs: `h100`
+
+Use those as examples rather than immutable recommendations. Adjust GPU count, CPU count, memory, and node constraints to match your queue and the run you actually want.
+
+## Outputs and logging
+
 - SLURM logs go to `logs_slurm/log_<jobname>_<jobid>.out` and `.err`
-- diagnostics are typically written under `diagnostics/`
-
-## Comet logging
-
-Training always writes JSONL metrics locally. Optional Comet logging can be enabled by either:
-
-- a saved `~/.comet.config`, or
-- exported `COMET_API_KEY`, `COMET_PROJECT_NAME`, and `COMET_WORKSPACE`
-
-## Current node guidance
-
-For the current single-GPU training/debug jobs in this repo, the active recommendation is:
-
-- `-p gpu`
-- `--gpus-per-node=1`
-- `--cpus-per-task=16`
-- `-C a100-40gb`
-
-That matches the short and medium training jobs presently checked into `slurm/`.
+- training outputs and local logging conventions are documented in `markdown/WORKFLOWS.md`
