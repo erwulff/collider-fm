@@ -61,8 +61,8 @@ training:
   val_split: val
   batch_size: 8
   num_epochs: 2
-  learning_rate: 0.0003
-  min_learning_rate: 0.00003
+  learning_rate: 0.00001
+  min_learning_rate: 0.000003
   weight_decay: 0.0001
   teacher_momentum_start: 0.99
   teacher_momentum_end: 0.999
