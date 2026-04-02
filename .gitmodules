@@ -1,3 +1,6 @@
 [submodule "Panda_repo"]
 	path = Panda_repo
 	url = git@github.com:DeepLearnPhysics/Panda.git
+[submodule "particle-imaging-models"]
+	path = particle-imaging-models
+	url = git@github.com:DeepLearnPhysics/particle-imaging-models.git
