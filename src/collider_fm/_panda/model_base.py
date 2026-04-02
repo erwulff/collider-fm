@@ -271,9 +271,6 @@ class SerializedAttention(PointModule):
             ).reshape(-1, C)
             feat = feat.to(qkv.dtype)
         elif self.flash_backend == "torch":
-            q, k, v = (
-                qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
-            )
             feat = torch.nn.functional.scaled_dot_product_attention(
                 q.contiguous(),
                 k.contiguous(),

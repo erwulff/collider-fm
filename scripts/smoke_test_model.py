@@ -68,13 +68,13 @@ def load_smoke_test_views(
                 "for a CUDA-only synthetic check."
             ) from exc
         coord = torch.rand(64, 3, device=device)
-        energy = torch.rand(64, device=device)
+        total_energy = torch.rand(64, device=device)
         base_event = {
             "calo_hits": {
                 "x": coord[:, 0],
                 "y": coord[:, 1],
                 "z": coord[:, 2],
-                "energy": energy,
+                "total_energy": total_energy,
             }
         }
         distillation_batch = build_distillation_views(

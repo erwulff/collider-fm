@@ -26,7 +26,7 @@ def plot_event_3d(event: Mapping[str, Any], event_idx: int = 0) -> None:
     ax = fig.add_subplot(111, projection="3d")
 
     calo_hits = cast(Mapping[str, Any], event["calo_hits"])
-    energy = calo_hits["energy"]
+    energy = calo_hits["total_energy"]
     mask = energy > 0
     ax.scatter(
         calo_hits["z"][mask],
@@ -81,5 +81,5 @@ if __name__ == "__main__":
     print(f"Calo y range: [{calo_hits['y'].min():.2f}, {calo_hits['y'].max():.2f}]")
     print(f"Calo z range: [{calo_hits['z'].min():.2f}, {calo_hits['z'].max():.2f}]")
     print(
-        f"Calo energy range: [{calo_hits['energy'].min():.2f}, {calo_hits['energy'].max():.2f}]"
+        f"Calo energy range: [{calo_hits['total_energy'].min():.2f}, {calo_hits['total_energy'].max():.2f}]"
     )

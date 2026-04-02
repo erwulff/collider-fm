@@ -4,6 +4,7 @@ from unittest.mock import patch
 import torch
 
 from collider_fm.data import (
+    CALO_DATASET_ENERGY_KEY,
     DEFAULT_OBJECT_TYPES,
     TRAIN_SPLIT_ALIAS,
     VAL_SPLIT_ALIAS,
@@ -42,15 +43,13 @@ class DatasetTests(unittest.TestCase):
                     "x": [1.0, 2.0],
                     "y": [3.0, 4.0],
                     "z": [5.0, 6.0],
-                    "totalenergy": [7.0, 8.0],
-                    "contrib_particle_ids": [[1], [2]],
+                    CALO_DATASET_ENERGY_KEY: [7.0, 8.0],
                 },
                 {
                     "x": [9.0],
                     "y": [10.0],
                     "z": [11.0],
-                    "total_energy": [12.0],
-                    "contrib_particle_ids": [[3]],
+                    CALO_DATASET_ENERGY_KEY: [12.0],
                 },
             ],
         }
@@ -67,37 +66,23 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(mock_load_dataset.call_count, 1)
 
     @patch("collider_fm.data.load_dataset")
-    def test_dataset_converts_numeric_lists_and_adds_energy_alias(
-        self, mock_load_dataset
-    ):
+    def test_dataset_preserves_mock_row_values(self, mock_load_dataset):
         mock_load_dataset.side_effect = self.fake_load_dataset
 
         dataset = ColliderMLDataset(split="train[:2]", cache_dir="/tmp/hf-cache")
         event = dataset[0]
 
-        self.assertIsInstance(event["calo_hits"]["x"], torch.Tensor)
-        self.assertTrue(
-            torch.equal(event["calo_hits"]["energy"], torch.tensor([7.0, 8.0]))
-        )
-        self.assertTrue(
-            torch.equal(event["calo_hits"]["totalenergy"], torch.tensor([7.0, 8.0]))
-        )
-        self.assertTrue(
-            torch.equal(event["calo_hits"]["total_energy"], torch.tensor([7.0, 8.0]))
-        )
-        self.assertEqual(event["calo_hits"]["contrib_particle_ids"], [[1], [2]])
+        self.assertEqual(event["calo_hits"]["x"], [1.0, 2.0])
+        self.assertEqual(event["calo_hits"][CALO_DATASET_ENERGY_KEY], [7.0, 8.0])
 
     @patch("collider_fm.data.load_dataset")
-    def test_dataset_preserves_existing_total_energy_alias(self, mock_load_dataset):
+    def test_dataset_preserves_total_energy_field(self, mock_load_dataset):
         mock_load_dataset.side_effect = self.fake_load_dataset
 
         dataset = ColliderMLDataset(split="train[:2]", cache_dir="/tmp/hf-cache")
         event = dataset[1]
 
-        self.assertTrue(torch.equal(event["calo_hits"]["energy"], torch.tensor([12.0])))
-        self.assertTrue(
-            torch.equal(event["calo_hits"]["total_energy"], torch.tensor([12.0]))
-        )
+        self.assertEqual(event["calo_hits"][CALO_DATASET_ENERGY_KEY], [12.0])
 
     @patch("collider_fm.data.load_dataset")
     def test_dataset_passes_revision_and_local_only_to_hf(self, mock_load_dataset):
@@ -132,7 +117,9 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(resolve_colliderml_split("val"), VAL_SPLIT_ALIAS)
         self.assertEqual(resolve_colliderml_split("train[:32]"), "train[:32]")
         self.assertEqual(resolve_colliderml_split("val[:100]"), "train[950000:950100]")
-        self.assertEqual(resolve_colliderml_split("val[:50000]"), "train[950000:1000000]")
+        self.assertEqual(
+            resolve_colliderml_split("val[:50000]"), "train[950000:1000000]"
+        )
         self.assertRaises(ValueError, resolve_colliderml_split, "train[:960000]")
         self.assertRaises(ValueError, resolve_colliderml_split, "val[:960000]")
 

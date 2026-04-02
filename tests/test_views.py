@@ -23,7 +23,7 @@ class ViewTests(unittest.TestCase):
                 "x": torch.tensor([1.0, 2.0, 3.0, 4.0]),
                 "y": torch.tensor([4.0, 5.0, 6.0, 7.0]),
                 "z": torch.tensor([7.0, 8.0, 9.0, 10.0]),
-                "totalenergy": torch.tensor([10.0, 11.0, 12.0, 13.0]),
+                "total_energy": torch.tensor([10.0, 11.0, 12.0, 13.0]),
             }
         }
 
@@ -37,7 +37,7 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(torch.equal(view["offset"], torch.tensor([4])))
         self.assertAlmostEqual(view["grid_size"].item(), DEFAULT_POINT_GRID_SIZE)
         self.assertTrue(
-            torch.equal(view["energy"], torch.tensor([10.0, 11.0, 12.0, 13.0]))
+            torch.equal(view["total_energy"], torch.tensor([10.0, 11.0, 12.0, 13.0]))
         )
 
     def test_rotate_around_beam_axis_preserves_z(self):
@@ -84,7 +84,7 @@ class ViewTests(unittest.TestCase):
         )
 
         self.assertEqual(augmented["feat"].shape[1], POINT_FEATURE_DIM)
-        self.assertTrue(torch.equal(augmented["feat"][:, 3], augmented["energy"]))
+        self.assertTrue(torch.equal(augmented["feat"][:, 3], augmented["total_energy"]))
         self.assertEqual(augmented["view_kind"], "student_masked")
 
     def test_batch_point_views_builds_cumulative_offsets_and_unique_indices(self):
@@ -134,7 +134,7 @@ class ViewTests(unittest.TestCase):
                 "x": torch.tensor([]),
                 "y": torch.tensor([]),
                 "z": torch.tensor([]),
-                "energy": torch.tensor([]),
+                "total_energy": torch.tensor([]),
             }
         }
 

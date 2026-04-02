@@ -3,8 +3,8 @@ from __future__ import annotations
 """Point-view utilities for the calo-only self-distillation pipeline.
 
 The project keeps the runtime point contract intentionally small and explicit:
-each point carries `[x, y, z, energy]`, plus a few bookkeeping tensors that make
-masking, batching, and teacher/student alignment easy to follow.
+each point carries `[x, y, z, total_energy]`, plus a few bookkeeping tensors that
+make masking, batching, and teacher/student alignment easy to follow.
 """
 
 from collections.abc import Mapping, Sequence
@@ -22,7 +22,7 @@ class PointView(TypedDict):
     offset: torch.Tensor
     grid_size: torch.Tensor
     source_index: torch.Tensor
-    energy: torch.Tensor
+    total_energy: torch.Tensor
     patch_id: torch.Tensor
     mask: torch.Tensor
     view_kind: str
@@ -34,34 +34,6 @@ class DistillationBatch(TypedDict):
     teacher_views: list[PointView]
     student_views: list[PointView]
     base_views: list[PointView]
-
-
-def _normalize_grid_size(grid_size: Any, device: torch.device) -> torch.Tensor:
-    tensor = torch.as_tensor(grid_size, dtype=torch.float32, device=device).flatten()
-    if tensor.numel() != 1:
-        raise ValueError("'grid_size' must be a scalar.")
-    return tensor[0]
-
-
-def _require_hit_tensor(
-    hits: Mapping[str, Any], key: str, device: torch.device
-) -> torch.Tensor:
-    if key not in hits:
-        raise KeyError(f"Missing required hit field '{key}'.")
-    return torch.as_tensor(hits[key], dtype=torch.float32, device=device).flatten()
-
-
-def _resolve_calo_energy(
-    calo_hits: Mapping[str, Any], device: torch.device
-) -> torch.Tensor:
-    for key in ("energy", "totalenergy", "total_energy"):
-        if key in calo_hits:
-            return torch.as_tensor(
-                calo_hits[key], dtype=torch.float32, device=device
-            ).flatten()
-    raise KeyError(
-        "Calorimeter hits must provide 'energy', 'totalenergy', or 'total_energy'."
-    )
 
 
 def _default_source_index(num_points: int, device: torch.device) -> torch.Tensor:
@@ -78,16 +50,20 @@ def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Ten
     return grid_coord[:, 0] * stride_x + grid_coord[:, 1] * stride_y + grid_coord[:, 2]
 
 
-def assemble_point_features(coord: torch.Tensor, energy: torch.Tensor) -> torch.Tensor:
-    """Build the simple project feature contract `[x, y, z, energy]`."""
+def assemble_point_features(
+    coord: torch.Tensor, total_energy: torch.Tensor
+) -> torch.Tensor:
+    """Build the simple project feature contract `[x, y, z, total_energy]`."""
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
 
-    energy = torch.as_tensor(energy, dtype=torch.float32, device=coord.device).flatten()
-    if energy.shape[0] != coord.shape[0]:
-        raise ValueError("'energy' must contain one value per point.")
+    total_energy = torch.as_tensor(
+        total_energy, dtype=torch.float32, device=coord.device
+    ).flatten()
+    if total_energy.shape[0] != coord.shape[0]:
+        raise ValueError("'total_energy' must contain one value per point.")
 
-    return torch.cat([coord, energy.unsqueeze(1)], dim=1)
+    return torch.cat([coord, total_energy.unsqueeze(1)], dim=1)
 
 
 def validate_point_view(view: Mapping[str, Any]) -> PointView:
@@ -120,14 +96,19 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
     if torch.any(counts <= 0):
         raise ValueError("'offset' must be a strictly increasing cumulative count.")
 
-    grid_size = _normalize_grid_size(
-        view.get("grid_size", DEFAULT_POINT_GRID_SIZE), coord.device
-    )
-    energy = torch.as_tensor(
-        view.get("energy", feat[:, 3]), dtype=torch.float32, device=coord.device
+    grid_size = torch.as_tensor(
+        view.get("grid_size", DEFAULT_POINT_GRID_SIZE),
+        dtype=torch.float32,
+        device=coord.device,
     ).flatten()
-    if energy.shape[0] != coord.shape[0]:
-        raise ValueError("'energy' must contain one value per point.")
+    if grid_size.numel() != 1:
+        raise ValueError("'grid_size' must be a scalar.")
+    grid_size = grid_size[0]
+    total_energy = torch.as_tensor(
+        view.get("total_energy", feat[:, 3]), dtype=torch.float32, device=coord.device
+    ).flatten()
+    if total_energy.shape[0] != coord.shape[0]:
+        raise ValueError("'total_energy' must contain one value per point.")
 
     source_index = torch.as_tensor(
         view.get("source_index", _default_source_index(coord.shape[0], coord.device)),
@@ -159,7 +140,7 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         "offset": offset,
         "grid_size": grid_size,
         "source_index": source_index,
-        "energy": energy,
+        "total_energy": total_energy,
         "patch_id": patch_id,
         "mask": mask,
         "view_kind": str(view.get("view_kind", "unknown")),
@@ -189,39 +170,41 @@ def build_point_view_from_event(
     points back to the original calorimeter hits.
     """
     calo_hits = event["calo_hits"]
-    source_device = torch.as_tensor(calo_hits["x"]).device
-    if len(calo_hits["x"]) == 0:
+    coord_x = cast(torch.Tensor, calo_hits["x"])
+    coord_y = cast(torch.Tensor, calo_hits["y"])
+    coord_z = cast(torch.Tensor, calo_hits["z"])
+    total_energy = cast(torch.Tensor, calo_hits["total_energy"])
+    source_device = coord_x.device
+    if coord_x.numel() == 0:
         raise ValueError(
             "Cannot build a point view from an event with zero calorimeter hits."
         )
 
     calo_indices = sample_hit_indices(
-        num_hits=len(calo_hits["x"]),
+        num_hits=coord_x.shape[0],
         max_hits=max_calo_hits,
         device=source_device,
     )
     coord = torch.stack(
         [
-            _require_hit_tensor(calo_hits, "x", source_device)[calo_indices],
-            _require_hit_tensor(calo_hits, "y", source_device)[calo_indices],
-            _require_hit_tensor(calo_hits, "z", source_device)[calo_indices],
+            coord_x[calo_indices],
+            coord_y[calo_indices],
+            coord_z[calo_indices],
         ],
         dim=1,
     ).to(device=device, dtype=torch.float32)
-    energy = _resolve_calo_energy(calo_hits, device=source_device)[calo_indices].to(
-        device=device, dtype=torch.float32
-    )
+    total_energy = total_energy[calo_indices].to(device=device, dtype=torch.float32)
     source_index = torch.as_tensor(calo_indices, dtype=torch.long, device=device)
     grid_size_tensor = torch.tensor(grid_size, dtype=torch.float32, device=device)
 
     return validate_point_view(
         {
             "coord": coord,
-            "feat": assemble_point_features(coord, energy),
+            "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor([coord.shape[0]], dtype=torch.long, device=device),
             "grid_size": grid_size_tensor,
             "source_index": source_index,
-            "energy": energy,
+            "total_energy": total_energy,
             "patch_id": _default_patch_id(coord, grid_size_tensor),
             "mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=device),
             "view_kind": "base",
@@ -266,7 +249,7 @@ def crop_point_view(view: Mapping[str, Any], keep_ratio: float) -> PointView:
             ),
             "grid_size": base_view["grid_size"],
             "source_index": cast(torch.Tensor, base_view["source_index"])[keep_indices],
-            "energy": cast(torch.Tensor, base_view["energy"])[keep_indices],
+            "total_energy": cast(torch.Tensor, base_view["total_energy"])[keep_indices],
             "patch_id": cast(torch.Tensor, base_view["patch_id"])[keep_indices],
             "mask": cast(torch.Tensor, base_view["mask"])[keep_indices],
             "view_kind": base_view["view_kind"],
@@ -293,11 +276,11 @@ def apply_patch_mask(view: Mapping[str, Any], mask_fraction: float) -> PointView
 
     masked_view: PointView = {
         "coord": base_view["coord"],
-        "feat": assemble_point_features(base_view["coord"], base_view["energy"]),
+        "feat": assemble_point_features(base_view["coord"], base_view["total_energy"]),
         "offset": base_view["offset"],
         "grid_size": base_view["grid_size"],
         "source_index": base_view["source_index"],
-        "energy": base_view["energy"],
+        "total_energy": base_view["total_energy"],
         "patch_id": base_view["patch_id"],
         "mask": mask,
         "view_kind": base_view["view_kind"],
@@ -327,7 +310,7 @@ def augment_point_view(
     """
     working_view = crop_point_view(view, keep_ratio=crop_keep_ratio)
     coord = working_view["coord"].clone()
-    energy = working_view["energy"].clone()
+    total_energy = working_view["total_energy"].clone()
     source_index = working_view["source_index"].clone()
     patch_id = working_view["patch_id"].clone()
 
@@ -339,8 +322,8 @@ def augment_point_view(
     if coord_noise_scale > 0.0:
         coord = coord + torch.randn_like(coord) * coord_noise_scale
     if feat_noise_scale > 0.0:
-        energy = (
-            energy * (1.0 + torch.randn_like(energy) * feat_noise_scale)
+        total_energy = (
+            total_energy * (1.0 + torch.randn_like(total_energy) * feat_noise_scale)
         ).clamp_min(0.0)
 
     if point_dropout > 0.0 and coord.shape[0] > 1:
@@ -350,20 +333,20 @@ def augment_point_view(
                 True
             )
         coord = coord[keep_mask]
-        energy = energy[keep_mask]
+        total_energy = total_energy[keep_mask]
         source_index = source_index[keep_mask]
         patch_id = patch_id[keep_mask]
 
     masked_view = validate_point_view(
         {
             "coord": coord,
-            "feat": assemble_point_features(coord, energy),
+            "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor(
                 [coord.shape[0]], dtype=torch.long, device=coord.device
             ),
             "grid_size": working_view["grid_size"].clone(),
             "source_index": source_index,
-            "energy": energy,
+            "total_energy": total_energy,
             "patch_id": patch_id,
             "mask": torch.zeros(coord.shape[0], dtype=torch.bool, device=coord.device),
             "view_kind": view_kind,
@@ -393,7 +376,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
             )
 
     coord = torch.cat([view["coord"] for view in normalized_views], dim=0)
-    energy = torch.cat([view["energy"] for view in normalized_views], dim=0)
+    total_energy = torch.cat([view["total_energy"] for view in normalized_views], dim=0)
     source_index_parts = []
     patch_id_parts = []
     mask = torch.cat([view["mask"] for view in normalized_views], dim=0)
@@ -414,11 +397,11 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     return validate_point_view(
         {
             "coord": coord,
-            "feat": assemble_point_features(coord, energy),
+            "feat": assemble_point_features(coord, total_energy),
             "offset": torch.cumsum(counts_tensor, dim=0),
             "grid_size": grid_size.clone(),
             "source_index": source_index,
-            "energy": energy,
+            "total_energy": total_energy,
             "patch_id": patch_id,
             "mask": mask,
             "view_kind": view_kind,
@@ -530,16 +513,16 @@ def make_random_view(
         )
 
     coord = torch.rand(num_points, 3, device=device)
-    energy = torch.rand(num_points, device=device)
+    total_energy = torch.rand(num_points, device=device)
     grid_size = torch.tensor(DEFAULT_POINT_GRID_SIZE, device=device)
     return validate_point_view(
         {
             "coord": coord,
-            "feat": assemble_point_features(coord, energy),
+            "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor([num_points], dtype=torch.long, device=device),
             "grid_size": grid_size,
             "source_index": _default_source_index(num_points, device),
-            "energy": energy,
+            "total_energy": total_energy,
             "patch_id": _default_patch_id(coord, grid_size),
             "mask": torch.zeros(num_points, dtype=torch.bool, device=device),
             "view_kind": "random",

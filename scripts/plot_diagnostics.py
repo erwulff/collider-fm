@@ -120,7 +120,7 @@ def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
         "offset": normalized["offset"],
         "grid_size": normalized["grid_size"],
         "source_index": normalized["source_index"],
-        "energy": normalized["energy"],
+        "total_energy": normalized["total_energy"],
         "patch_id": normalized["patch_id"],
         "mask": normalized["mask"],
     }
@@ -132,7 +132,7 @@ def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
         [to_numpy(calo_hits["z"]), to_numpy(calo_hits["x"]), to_numpy(calo_hits["y"])],
         axis=1,
     )
-    energy = to_numpy(calo_hits["energy"])
+    energy = to_numpy(calo_hits["total_energy"])
     positive_energy = energy[energy > 0]
     if positive_energy.size > 0:
         color_vmin = float(positive_energy.min())
@@ -172,7 +172,7 @@ def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
     calo_hits = event["calo_hits"]
     coord = torch.stack([calo_hits["x"], calo_hits["y"], calo_hits["z"]], dim=1)
     radius = torch.linalg.norm(coord, dim=1)
-    energy = calo_hits["energy"]
+    energy = calo_hits["total_energy"]
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     axes[0].hist(to_numpy(energy), bins=40, color="tab:red")
@@ -200,7 +200,7 @@ def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
 def plot_view_signal(view: PointView, path: Path) -> None:
     normalized_view = normalize_tensor_view(view)
     coord = to_numpy(normalized_view["coord"])
-    energy = to_numpy(normalized_view["energy"])
+    total_energy = to_numpy(normalized_view["total_energy"])
     features = to_numpy(normalized_view["feat"])
     mask = to_numpy(normalized_view["mask"]).astype(int)
 
@@ -211,7 +211,7 @@ def plot_view_signal(view: PointView, path: Path) -> None:
         cast(Any, coord[:, 2]),
         cast(Any, coord[:, 0]),
         cast(Any, coord[:, 1]),
-        c=energy,
+        c=total_energy,
         cmap="inferno",
         s=4,
         alpha=0.7,
@@ -258,13 +258,13 @@ def plot_augmentations(
     fig = plt.figure(figsize=(18, 6))
     for index, (label, view) in enumerate(views, start=1):
         coord = to_numpy(view["coord"])
-        energy = to_numpy(view["energy"])
+        total_energy = to_numpy(view["total_energy"])
         ax = fig.add_subplot(1, 3, index, projection="3d")
         ax.scatter(
             cast(Any, coord[:, 2]),
             cast(Any, coord[:, 0]),
             cast(Any, coord[:, 1]),
-            c=energy,
+            c=total_energy,
             cmap="inferno",
             s=4,
             alpha=0.7,
@@ -287,21 +287,21 @@ def plot_augmentation_delta(
     normalized_aug_a = normalize_tensor_view(aug_a)
     normalized_aug_b = normalize_tensor_view(aug_b)
     base_coord = normalized_base_view["coord"]
-    base_energy = normalized_base_view["energy"]
+    base_total_energy = normalized_base_view["total_energy"]
     deltas = {
         "aug A": {
             "coord": torch.linalg.norm(normalized_aug_a["coord"] - base_coord, dim=1),
-            "energy": normalized_aug_a["energy"] - base_energy,
+            "total_energy": normalized_aug_a["total_energy"] - base_total_energy,
         },
         "aug B": {
             "coord": torch.linalg.norm(normalized_aug_b["coord"] - base_coord, dim=1),
-            "energy": normalized_aug_b["energy"] - base_energy,
+            "total_energy": normalized_aug_b["total_energy"] - base_total_energy,
         },
     }
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     for label, values in deltas.items():
         axes[0].hist(to_numpy(values["coord"]), bins=40, alpha=0.6, label=label)
-        axes[1].hist(to_numpy(values["energy"]), bins=40, alpha=0.6, label=label)
+        axes[1].hist(to_numpy(values["total_energy"]), bins=40, alpha=0.6, label=label)
     axes[0].set_title("Coordinate displacement magnitude")
     axes[1].set_title("Energy perturbation")
     for axis in axes:
