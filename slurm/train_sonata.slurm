@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -t 02:00:00
+#SBATCH -t 08:00:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p gpu
@@ -28,5 +28,5 @@ uv run python scripts/train.py \
     training.max_val_batches=10 \
     training.train_split=train[:5000] \
     training.val_split=val[:200] \
-    training.log_backend=jsonl \
+    training.log_backend=comet \
     training.run_name=sonata_h100
