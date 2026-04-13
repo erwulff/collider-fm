@@ -37,6 +37,7 @@ This repo currently implements a calo-only Panda-style self-distillation pipelin
 - Runtime SLURM jobs source `slurm/load_env.sh`.
 - The checked-in short and medium training jobs target single-GPU `a100-40gb` nodes.
 - Setup, smoke-test, and long-train jobs currently target `h100` nodes.
+- When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).
 
 ## Documentation maintenance
 
