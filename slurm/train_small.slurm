@@ -10,7 +10,7 @@
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
-set -euo pipefail
+
 
 source slurm/load_env.sh
 
