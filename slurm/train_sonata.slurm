@@ -23,7 +23,7 @@ uv run python scripts/train.py \
     model.recipe=sonata \
     data.local_files_only=true \
     training.num_epochs=20 \
-    training.batch_size=8 \
+    training.batch_size=11 \
     training.max_train_batches=100 \
     training.max_val_batches=10 \
     training.train_split=train[:5000] \
