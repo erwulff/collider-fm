@@ -34,11 +34,12 @@ from collider_fm.diagnostics import (
     tensor_summary,
     to_numpy,
 )
-from collider_fm.model import create_small_panda_model, create_training_panda_model
+from collider_fm.model import create_small_model, create_training_model
 from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
     model_factory_kwargs,
+    select_model_config,
     to_plain_container,
 )
 from collider_fm.views import (
@@ -65,8 +66,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         config_sections=(
             "data",
             "views",
+            "sonata_views",
+            "model.recipe",
             "model.diagnostics",
+            "model.sonata_diagnostics",
             "model.training",
+            "model.sonata_training",
             "diagnostics",
         ),
     )
@@ -577,6 +582,7 @@ def main() -> None:
     project_config = load_project_config(cli_args.config, cli_args.overrides)
     data_config = project_config.data
     diagnostics_config = project_config.diagnostics
+    model_recipe = str(project_config.model.get("recipe", "legacy"))
     set_seed(diagnostics_config.seed)
 
     output_root = (
@@ -691,14 +697,18 @@ def main() -> None:
 
     if device.type == "cuda":
         model = (
-            create_training_panda_model(
+            create_training_model(
+                recipe=model_recipe,
                 device=device,
-                **model_factory_kwargs(project_config.model.training),
+                **model_factory_kwargs(select_model_config(project_config, "training")),
             )
             if diagnostics_config.get("checkpoint") is not None
-            else create_small_panda_model(
+            else create_small_model(
+                recipe=model_recipe,
                 device=device,
-                **model_factory_kwargs(project_config.model.diagnostics),
+                **model_factory_kwargs(
+                    select_model_config(project_config, "diagnostics")
+                ),
             )
         )
         checkpoint_artifact = None

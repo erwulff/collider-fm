@@ -7,8 +7,10 @@ from collider_fm._panda.model_base import PointTransformerV3
 from collider_fm.model import (
     IdentityBackbone,
     PandaSelfDistillation,
+    create_small_model,
     as_point_cloud,
     create_small_panda_model,
+    create_small_sonata_model,
     create_training_panda_model,
     mean_pool_features,
     panda_loss,
@@ -233,6 +235,26 @@ class ModelTests(unittest.TestCase):
 
         self.assertEqual(model.grid_size, DEFAULT_POINT_GRID_SIZE)
         self.assertEqual(model.prototype_head.out_features, 256)
+
+    def test_small_sonata_factory_uses_expected_defaults(self):
+        model = create_small_sonata_model()
+
+        self.assertEqual(model.grid_size, DEFAULT_POINT_GRID_SIZE)
+        self.assertEqual(model.num_prototypes, 32)
+        self.assertEqual(model.num_global_view, 2)
+        self.assertEqual(model.num_local_view, 4)
+
+    def test_create_small_model_selects_recipe(self):
+        legacy_model = create_small_model(
+            recipe="legacy",
+            backbone_cls=IdentityBackbone,
+            backbone_kwargs={"output_dim": 32},
+        )
+        sonata_model = create_small_model(recipe="sonata")
+
+        self.assertIsInstance(legacy_model, PandaSelfDistillation)
+        self.assertEqual(getattr(legacy_model, "model_recipe", "legacy"), "legacy")
+        self.assertEqual(getattr(sonata_model, "model_recipe", "unknown"), "sonata")
 
     def test_point_transformer_accepts_torch_flash_backend(self):
         model = PointTransformerV3(

@@ -18,6 +18,7 @@ POINT_FEATURE_DIM = 4
 
 class PointView(TypedDict):
     coord: torch.Tensor
+    origin_coord: torch.Tensor
     feat: torch.Tensor
     offset: torch.Tensor
     grid_size: torch.Tensor
@@ -34,6 +35,20 @@ class DistillationBatch(TypedDict):
     teacher_views: list[PointView]
     student_views: list[PointView]
     base_views: list[PointView]
+
+
+class SonataBatch(TypedDict):
+    """Packed global/local views consumed by the Sonata training path."""
+
+    global_coord: torch.Tensor
+    global_origin_coord: torch.Tensor
+    global_feat: torch.Tensor
+    global_offset: torch.Tensor
+    local_coord: torch.Tensor
+    local_origin_coord: torch.Tensor
+    local_feat: torch.Tensor
+    local_offset: torch.Tensor
+    grid_size: torch.Tensor
 
 
 def _default_source_index(num_points: int, device: torch.device) -> torch.Tensor:
@@ -66,6 +81,54 @@ def assemble_point_features(
     return torch.cat([coord, total_energy.unsqueeze(1)], dim=1)
 
 
+def transform_total_energy(
+    total_energy: torch.Tensor,
+    *,
+    transform: str = "raw",
+    min_val: float = 1.0e-2,
+    max_val: float = 20.0,
+) -> torch.Tensor:
+    """Transform raw hit energy into the feature space used by the model."""
+
+    energy = torch.as_tensor(total_energy, dtype=torch.float32).flatten()
+    if transform == "raw":
+        return energy
+    if transform != "log":
+        raise ValueError(f"Unsupported energy transform: {transform}.")
+
+    y0 = torch.log10(torch.tensor(min_val, dtype=energy.dtype, device=energy.device))
+    y1 = torch.log10(
+        torch.tensor(max_val + min_val, dtype=energy.dtype, device=energy.device)
+    )
+    transformed = 2 * (torch.log10(energy + min_val) - y0) / (y1 - y0) - 1
+    return transformed
+
+
+def normalize_coord(
+    coord: torch.Tensor,
+    *,
+    center: Sequence[float] | None = None,
+    scale: float | None = None,
+) -> torch.Tensor:
+    """Optionally shift and scale coordinates before view construction."""
+
+    normalized = torch.as_tensor(coord, dtype=torch.float32).clone()
+    if center is None:
+        center_tensor = normalized.new_zeros(3)
+    else:
+        center_tensor = torch.as_tensor(
+            center, dtype=normalized.dtype, device=normalized.device
+        )
+        if center_tensor.shape != (3,):
+            raise ValueError("'center' must contain exactly three coordinates.")
+    normalized = normalized - center_tensor
+    if scale is not None:
+        if scale <= 0:
+            raise ValueError("'scale' must be positive when provided.")
+        normalized = normalized / float(scale)
+    return normalized
+
+
 def validate_point_view(view: Mapping[str, Any]) -> PointView:
     """Normalize one point-view mapping to the shared project contract."""
     required_keys = {"coord", "feat"}
@@ -75,13 +138,22 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
         raise KeyError(f"Point view is missing required keys: {missing}.")
 
     coord = torch.as_tensor(view["coord"], dtype=torch.float32)
+    origin_coord = torch.as_tensor(
+        view.get("origin_coord", coord), dtype=torch.float32, device=coord.device
+    )
     feat = torch.as_tensor(view["feat"], dtype=torch.float32, device=coord.device)
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
+    if origin_coord.ndim != 2 or origin_coord.shape[1] != 3:
+        raise ValueError("'origin_coord' must have shape [num_points, 3].")
     if feat.ndim != 2 or feat.shape[1] != POINT_FEATURE_DIM:
         raise ValueError(f"'feat' must have shape [num_points, {POINT_FEATURE_DIM}].")
     if feat.shape[0] != coord.shape[0]:
         raise ValueError("'coord' and 'feat' must have the same number of points.")
+    if origin_coord.shape[0] != coord.shape[0]:
+        raise ValueError(
+            "'origin_coord' and 'coord' must have the same number of points."
+        )
 
     offset_value = view.get("offset", [coord.shape[0]])
     offset = torch.as_tensor(
@@ -136,6 +208,7 @@ def validate_point_view(view: Mapping[str, Any]) -> PointView:
 
     return {
         "coord": coord,
+        "origin_coord": origin_coord,
         "feat": feat,
         "offset": offset,
         "grid_size": grid_size,
@@ -161,6 +234,11 @@ def build_point_view_from_event(
     device: torch.device,
     max_calo_hits: int | None = None,
     grid_size: float = DEFAULT_POINT_GRID_SIZE,
+    coord_center: Sequence[float] | None = None,
+    coord_scale: float | None = None,
+    energy_transform: str = "raw",
+    energy_min: float = 1.0e-2,
+    energy_max: float = 20.0,
 ) -> PointView:
     """Convert one raw ColliderML event into a single point view.
 
@@ -185,7 +263,7 @@ def build_point_view_from_event(
         max_hits=max_calo_hits,
         device=source_device,
     )
-    coord = torch.stack(
+    raw_coord = torch.stack(
         [
             coord_x[calo_indices],
             coord_y[calo_indices],
@@ -193,13 +271,21 @@ def build_point_view_from_event(
         ],
         dim=1,
     ).to(device=device, dtype=torch.float32)
-    total_energy = total_energy[calo_indices].to(device=device, dtype=torch.float32)
+    coord = normalize_coord(raw_coord, center=coord_center, scale=coord_scale)
+    raw_total_energy = total_energy[calo_indices].to(device=device, dtype=torch.float32)
+    total_energy = transform_total_energy(
+        raw_total_energy,
+        transform=energy_transform,
+        min_val=energy_min,
+        max_val=energy_max,
+    )
     source_index = torch.as_tensor(calo_indices, dtype=torch.long, device=device)
     grid_size_tensor = torch.tensor(grid_size, dtype=torch.float32, device=device)
 
     return validate_point_view(
         {
             "coord": coord,
+            "origin_coord": coord.clone(),
             "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor([coord.shape[0]], dtype=torch.long, device=device),
             "grid_size": grid_size_tensor,
@@ -243,6 +329,7 @@ def crop_point_view(view: Mapping[str, Any], keep_ratio: float) -> PointView:
     return validate_point_view(
         {
             "coord": cast(torch.Tensor, base_view["coord"])[keep_indices],
+            "origin_coord": cast(torch.Tensor, base_view["origin_coord"])[keep_indices],
             "feat": cast(torch.Tensor, base_view["feat"])[keep_indices],
             "offset": torch.tensor(
                 [keep_count], dtype=torch.long, device=base_view["coord"].device
@@ -310,6 +397,7 @@ def augment_point_view(
     """
     working_view = crop_point_view(view, keep_ratio=crop_keep_ratio)
     coord = working_view["coord"].clone()
+    origin_coord = working_view["origin_coord"].clone()
     total_energy = working_view["total_energy"].clone()
     source_index = working_view["source_index"].clone()
     patch_id = working_view["patch_id"].clone()
@@ -333,6 +421,7 @@ def augment_point_view(
                 True
             )
         coord = coord[keep_mask]
+        origin_coord = origin_coord[keep_mask]
         total_energy = total_energy[keep_mask]
         source_index = source_index[keep_mask]
         patch_id = patch_id[keep_mask]
@@ -340,6 +429,7 @@ def augment_point_view(
     masked_view = validate_point_view(
         {
             "coord": coord,
+            "origin_coord": origin_coord,
             "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor(
                 [coord.shape[0]], dtype=torch.long, device=coord.device
@@ -376,6 +466,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
             )
 
     coord = torch.cat([view["coord"] for view in normalized_views], dim=0)
+    origin_coord = torch.cat([view["origin_coord"] for view in normalized_views], dim=0)
     total_energy = torch.cat([view["total_energy"] for view in normalized_views], dim=0)
     source_index_parts = []
     patch_id_parts = []
@@ -397,6 +488,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     return validate_point_view(
         {
             "coord": coord,
+            "origin_coord": origin_coord,
             "feat": assemble_point_features(coord, total_energy),
             "offset": torch.cumsum(counts_tensor, dim=0),
             "grid_size": grid_size.clone(),
@@ -503,6 +595,103 @@ def build_distillation_views(
     }
 
 
+def _sample_crop_keep_ratio(
+    min_ratio: float, max_ratio: float, device: torch.device
+) -> float:
+    if min_ratio <= 0 or max_ratio <= 0:
+        raise ValueError("Crop ratios must be positive.")
+    if min_ratio > max_ratio:
+        raise ValueError("Minimum crop ratio cannot exceed maximum crop ratio.")
+    if min_ratio == max_ratio:
+        return float(min_ratio)
+    return float(torch.empty(1, device=device).uniform_(min_ratio, max_ratio).item())
+
+
+def build_sonata_batch(
+    events: Sequence[Mapping[str, Any]],
+    device: torch.device,
+    *,
+    max_calo_hits: int | None = None,
+    grid_size: float = DEFAULT_POINT_GRID_SIZE,
+    coord_noise_scale: float = 0.5,
+    feat_noise_scale: float = 0.01,
+    point_dropout: float = 0.05,
+    num_global_views: int = 2,
+    num_local_views: int = 4,
+    global_crop_min_ratio: float = 0.4,
+    global_crop_max_ratio: float = 1.0,
+    local_crop_min_ratio: float = 0.1,
+    local_crop_max_ratio: float = 0.4,
+    coord_center: Sequence[float] | None = None,
+    coord_scale: float | None = None,
+    energy_transform: str = "raw",
+    energy_min: float = 1.0e-2,
+    energy_max: float = 20.0,
+) -> SonataBatch:
+    """Build the packed global/local multiview batch expected by Sonata."""
+
+    global_views: list[PointView] = []
+    local_views: list[PointView] = []
+    for event in events:
+        base_view = build_point_view_from_event(
+            event,
+            device=device,
+            max_calo_hits=max_calo_hits,
+            grid_size=grid_size,
+            coord_center=coord_center,
+            coord_scale=coord_scale,
+            energy_transform=energy_transform,
+            energy_min=energy_min,
+            energy_max=energy_max,
+        )
+
+        for view_index in range(num_global_views):
+            keep_ratio = _sample_crop_keep_ratio(
+                global_crop_min_ratio, global_crop_max_ratio, base_view["coord"].device
+            )
+            global_views.append(
+                augment_point_view(
+                    base_view,
+                    coord_noise_scale=coord_noise_scale,
+                    feat_noise_scale=feat_noise_scale,
+                    crop_keep_ratio=keep_ratio,
+                    point_dropout=point_dropout,
+                    mask_fraction=0.0,
+                    view_kind=f"sonata_global_{view_index}",
+                )
+            )
+
+        for view_index in range(num_local_views):
+            keep_ratio = _sample_crop_keep_ratio(
+                local_crop_min_ratio, local_crop_max_ratio, base_view["coord"].device
+            )
+            local_views.append(
+                augment_point_view(
+                    base_view,
+                    coord_noise_scale=coord_noise_scale,
+                    feat_noise_scale=feat_noise_scale,
+                    crop_keep_ratio=keep_ratio,
+                    point_dropout=point_dropout,
+                    mask_fraction=0.0,
+                    view_kind=f"sonata_local_{view_index}",
+                )
+            )
+
+    global_batch = batch_point_views(global_views)
+    local_batch = batch_point_views(local_views)
+    return {
+        "global_coord": global_batch["coord"],
+        "global_origin_coord": global_batch["origin_coord"],
+        "global_feat": global_batch["feat"],
+        "global_offset": global_batch["offset"],
+        "local_coord": local_batch["coord"],
+        "local_origin_coord": local_batch["origin_coord"],
+        "local_feat": local_batch["feat"],
+        "local_offset": local_batch["offset"],
+        "grid_size": torch.tensor([grid_size], dtype=torch.float32, device=device),
+    }
+
+
 def make_random_view(
     num_points: int, in_channels: int, device: torch.device
 ) -> PointView:
@@ -518,6 +707,7 @@ def make_random_view(
     return validate_point_view(
         {
             "coord": coord,
+            "origin_coord": coord.clone(),
             "feat": assemble_point_features(coord, total_energy),
             "offset": torch.tensor([num_points], dtype=torch.long, device=device),
             "grid_size": grid_size,

@@ -62,9 +62,7 @@ def load_events(
     return next(iter(dataloader))
 
 
-def load_checkpoint(
-    model: PandaSelfDistillation, checkpoint_path: str
-) -> dict[str, Any]:
+def load_checkpoint(model: torch.nn.Module, checkpoint_path: str) -> dict[str, Any]:
     """Load a checkpoint into the model and report key mismatches."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint
@@ -135,7 +133,7 @@ def sample_indices(num_items: int, max_items: int, seed: int) -> np.ndarray:
 
 @torch.no_grad()
 def encode_view(
-    model: PandaSelfDistillation,
+    model: torch.nn.Module,
     view: dict[str, torch.Tensor],
     use_teacher: bool = False,
 ) -> dict[str, torch.Tensor]:

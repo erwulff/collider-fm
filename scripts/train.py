@@ -30,14 +30,15 @@ from collider_fm.experiment_logging import (
     ensure_run_directory,
     write_run_config,
 )
-from collider_fm.model import PandaSelfDistillation, create_training_panda_model
+from collider_fm.model import create_training_model
 from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
     model_factory_kwargs,
+    select_model_config,
     to_plain_container,
 )
-from collider_fm.views import build_distillation_views
+from collider_fm.views import build_distillation_views, build_sonata_batch
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -48,9 +49,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/train.py\n"
             "  uv run python scripts/train.py training.batch_size=16 training.num_epochs=10\n"
             "  uv run python scripts/train.py data.local_files_only=true training.log_backend=jsonl\n"
-            "  uv run python scripts/train.py training.run_dir=runs training.run_name=my_run"
+            "  uv run python scripts/train.py training.run_dir=runs training.run_name=my_run\n"
+            "  uv run python scripts/train.py model.recipe=sonata"
         ),
-        config_sections=("data", "views", "model.training", "training"),
+        config_sections=(
+            "data",
+            "views",
+            "sonata_views",
+            "model.recipe",
+            "model.training",
+            "model.sonata_training",
+            "training",
+        ),
     )
 
 
@@ -160,10 +170,13 @@ def learning_rate(optimizer: AdamW) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
-def center_norm(model: PandaSelfDistillation) -> float:
+def center_norm(model: torch.nn.Module) -> float:
     """Return the current norm of the running teacher center."""
 
-    return float(torch.linalg.vector_norm(model.center).item())
+    center = getattr(model, "center", None)
+    if center is None:
+        return 0.0
+    return float(torch.linalg.vector_norm(center).item())
 
 
 def current_teacher_temperature(training_config: DictConfig, epoch_index: int) -> float:
@@ -195,13 +208,10 @@ def current_teacher_momentum(
     )
 
 
-def prototype_usage(
-    outputs: list[dict[str, torch.Tensor]], num_prototypes: int
-) -> torch.Tensor:
+def prototype_usage(logits: torch.Tensor, num_prototypes: int) -> torch.Tensor:
     """Estimate prototype occupancy from the student point assignments."""
 
-    point_logits = torch.cat([output["point_logits"] for output in outputs], dim=0)
-    assignments = point_logits.argmax(dim=-1)
+    assignments = logits.argmax(dim=-1)
     counts = torch.bincount(assignments, minlength=num_prototypes).to(
         dtype=torch.float32
     )
@@ -217,18 +227,17 @@ def prototype_entropy(probabilities: torch.Tensor) -> float:
     return float(entropy.item())
 
 
-def embedding_norm(outputs: list[dict[str, torch.Tensor]]) -> float:
-    """Average norm of the masked pooled student embeddings."""
+def embedding_norm(embeddings: torch.Tensor | None) -> float:
+    """Average norm of the monitored student embeddings."""
 
-    embeddings = torch.cat(
-        [output["masked_pooled_projection"] for output in outputs], dim=0
-    )
+    if embeddings is None or embeddings.numel() == 0:
+        return 0.0
     return float(embeddings.norm(dim=-1).mean().item())
 
 
 def save_checkpoint(
     run_dir: Path,
-    model: PandaSelfDistillation,
+    model: torch.nn.Module,
     optimizer: AdamW,
     epoch: int,
     global_step: int,
@@ -255,7 +264,7 @@ def save_checkpoint(
 
 
 def run_epoch(
-    model: PandaSelfDistillation,
+    model: torch.nn.Module,
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
@@ -263,6 +272,8 @@ def run_epoch(
     grad_scaler: Any,
     mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
+    recipe: str,
+    sonata_view_config: DictConfig,
     max_calo_hits: int | None,
     coord_noise_scale: float,
     energy_jitter_scale: float,
@@ -314,16 +325,40 @@ def run_epoch(
         data_wait_seconds = time.perf_counter() - data_wait_start
 
         view_start = time.perf_counter()
-        distillation_batch = build_distillation_views(
-            events,
-            device=device,
-            max_calo_hits=max_calo_hits,
-            coord_noise_scale=coord_noise_scale,
-            feat_noise_scale=energy_jitter_scale,
-            global_crop_ratio=global_crop_ratio,
-            student_mask_fraction=student_mask_fraction,
-            point_dropout=point_dropout,
-        )
+        if recipe == "legacy":
+            model_inputs = build_distillation_views(
+                events,
+                device=device,
+                max_calo_hits=max_calo_hits,
+                coord_noise_scale=coord_noise_scale,
+                feat_noise_scale=energy_jitter_scale,
+                global_crop_ratio=global_crop_ratio,
+                student_mask_fraction=student_mask_fraction,
+                point_dropout=point_dropout,
+            )
+        elif recipe == "sonata":
+            model_inputs = build_sonata_batch(
+                events,
+                device=device,
+                max_calo_hits=sonata_view_config.max_calo_hits,
+                grid_size=float(getattr(model, "grid_size", 10.0)),
+                coord_noise_scale=sonata_view_config.coord_noise_scale,
+                feat_noise_scale=sonata_view_config.energy_jitter_scale,
+                point_dropout=sonata_view_config.point_dropout,
+                num_global_views=sonata_view_config.num_global_views,
+                num_local_views=sonata_view_config.num_local_views,
+                global_crop_min_ratio=sonata_view_config.global_crop_min_ratio,
+                global_crop_max_ratio=sonata_view_config.global_crop_max_ratio,
+                local_crop_min_ratio=sonata_view_config.local_crop_min_ratio,
+                local_crop_max_ratio=sonata_view_config.local_crop_max_ratio,
+                coord_center=sonata_view_config.coord_center,
+                coord_scale=sonata_view_config.coord_scale,
+                energy_transform=sonata_view_config.energy_transform,
+                energy_min=sonata_view_config.energy_min,
+                energy_max=sonata_view_config.energy_max,
+            )
+        else:
+            raise ValueError(f"Unsupported model recipe: {recipe}.")
         if device.type == "cuda":
             torch.cuda.synchronize()
         view_build_seconds = time.perf_counter() - view_start
@@ -336,8 +371,37 @@ def run_epoch(
                 dtype=mixed_precision_dtype or torch.float32,
                 enabled=autocast_enabled,
             ):
-                student_outputs, teacher_outputs = model(distillation_batch)
-                loss = model.distillation_loss(student_outputs, teacher_outputs)
+                if recipe == "legacy":
+                    student_outputs, teacher_outputs = model(model_inputs)
+                    loss = model.distillation_loss(student_outputs, teacher_outputs)
+                    monitor_logits = torch.cat(
+                        [output["point_logits"] for output in student_outputs], dim=0
+                    )
+                    monitor_embeddings = torch.cat(
+                        [
+                            output["masked_pooled_projection"]
+                            for output in student_outputs
+                        ],
+                        dim=0,
+                    )
+                    masked_fraction = (
+                        torch.cat(
+                            [output["mask"].float() for output in student_outputs]
+                        )
+                        .mean()
+                        .item()
+                    )
+                else:
+                    if is_training:
+                        model.step_schedules()
+                    else:
+                        pass
+                    result_dict = model(model_inputs)
+                    loss = result_dict["loss"]
+                    monitor_state = getattr(model, "last_monitoring_state", {})
+                    monitor_logits = monitor_state.get("student_logits")
+                    monitor_embeddings = monitor_state.get("point_features")
+                    masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
 
         if is_training:
             optimizer.zero_grad(set_to_none=True)
@@ -350,22 +414,26 @@ def run_epoch(
                 optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
-            model.update_center(teacher_outputs)
-            model.update_teacher(momentum=teacher_momentum)
+            if recipe == "legacy":
+                model.update_center(teacher_outputs)
+                model.update_teacher(momentum=teacher_momentum)
+            else:
+                model.update_teacher(momentum=None)
 
         if device.type == "cuda":
             torch.cuda.synchronize()
         model_step_seconds = time.perf_counter() - model_step_start
 
-        usage = prototype_usage(student_outputs, num_prototypes=model.num_prototypes)
-        masked_fraction = (
-            torch.cat([output["mask"].float() for output in student_outputs])
-            .mean()
-            .item()
+        if monitor_logits is None:
+            monitor_logits = loss.new_zeros(
+                (1, int(getattr(model, "num_prototypes", 1)))
+            )
+        usage = prototype_usage(
+            monitor_logits, num_prototypes=int(getattr(model, "num_prototypes", 1))
         )
         totals["loss"] += float(loss.item())
         totals["prototype_entropy"] += prototype_entropy(usage)
-        totals["embedding_norm"] += embedding_norm(student_outputs)
+        totals["embedding_norm"] += embedding_norm(monitor_embeddings)
         totals["masked_fraction"] += float(masked_fraction)
         totals["data_wait_seconds"] += data_wait_seconds
         totals["view_build_seconds"] += view_build_seconds
@@ -402,7 +470,9 @@ def main() -> None:
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     training_config = config.training
-    view_config = config.views
+    legacy_view_config = config.views
+    sonata_view_config = config.sonata_views
+    model_recipe = str(config.model.get("recipe", "legacy"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -441,20 +511,27 @@ def main() -> None:
 
     mixed_precision_dtype = resolve_mixed_precision_dtype(training_config, device)
 
-    model = create_training_panda_model(
+    model = create_training_model(
+        recipe=model_recipe,
         device=device,
-        **model_factory_kwargs(config.model.training),
+        **model_factory_kwargs(select_model_config(config, "training")),
     )
-    grad_scaler = torch.amp.GradScaler('cuda',
-        enabled=mixed_precision_dtype is torch.float16
+    if model_recipe == "sonata":
+        model.setup_schedulers(
+            total_steps=max(1, training_config.num_epochs * max_train_batches)
+        )
+    grad_scaler = torch.amp.GradScaler(
+        "cuda", enabled=mixed_precision_dtype is torch.float16
     )
     print(f"Mixed precision: {mixed_precision_name(mixed_precision_dtype)}")
     print(
         f"Flash attention: {model.flash_attention_enabled} ({model.flash_attention_backend})"
     )
+    print(f"Model recipe: {model_recipe}")
     run_config["resolved_mixed_precision"] = mixed_precision_name(mixed_precision_dtype)
     run_config["resolved_flash_attention"] = bool(model.flash_attention_enabled)
     run_config["resolved_flash_attention_backend"] = model.flash_attention_backend
+    run_config["resolved_model_recipe"] = model_recipe
     config_path = write_run_config(run_dir, run_config)
     logger.log_params(run_config)
     print(f"Run config: {config_path}")
@@ -483,7 +560,13 @@ def main() -> None:
             train_progress = global_step / total_train_steps
             current_momentum = current_teacher_momentum(training_config, train_progress)
             current_temperature = current_teacher_temperature(training_config, epoch)
-            model.temp_teacher = current_temperature
+            if model_recipe == "legacy":
+                model.temp_teacher = current_temperature
+            else:
+                current_momentum = float(getattr(model, "momentum", current_momentum))
+                current_temperature = float(
+                    getattr(model, "teacher_temp", current_temperature)
+                )
 
             train_metrics, train_batches = run_epoch(
                 model=model,
@@ -494,12 +577,14 @@ def main() -> None:
                 grad_scaler=grad_scaler,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_train_batches,
-                max_calo_hits=view_config.max_calo_hits,
-                coord_noise_scale=view_config.coord_noise_scale,
-                energy_jitter_scale=view_config.energy_jitter_scale,
-                global_crop_ratio=view_config.global_crop_ratio,
-                student_mask_fraction=view_config.student_mask_fraction,
-                point_dropout=view_config.point_dropout,
+                recipe=model_recipe,
+                sonata_view_config=sonata_view_config,
+                max_calo_hits=legacy_view_config.max_calo_hits,
+                coord_noise_scale=legacy_view_config.coord_noise_scale,
+                energy_jitter_scale=legacy_view_config.energy_jitter_scale,
+                global_crop_ratio=legacy_view_config.global_crop_ratio,
+                student_mask_fraction=legacy_view_config.student_mask_fraction,
+                point_dropout=legacy_view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="train",
             )
@@ -514,17 +599,24 @@ def main() -> None:
                 grad_scaler=None,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_val_batches,
-                max_calo_hits=view_config.max_calo_hits,
-                coord_noise_scale=view_config.coord_noise_scale,
-                energy_jitter_scale=view_config.energy_jitter_scale,
-                global_crop_ratio=view_config.global_crop_ratio,
-                student_mask_fraction=view_config.student_mask_fraction,
-                point_dropout=view_config.point_dropout,
+                recipe=model_recipe,
+                sonata_view_config=sonata_view_config,
+                max_calo_hits=legacy_view_config.max_calo_hits,
+                coord_noise_scale=legacy_view_config.coord_noise_scale,
+                energy_jitter_scale=legacy_view_config.energy_jitter_scale,
+                global_crop_ratio=legacy_view_config.global_crop_ratio,
+                student_mask_fraction=legacy_view_config.student_mask_fraction,
+                point_dropout=legacy_view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="val",
             )
 
             epoch_time_seconds = time.perf_counter() - epoch_start
+            if model_recipe == "sonata":
+                current_momentum = float(getattr(model, "momentum", current_momentum))
+                current_temperature = float(
+                    getattr(model, "teacher_temp", current_temperature)
+                )
             epoch_metrics = {
                 "epoch": epoch + 1,
                 "global_step": global_step,
