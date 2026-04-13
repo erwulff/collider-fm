@@ -2,8 +2,7 @@
 #SBATCH -t 02:00:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
-#SBATCH -p gpupreempt
-#SBATCH -q gpupreempt
+#SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C h100
