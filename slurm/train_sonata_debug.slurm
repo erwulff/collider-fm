@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -t 02:00:00
+#SBATCH -t 00:30:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C h100
-#SBATCH -J train_sonata
+#SBATCH -J sonata_debug
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
@@ -22,11 +22,11 @@ uv run python --version
 uv run python scripts/train.py \
     model.recipe=sonata \
     data.local_files_only=true \
-    training.num_epochs=20 \
-    training.batch_size=8 \
-    training.max_train_batches=100 \
-    training.max_val_batches=10 \
-    training.train_split=train[:5000] \
-    training.val_split=val[:200] \
+    training.num_epochs=4 \
+    training.batch_size=4 \
+    training.max_train_batches=20 \
+    training.max_val_batches=4 \
+    training.train_split=train[:200] \
+    training.val_split=val[:40] \
     training.log_backend=jsonl \
-    training.run_name=sonata_h100
+    training.run_name=sonata_debug
