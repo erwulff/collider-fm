@@ -1,16 +1,15 @@
 #!/bin/bash
-#SBATCH -t 00:30:00
+#SBATCH -t 01:30:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH -C a100-40gb
-#SBATCH -J sonata_debug
+#SBATCH -C a100
+#SBATCH -J train_sonata_debug
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
-set -euo pipefail
 
 source slurm/load_env.sh
 

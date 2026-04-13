@@ -5,7 +5,7 @@
 #SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH -C a100-40gb
+#SBATCH -C a100
 #SBATCH -J train_small
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
