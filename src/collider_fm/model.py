@@ -585,8 +585,8 @@ def create_training_sonata_model(
 
     resolved_model_kwargs = {
         "in_channels": POINT_FEATURE_DIM,
-        "head_embed_channels": 256,
-        "head_num_prototypes": 256,
+        "head_embed_channels": 512,
+        "head_num_prototypes": 4096,
         "num_global_view": 2,
         "num_local_view": 4,
         "mask_size_start": 100.0,

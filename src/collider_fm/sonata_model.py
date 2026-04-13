@@ -169,7 +169,7 @@ class SonataSelfDistillation(nn.Module):
         backbone_kwargs: Mapping[str, Any] | None = None,
         head_in_channels: int | None = None,
         head_hidden_channels: int = 4096,
-        head_embed_channels: int = 256,
+        head_embed_channels: int = 512,
         head_num_prototypes: int = 4096,
         teacher_custom: Mapping[str, Any] | None = None,
         num_global_view: int = 2,
