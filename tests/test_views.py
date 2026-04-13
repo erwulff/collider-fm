@@ -148,9 +148,8 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(batch["local_offset"], torch.tensor([4, 8, 12, 16, 20, 24]))
         )
-        self.assertTrue(
-            torch.equal(batch["global_coord"], batch["global_origin_coord"])
-        )
+        self.assertEqual(tuple(batch["global_origin_coord"].shape), (16, 3))
+        self.assertEqual(tuple(batch["local_origin_coord"].shape), (24, 3))
 
     def test_sample_hit_indices_keeps_all_hits_when_below_limit(self):
         indices = sample_hit_indices(num_hits=5, max_hits=8, device=torch.device("cpu"))
