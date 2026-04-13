@@ -525,10 +525,10 @@ def create_small_sonata_model(
         "head_num_prototypes": 32,
         "num_global_view": 2,
         "num_local_view": 4,
-        "mask_size_start": 5.0,
-        "mask_size_base": 10.0,
-        "mask_jitter_base": 0.5,
-        "match_max_r": 2.0,
+        "mask_size_start": 100.0,
+        "mask_size_base": 750.0,
+        "mask_jitter_base": 50.0,
+        "match_max_r": 20.0,
     }
     resolved_model_kwargs.update(model_kwargs)
 
@@ -589,10 +589,10 @@ def create_training_sonata_model(
         "head_num_prototypes": 256,
         "num_global_view": 2,
         "num_local_view": 4,
-        "mask_size_start": 5.0,
-        "mask_size_base": 10.0,
-        "mask_jitter_base": 0.5,
-        "match_max_r": 2.0,
+        "mask_size_start": 100.0,
+        "mask_size_base": 750.0,
+        "mask_jitter_base": 50.0,
+        "match_max_r": 20.0,
     }
     resolved_model_kwargs.update(model_kwargs)
 

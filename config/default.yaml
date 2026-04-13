@@ -29,7 +29,7 @@ sonata_views:
   local_crop_max_ratio: 0.4
   coord_center:
   coord_scale:
-  energy_transform: raw
+  energy_transform: log
   energy_min: 0.01
   energy_max: 20.0
 
@@ -60,15 +60,15 @@ model:
     head_num_prototypes: 256
     num_global_view: 2
     num_local_view: 4
-    mask_size_start: 5.0
-    mask_size_base: 10.0
+    mask_size_start: 100.0
+    mask_size_base: 750.0
     mask_size_warmup_ratio: 0.05
-    mask_ratio_start: 0.3
-    mask_ratio_base: 0.7
+    mask_ratio_start: 0.5
+    mask_ratio_base: 0.9
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 0.5
+    mask_jitter_base: 50.0
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -77,9 +77,9 @@ model:
     mask_loss_weight: 0.25
     roll_mask_loss_weight: 0.25
     unmask_loss_weight: 0.5
-    momentum_base: 0.996
+    momentum_base: 0.994
     momentum_final: 1.0
-    match_max_r: 2.0
+    match_max_r: 20.0
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 2, 2, 1]
@@ -114,15 +114,15 @@ model:
     head_num_prototypes: 32
     num_global_view: 2
     num_local_view: 4
-    mask_size_start: 5.0
-    mask_size_base: 10.0
+    mask_size_start: 100.0
+    mask_size_base: 750.0
     mask_size_warmup_ratio: 0.05
-    mask_ratio_start: 0.3
-    mask_ratio_base: 0.7
+    mask_ratio_start: 0.5
+    mask_ratio_base: 0.9
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 0.5
+    mask_jitter_base: 50.0
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -131,9 +131,9 @@ model:
     mask_loss_weight: 0.25
     roll_mask_loss_weight: 0.25
     unmask_loss_weight: 0.5
-    momentum_base: 0.996
+    momentum_base: 0.994
     momentum_final: 1.0
-    match_max_r: 2.0
+    match_max_r: 20.0
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 1, 1, 1]
