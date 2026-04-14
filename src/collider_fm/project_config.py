@@ -126,11 +126,8 @@ def model_factory_kwargs(
 
 
 def select_model_config(config: DictConfig, flavor: str) -> DictConfig:
-    recipe = str(config.model.get("recipe", "legacy"))
     if flavor not in {"training", "diagnostics"}:
         raise ValueError(f"Unsupported model flavor: {flavor}.")
-    if recipe == "legacy":
-        return config.model[flavor]
-    if recipe == "sonata":
+    if f"sonata_{flavor}" in config.model:
         return config.model[f"sonata_{flavor}"]
-    raise ValueError(f"Unsupported model recipe: {recipe}.")
+    return config.model[flavor]
