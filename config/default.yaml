@@ -18,7 +18,7 @@ views:
 
 sonata_views:
   max_calo_hits:
-  coord_noise_scale: 0.5
+  coord_noise_scale: 0.001
   energy_jitter_scale: 0.01
   point_dropout: 0.05
   num_global_views: 2
@@ -27,8 +27,8 @@ sonata_views:
   global_crop_max_ratio: 1.0
   local_crop_min_ratio: 0.1
   local_crop_max_ratio: 0.4
-  coord_center:
-  coord_scale:
+  coord_center: [0, 0, 0]
+  coord_scale: 5000.0
   energy_transform: log
   energy_min: 0.01
   energy_max: 20.0
@@ -55,20 +55,20 @@ model:
       flash_backend: torch  # Options: "torch", "flash_attn"
   sonata_training:
     in_channels: 4
-    grid_size: 10.0
+    grid_size: 0.002
     head_embed_channels: 512
     head_num_prototypes: 4096
     num_global_view: 2
     num_local_view: 4
-    mask_size_start: 100.0
-    mask_size_base: 750.0
+    mask_size_start: 0.02
+    mask_size_base: 0.15
     mask_size_warmup_ratio: 0.05
     mask_ratio_start: 0.5
     mask_ratio_base: 0.9
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 50.0
+    mask_jitter_base: 0.01
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -79,7 +79,7 @@ model:
     unmask_loss_weight: 0.5
     momentum_base: 0.994
     momentum_final: 1.0
-    match_max_r: 20.0
+    match_max_r: 0.004
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 2, 2, 1]
@@ -109,20 +109,20 @@ model:
       flash_backend: torch  # Options: "torch", "flash_attn"
   sonata_diagnostics:
     in_channels: 4
-    grid_size: 10.0
+    grid_size: 0.002
     head_embed_channels: 64
     head_num_prototypes: 32
     num_global_view: 2
     num_local_view: 4
-    mask_size_start: 100.0
-    mask_size_base: 750.0
+    mask_size_start: 0.02
+    mask_size_base: 0.15
     mask_size_warmup_ratio: 0.05
     mask_ratio_start: 0.5
     mask_ratio_base: 0.9
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 50.0
+    mask_jitter_base: 0.01
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -133,7 +133,7 @@ model:
     unmask_loss_weight: 0.5
     momentum_base: 0.994
     momentum_final: 1.0
-    match_max_r: 20.0
+    match_max_r: 0.004
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 1, 1, 1]
@@ -151,9 +151,9 @@ training:
   val_split: val
   batch_size: 8
   num_epochs: 2
-  learning_rate: 0.00001
-  min_learning_rate: 0.000003
-  weight_decay: 0.0001
+  learning_rate: 0.0002
+  min_learning_rate: 0.00001
+  weight_decay: 0.05
   teacher_momentum_start: 0.99
   teacher_momentum_end: 0.999
   teacher_temperature_start: 0.04
