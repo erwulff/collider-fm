@@ -6,6 +6,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+from PIL import Image
+
 
 class NullLogger:
     def log_params(self, params: Mapping[str, Any]) -> None:
@@ -14,6 +17,11 @@ class NullLogger:
     def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
         del metrics, step
 
+    def log_image(
+        self, name: str, image_data: np.ndarray, step: int | None = None
+    ) -> None:
+        del name, image_data, step
+
     def finish(self) -> None:
         return
 
@@ -21,6 +29,7 @@ class NullLogger:
 class JsonlLogger:
     def __init__(self, run_dir: Path) -> None:
         self.metrics_path = run_dir / "metrics.jsonl"
+        self.viz_dir = run_dir / "viz"
 
     def log_params(self, params: Mapping[str, Any]) -> None:
         del params
@@ -31,6 +40,15 @@ class JsonlLogger:
             record.setdefault("step", step)
         with self.metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+    def log_image(
+        self, name: str, image_data: np.ndarray, step: int | None = None
+    ) -> None:
+        """Save a numpy RGB image array to the run's viz/ directory."""
+        self.viz_dir.mkdir(parents=True, exist_ok=True)
+        step_suffix = f"_step{step}" if step is not None else ""
+        path = self.viz_dir / f"{name}{step_suffix}.png"
+        Image.fromarray(image_data).save(path)
 
     def finish(self) -> None:
         return
@@ -45,6 +63,12 @@ class CometLogger:
 
     def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
         self.experiment.log_metrics(dict(metrics), step=step)
+
+    def log_image(
+        self, name: str, image_data: np.ndarray, step: int | None = None
+    ) -> None:
+        """Log a numpy RGB image array to the Comet experiment dashboard."""
+        self.experiment.log_image(image_data, name=name, step=step, overwrite=True)
 
     def finish(self) -> None:
         self.experiment.end()
@@ -61,6 +85,12 @@ class CompositeLogger:
     def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
         for logger in self.loggers:
             logger.log_metrics(metrics, step=step)
+
+    def log_image(
+        self, name: str, image_data: np.ndarray, step: int | None = None
+    ) -> None:
+        for logger in self.loggers:
+            logger.log_image(name, image_data, step=step)
 
     def finish(self) -> None:
         for logger in self.loggers:
