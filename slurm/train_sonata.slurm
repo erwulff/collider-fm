@@ -29,4 +29,4 @@ uv run python scripts/train.py \
     training.train_split=train[:5000] \
     training.val_split=val[:200] \
     training.log_backend=comet \
-    training.run_name=sonata_a100
+    training.run_name=sonata_norm_lr
