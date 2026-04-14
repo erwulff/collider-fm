@@ -28,6 +28,7 @@ This repo currently implements a calo-only Panda-style self-distillation pipelin
 - Prefer the checked-in SLURM jobs for heavyweight work.
 - Leave generated outputs in `runs/` and `diagnostics/` uncommitted unless the user explicitly asks otherwise.
 - Do not touch unrelated submodule changes in `Panda_repo/`.
+- Always think extra hard before making changes.
 
 ## Cluster notes
 
