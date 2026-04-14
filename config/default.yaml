@@ -34,7 +34,7 @@ sonata_views:
   energy_max: 20.0
 
 model:
-  recipe: legacy
+  recipe: sonata
   training:
     in_channels: 4
     embed_channels: 16
