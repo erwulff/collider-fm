@@ -10,14 +10,6 @@ data:
 
 views:
   max_calo_hits:
-  coord_noise_scale: 0.5
-  energy_jitter_scale: 0.01
-  global_crop_ratio: 0.9
-  student_mask_fraction: 0.4
-  point_dropout: 0.05
-
-sonata_views:
-  max_calo_hits:
   coord_noise_scale: 0.001
   energy_jitter_scale: 0.01
   point_dropout: 0.05
@@ -34,26 +26,7 @@ sonata_views:
   energy_max: 20.0
 
 model:
-  recipe: sonata
   training:
-    in_channels: 4
-    embed_channels: 16
-    num_prototypes: 256
-    projection_dim: 48
-    prediction_dim: 64
-    temp_student: 0.1
-    temp_teacher: 0.04
-    center_momentum: 0.9
-    grid_size: 10.0
-    backbone:
-      enc_depths: [1, 1, 2, 2, 1]
-      enc_channels: [16, 32, 64, 96, 128]
-      enc_num_head: [1, 2, 4, 4, 8]
-      enc_patch_size: [128, 128, 128, 128, 128]
-      shuffle_orders: false
-      enable_flash: false
-      flash_backend: torch  # Options: "torch", "flash_attn"
-  sonata_training:
     in_channels: 4
     grid_size: 0.002
     head_embed_channels: 512
@@ -88,26 +61,8 @@ model:
       enc_patch_size: [8, 8, 8, 8, 8]
       shuffle_orders: false
       enable_flash: false
-      flash_backend: torch  # Options: "torch", "flash_attn"
+      flash_backend: torch
   diagnostics:
-    in_channels: 4
-    embed_channels: 8
-    num_prototypes: 32
-    projection_dim: 8
-    prediction_dim: 16
-    temp_student: 0.1
-    temp_teacher: 0.04
-    center_momentum: 0.9
-    grid_size: 10.0
-    backbone:
-      enc_depths: [1, 1, 1, 1, 1]
-      enc_channels: [8, 12, 16, 24, 32]
-      enc_num_head: [1, 1, 2, 4, 4]
-      enc_patch_size: [128, 128, 128, 128, 128]
-      shuffle_orders: false
-      enable_flash: false
-      flash_backend: torch  # Options: "torch", "flash_attn"
-  sonata_diagnostics:
     in_channels: 4
     grid_size: 0.002
     head_embed_channels: 64
@@ -142,7 +97,7 @@ model:
       enc_patch_size: [4, 4, 4, 4, 4]
       shuffle_orders: false
       enable_flash: false
-      flash_backend: torch  # Options: "torch", "flash_attn"
+      flash_backend: torch
 
 training:
   run_dir:
@@ -154,11 +109,6 @@ training:
   learning_rate: 0.0002
   min_learning_rate: 0.00001
   weight_decay: 0.05
-  teacher_momentum_start: 0.99
-  teacher_momentum_end: 0.999
-  teacher_temperature_start: 0.04
-  teacher_temperature_end: 0.07
-  teacher_temperature_warmup_epochs: 1
   max_train_batches:
   max_val_batches:
   num_workers: 8
