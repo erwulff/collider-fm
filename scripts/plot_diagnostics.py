@@ -66,12 +66,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         config_sections=(
             "data",
             "views",
-            "sonata_views",
-            "model.recipe",
             "model.diagnostics",
-            "model.sonata_diagnostics",
             "model.training",
-            "model.sonata_training",
             "diagnostics",
         ),
     )
@@ -582,7 +578,6 @@ def main() -> None:
     project_config = load_project_config(cli_args.config, cli_args.overrides)
     data_config = project_config.data
     diagnostics_config = project_config.diagnostics
-    model_recipe = str(project_config.model.get("recipe", "legacy"))
     set_seed(diagnostics_config.seed)
 
     output_root = (
@@ -698,13 +693,11 @@ def main() -> None:
     if device.type == "cuda":
         model = (
             create_training_model(
-                recipe=model_recipe,
                 device=device,
                 **model_factory_kwargs(select_model_config(project_config, "training")),
             )
             if diagnostics_config.get("checkpoint") is not None
             else create_small_model(
-                recipe=model_recipe,
                 device=device,
                 **model_factory_kwargs(
                     select_model_config(project_config, "diagnostics")
