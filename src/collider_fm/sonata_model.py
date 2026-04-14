@@ -675,6 +675,8 @@ class SonataSelfDistillation(nn.Module):
         monitor_masked_fraction = (
             float(global_mask.float().mean().item()) if global_mask.numel() > 0 else 0.0
         )
+        monitor_global_mask = global_mask.detach()
+        monitor_cosine_similarities: torch.Tensor | None = None
 
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             with torch.no_grad():
@@ -694,6 +696,14 @@ class SonataSelfDistillation(nn.Module):
                         global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
+                    # Compute teacher-student cosine similarity on matched
+                    # points for monitoring.  This is cheap (O(M*C)) and
+                    # avoids storing the full matched feature tensors.
+                    monitor_cosine_similarities = F.cosine_similarity(
+                        mask_global_point_.feat[match_index[:, 0]],
+                        global_feat[match_index[:, 1]],
+                        dim=-1,
+                    ).detach()
                     with torch.no_grad():
                         mask_target_sim = self.sinkhorn_knopp(
                             global_point_.feat[match_index[:, 1]],
@@ -816,5 +826,7 @@ class SonataSelfDistillation(nn.Module):
             "student_logits": monitor_logits,
             "point_features": monitor_features,
             "masked_fraction": monitor_masked_fraction,
+            "global_mask": monitor_global_mask,
+            "cosine_similarities": monitor_cosine_similarities,
         }
         return result_dict  # type: ignore[return-value]
