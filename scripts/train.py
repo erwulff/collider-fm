@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import comet_ml
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 from omegaconf import DictConfig
 import torch
 from torch.optim import AdamW
@@ -235,6 +240,138 @@ def embedding_norm(embeddings: torch.Tensor | None) -> float:
     return float(embeddings.norm(dim=-1).mean().item())
 
 
+def fig_to_numpy(fig: plt.Figure) -> np.ndarray:
+    """Render a matplotlib Figure to an HxWx3 uint8 numpy array (RGB)."""
+
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())
+    plt.close(fig)
+    # buffer_rgba returns HxWx4; drop the alpha channel
+    return buf[:, :, :3].copy()
+
+
+def plot_prototype_usage(
+    logits: torch.Tensor, num_prototypes: int, step: int
+) -> np.ndarray:
+    """Create a sorted rank-frequency bar chart of prototype assignments.
+
+    Each point is assigned to its highest-logit prototype.  The bar chart
+    shows how many points fall into each prototype, sorted from most to
+    least occupied.  A log-scale y-axis makes it easy to spot dead
+    prototypes (flat tail at zero) and collapse (single dominant bar).
+    """
+
+    assignments = logits.argmax(dim=-1)
+    counts = torch.bincount(assignments, minlength=num_prototypes).cpu().numpy()
+    sorted_counts = np.sort(counts)[::-1]
+
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.bar(range(len(sorted_counts)), sorted_counts, width=1.0)
+    ax.set_yscale("log")
+    ax.set_xlabel("Prototype rank (sorted by occupancy)")
+    ax.set_ylabel("Number of assigned points")
+    ax.set_title(f"Prototype usage — step {step}")
+    fig.tight_layout()
+    return fig_to_numpy(fig)
+
+
+def plot_cosine_similarity_histogram(
+    cosine_similarities: torch.Tensor, step: int
+) -> np.ndarray:
+    """Histogram of per-point teacher–student cosine similarity.
+
+    Shows how well the student EMA model tracks the teacher on matched
+    point pairs.  A distribution peaked near 1.0 means the student is
+    closely following the teacher; a broad or left-shifted distribution
+    indicates misalignment.
+    """
+
+    sims = cosine_similarities.cpu().numpy()
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.hist(sims, bins=50, range=(-1.0, 1.0), edgecolor="black", linewidth=0.3)
+    ax.set_xlabel("Cosine similarity (teacher vs student)")
+    ax.set_ylabel("Number of matched points")
+    ax.set_title(f"Teacher–student alignment — step {step}")
+    ax.axvline(
+        sims.mean(),
+        color="red",
+        linestyle="--",
+        linewidth=1,
+        label=f"mean={sims.mean():.3f}",
+    )
+    ax.legend()
+    fig.tight_layout()
+    return fig_to_numpy(fig)
+
+
+def plot_views_and_mask(
+    global_origin_coord: torch.Tensor,
+    global_offset: torch.Tensor,
+    global_mask: torch.Tensor,
+    local_origin_coord: torch.Tensor,
+    local_offset: torch.Tensor,
+    step: int,
+) -> np.ndarray:
+    """3D scatter plot of the first event's global view, mask, and local views.
+
+    - Global view points are shown in light grey.
+    - Masked (held-out) points are overlaid in red.
+    - Local view points are shown in blue.
+
+    Uses origin_coord (un-augmented positions) so the plot reflects the
+    true detector geometry.  A fixed viewing angle makes images comparable
+    across steps.
+    """
+
+    # Extract the first event's global and local views
+    g_end = global_offset[0].item()
+    l_end = local_offset[0].item()
+    g_coords = global_origin_coord[:g_end].cpu().numpy()
+    l_coords = local_origin_coord[:l_end].cpu().numpy()
+    g_mask = global_mask[:g_end].cpu().numpy()
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    ax.scatter(
+        g_coords[:, 0],
+        g_coords[:, 1],
+        g_coords[:, 2],
+        c="lightgrey",
+        s=1,
+        alpha=0.3,
+        label="Global view",
+    )
+    if g_mask.any():
+        ax.scatter(
+            g_coords[g_mask, 0],
+            g_coords[g_mask, 1],
+            g_coords[g_mask, 2],
+            c="red",
+            s=2,
+            alpha=0.5,
+            label="Masked",
+        )
+    ax.scatter(
+        l_coords[:, 0],
+        l_coords[:, 1],
+        l_coords[:, 2],
+        c="blue",
+        s=3,
+        alpha=0.6,
+        label="Local views",
+    )
+
+    ax.view_init(elev=20, azim=45)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title(f"Views + mask — step {step}")
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    return fig_to_numpy(fig)
+
+
 def save_checkpoint(
     run_dir: Path,
     model: torch.nn.Module,
@@ -289,6 +426,7 @@ def run_epoch(
     logger: Any = None,
     log_every_n_steps: int | None = None,
     checkpoint_every_n_steps: int | None = None,
+    viz_every_n_steps: int | None = None,
     run_dir: Path | None = None,
     epoch_index: int = 0,
     global_step_offset: int = 0,
@@ -305,6 +443,10 @@ def run_epoch(
 
     When *checkpoint_every_n_steps*, *run_dir*, *optimizer* are all provided,
     a step checkpoint is saved every N training batches.
+
+    When *viz_every_n_steps* and *logger* are provided, diagnostic images
+    (prototype usage histogram, teacher–student cosine similarity, 3D
+    view+mask plot) are logged every N training batches.
     """
 
     is_training = optimizer is not None
@@ -323,6 +465,7 @@ def run_epoch(
     processed_events = 0
     last_logged_step = global_step_offset
     last_checkpoint_step = global_step_offset
+    last_viz_step = global_step_offset
 
     progress_bar = tqdm(
         range(max_batches),
@@ -469,6 +612,7 @@ def run_epoch(
         )
 
         current_absolute_step = global_step_offset + processed_batches
+        just_logged_scalars = False
 
         if (
             is_training
@@ -497,6 +641,7 @@ def run_epoch(
                 running["teacher_momentum"] = float(getattr(model, "momentum", 0.994))
             logger.log_metrics(running, step=current_absolute_step)
             last_logged_step = current_absolute_step
+            just_logged_scalars = True
 
         if (
             is_training
@@ -521,6 +666,51 @@ def run_epoch(
                 f"Saved step checkpoint (step {current_absolute_step}): {checkpoint_path}"
             )
             last_checkpoint_step = current_absolute_step
+
+        # --- Tier 1 & 2: Diagnostic visualizations ---
+        # Tier 1 (cheap) images are produced alongside the scalar log
+        # cadence; Tier 2 (3D view plot) uses the slower viz cadence.
+        should_log_images = is_training and logger is not None and just_logged_scalars
+        should_viz = (
+            is_training
+            and logger is not None
+            and viz_every_n_steps is not None
+            and viz_every_n_steps > 0
+            and current_absolute_step - last_viz_step >= viz_every_n_steps
+        )
+
+        if should_log_images or should_viz:
+            num_protos = int(getattr(model, "num_prototypes", 1))
+            image = plot_prototype_usage(
+                monitor_logits, num_protos, current_absolute_step
+            )
+            logger.log_image("prototype_usage", image, step=current_absolute_step)
+
+            monitor_state = getattr(model, "last_monitoring_state", {})
+            cos_sims = monitor_state.get("cosine_similarities")
+            if cos_sims is not None and cos_sims.numel() > 0:
+                image = plot_cosine_similarity_histogram(
+                    cos_sims, current_absolute_step
+                )
+                logger.log_image("cosine_similarity", image, step=current_absolute_step)
+
+            if should_viz and recipe == "sonata":
+                global_mask = monitor_state.get("global_mask")
+                if (
+                    global_mask is not None
+                    and model_inputs is not None
+                    and "global_origin_coord" in model_inputs
+                ):
+                    image = plot_views_and_mask(
+                        global_origin_coord=model_inputs["global_origin_coord"],
+                        global_offset=model_inputs["global_offset"],
+                        global_mask=global_mask,
+                        local_origin_coord=model_inputs["local_origin_coord"],
+                        local_offset=model_inputs["local_offset"],
+                        step=current_absolute_step,
+                    )
+                    logger.log_image("views_mask", image, step=current_absolute_step)
+                last_viz_step = current_absolute_step
 
     progress_bar.close()
 
@@ -628,6 +818,7 @@ def main() -> None:
     checkpoint_every_n_steps = (
         int(training_config.get("checkpoint_every_n_steps", 0)) or None
     )
+    viz_every_n_steps = int(training_config.get("viz_every_n_steps", 0)) or None
 
     try:
         for epoch in range(training_config.num_epochs):
@@ -667,6 +858,7 @@ def main() -> None:
                 logger=logger,
                 log_every_n_steps=log_every_n_steps,
                 checkpoint_every_n_steps=checkpoint_every_n_steps,
+                viz_every_n_steps=viz_every_n_steps,
                 run_dir=run_dir,
                 epoch_index=epoch,
                 global_step_offset=global_step,
