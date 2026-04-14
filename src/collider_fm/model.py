@@ -521,14 +521,15 @@ def create_small_sonata_model(
 
     resolved_model_kwargs = {
         "in_channels": POINT_FEATURE_DIM,
+        "grid_size": 0.002,
         "head_embed_channels": 64,
         "head_num_prototypes": 32,
         "num_global_view": 2,
         "num_local_view": 4,
-        "mask_size_start": 100.0,
-        "mask_size_base": 750.0,
-        "mask_jitter_base": 50.0,
-        "match_max_r": 20.0,
+        "mask_size_start": 0.02,
+        "mask_size_base": 0.15,
+        "mask_jitter_base": 0.01,
+        "match_max_r": 0.004,
     }
     resolved_model_kwargs.update(model_kwargs)
 
@@ -585,14 +586,15 @@ def create_training_sonata_model(
 
     resolved_model_kwargs = {
         "in_channels": POINT_FEATURE_DIM,
+        "grid_size": 0.002,
         "head_embed_channels": 512,
         "head_num_prototypes": 4096,
         "num_global_view": 2,
         "num_local_view": 4,
-        "mask_size_start": 100.0,
-        "mask_size_base": 750.0,
-        "mask_jitter_base": 50.0,
-        "match_max_r": 20.0,
+        "mask_size_start": 0.02,
+        "mask_size_base": 0.15,
+        "mask_jitter_base": 0.01,
+        "match_max_r": 0.004,
     }
     resolved_model_kwargs.update(model_kwargs)
 

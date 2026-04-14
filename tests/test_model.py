@@ -239,7 +239,7 @@ class ModelTests(unittest.TestCase):
     def test_small_sonata_factory_uses_expected_defaults(self):
         model = create_small_sonata_model()
 
-        self.assertEqual(model.grid_size, DEFAULT_POINT_GRID_SIZE)
+        self.assertEqual(model.grid_size, 0.002)
         self.assertEqual(model.num_prototypes, 32)
         self.assertEqual(model.num_global_view, 2)
         self.assertEqual(model.num_local_view, 4)

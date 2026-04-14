@@ -341,7 +341,7 @@ def run_epoch(
                 events,
                 device=device,
                 max_calo_hits=sonata_view_config.max_calo_hits,
-                grid_size=float(getattr(model, "grid_size", 10.0)),
+                grid_size=float(getattr(model, "grid_size", 0.002)),
                 coord_noise_scale=sonata_view_config.coord_noise_scale,
                 feat_noise_scale=sonata_view_config.energy_jitter_scale,
                 point_dropout=sonata_view_config.point_dropout,
