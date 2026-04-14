@@ -5,10 +5,8 @@ import torch
 from collider_fm.views import (
     DEFAULT_POINT_GRID_SIZE,
     POINT_FEATURE_DIM,
-    apply_patch_mask,
     augment_point_view,
     batch_point_views,
-    build_distillation_views,
     build_point_view_from_event,
     build_sonata_batch,
     crop_point_view,
@@ -59,16 +57,6 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(cropped["coord"].shape[0], 2)
         self.assertTrue(torch.equal(cropped["offset"], torch.tensor([2])))
 
-    def test_apply_patch_mask_marks_at_least_one_patch(self):
-        view = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu"), grid_size=1.0
-        )
-
-        masked = apply_patch_mask(view, mask_fraction=0.5)
-
-        self.assertTrue(masked["mask"].any())
-        self.assertEqual(masked["mask"].dtype, torch.bool)
-
     def test_augment_point_view_preserves_contract(self):
         view = build_point_view_from_event(
             self.make_event(), device=torch.device("cpu")
@@ -79,14 +67,13 @@ class ViewTests(unittest.TestCase):
             coord_noise_scale=0.1,
             feat_noise_scale=0.1,
             crop_keep_ratio=1.0,
-            mask_fraction=0.5,
             point_dropout=0.0,
-            view_kind="student_masked",
+            view_kind="global",
         )
 
         self.assertEqual(augmented["feat"].shape[1], POINT_FEATURE_DIM)
         self.assertTrue(torch.equal(augmented["feat"][:, 3], augmented["total_energy"]))
-        self.assertEqual(augmented["view_kind"], "student_masked")
+        self.assertEqual(augmented["view_kind"], "global")
 
     def test_batch_point_views_builds_cumulative_offsets_and_unique_indices(self):
         first = build_point_view_from_event(
@@ -104,25 +91,6 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(batched["source_index"], torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]))
         )
-
-    def test_build_distillation_views_returns_student_and_teacher_batches(self):
-        batch = build_distillation_views(
-            [self.make_event(), self.make_event()],
-            device=torch.device("cpu"),
-            coord_noise_scale=0.0,
-            feat_noise_scale=0.0,
-            global_crop_ratio=1.0,
-            student_mask_fraction=0.5,
-            point_dropout=0.0,
-        )
-
-        self.assertEqual(len(batch["student_views"]), 2)
-        self.assertEqual(len(batch["teacher_views"]), 2)
-        self.assertTrue(
-            torch.equal(batch["student_views"][0]["offset"], torch.tensor([4, 8]))
-        )
-        self.assertTrue(batch["student_views"][0]["mask"].any())
-        self.assertFalse(batch["teacher_views"][0]["mask"].any())
 
     def test_build_sonata_batch_returns_packed_global_and_local_views(self):
         batch = build_sonata_batch(
