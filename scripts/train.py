@@ -498,7 +498,6 @@ def run_epoch(
         )
 
         current_absolute_step = global_step_offset + processed_batches
-        just_logged_scalars = False
 
         if (
             is_training
@@ -524,7 +523,6 @@ def run_epoch(
             }
             logger.log_metrics(running, step=current_absolute_step)
             last_logged_step = current_absolute_step
-            just_logged_scalars = True
 
         if (
             is_training
@@ -550,7 +548,6 @@ def run_epoch(
             )
             last_checkpoint_step = current_absolute_step
 
-        should_log_images = is_training and logger is not None and just_logged_scalars
         should_viz = (
             is_training
             and logger is not None
@@ -559,7 +556,7 @@ def run_epoch(
             and current_absolute_step - last_viz_step >= viz_every_n_steps
         )
 
-        if should_log_images or should_viz:
+        if should_viz:
             num_protos = int(getattr(model, "num_prototypes", 1))
             image = plot_prototype_usage(
                 monitor_logits, num_protos, current_absolute_step
