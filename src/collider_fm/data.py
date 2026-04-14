@@ -5,13 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-import numpy as np
-import torch
 from datasets import DownloadConfig, load_dataset
 from torch.utils.data import DataLoader, Dataset
 
 DEFAULT_OBJECT_TYPES = ("calo_hits",)
-CALO_ENERGY_KEYS = ("energy", "totalenergy", "total_energy")
+CALO_DATASET_ENERGY_KEY = "total_energy"
+CALO_TORCH_COLUMNS = ("x", "y", "z", CALO_DATASET_ENERGY_KEY)
 TRAIN_SPLIT_START = 0
 TRAIN_SPLIT_STOP = 950000
 VAL_SPLIT_START = 950000
@@ -78,33 +77,26 @@ def resolve_colliderml_split(split: str) -> str:
     return f"train[{absolute_start}:{absolute_stop}]"
 
 
-def _convert_list_value(value: list[Any]) -> Any:
-    """Convert flat numeric lists to tensors while keeping ragged lists intact."""
-
-    if len(value) > 0 and isinstance(value[0], list):
-        return value
-
-    array = np.asarray(value)
-    if array.dtype == object:
-        return value
-    return torch.tensor(array)
-
-
-def _apply_object_aliases(obj_type: str, row: dict[str, Any]) -> dict[str, Any]:
-    """Add stable field aliases used by the rest of the project."""
+def _torch_format_columns_for_object(obj_type: str, dataset: Any) -> Any:
+    """Use HF torch formatting for the flat calo columns we actually consume."""
 
     if obj_type != "calo_hits":
-        return row
+        return dataset
+    if not hasattr(dataset, "column_names") or not hasattr(dataset, "with_format"):
+        return dataset
 
-    energy_key = next((key for key in CALO_ENERGY_KEYS if key in row), None)
-    if energy_key is None:
-        return row
+    available_columns = [
+        column_name
+        for column_name in CALO_TORCH_COLUMNS
+        if column_name in dataset.column_names
+    ]
+    if len(available_columns) != len(CALO_TORCH_COLUMNS):
+        return dataset
 
-    energy_value = row[energy_key]
-    row.setdefault("energy", energy_value)
-    row.setdefault("totalenergy", energy_value)
-    row.setdefault("total_energy", energy_value)
-    return row
+    return dataset.select_columns(available_columns).with_format(
+        "torch",
+        output_all_columns=False,
+    )
 
 
 class ColliderMLDataset(Dataset):
@@ -112,9 +104,8 @@ class ColliderMLDataset(Dataset):
     A PyTorch Dataset for loading ColliderML data from Hugging Face datasets.
     It combines one or more ColliderML object configurations for the same events.
 
-    The current project default is calorimeter hits only. Calorimeter rows receive a
-    canonical `energy` alias so downstream code can use one stable field name while
-    remaining compatible with both `totalenergy` and `total_energy` dataset variants.
+    The current project default is calorimeter hits only. Calorimeter rows keep the
+    raw Hugging Face `total_energy` column and do not add project-specific aliases.
     """
 
     def __init__(
@@ -143,13 +134,16 @@ class ColliderMLDataset(Dataset):
         for obj_type in self.object_types:
             config_name = f"{dataset_type}_{pu_config}_{obj_type}"
             print(f"Loading {config_name}...")
-            self.datasets[obj_type] = load_dataset(
+            dataset = load_dataset(
                 dataset_name,
                 config_name,
                 split=resolved_split,
                 cache_dir=cache_dir,
                 revision=dataset_revision,
                 download_config=DownloadConfig(local_files_only=local_files_only),
+            )
+            self.datasets[obj_type] = _torch_format_columns_for_object(
+                obj_type, dataset
             )
 
         # All datasets should have the same number of rows (events)
@@ -165,20 +159,10 @@ class ColliderMLDataset(Dataset):
         return self.num_events
 
     def __getitem__(self, idx: int) -> dict[str, dict[str, Any]]:
-        event: dict[str, dict[str, Any]] = {}
+        event = {}
+        # TODO: When moving beyond ttbar_pu0 we nay want to interleave datasets
         for obj_type, ds in self.datasets.items():
-            # Get the row (event) from the dataset
-            row = ds[idx]
-
-            # Convert list columns to tensors where appropriate
-            processed_row = {}
-            for key, value in row.items():
-                if isinstance(value, list):
-                    processed_row[key] = _convert_list_value(value)
-                else:
-                    processed_row[key] = value
-
-            event[obj_type] = _apply_object_aliases(obj_type, processed_row)
+            event[obj_type] = dict(ds[idx])
 
         return event
 
@@ -209,7 +193,7 @@ if __name__ == "__main__":
     calo_hits = sample["calo_hits"]
     num_hits = len(calo_hits["x"])
     print(f"\nNumber of calorimeter hits in event 0: {num_hits}")
-    print(f"First 5 calorimeter energies: {calo_hits['energy'][:5]}")
+    print(f"First 5 calorimeter energies: {calo_hits['total_energy'][:5]}")
 
     # Create a DataLoader
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)

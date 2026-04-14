@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Walltime limit
-#SBATCH -t 24:00:00
+#SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p genx
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=1000G
 
 # Job name
@@ -27,4 +27,4 @@ uv run python scripts/download_data.py \
     download.object_types=[calo_hits,tracker_hits,particles] \
     download.pu_config=pu0 \
     download.cache_dir=/mnt/ceph/users/ewulff/data/hf \
-    download.num_proc=8
+    download.num_proc=16

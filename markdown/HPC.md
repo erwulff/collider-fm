@@ -66,10 +66,24 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 
 ### `slurm/train.slurm`
 
-- longer example training job
+- longer example training job (legacy recipe)
 - currently targets 1 GPU on `h100`
 - overrides `training.batch_size=32`, uses `data.local_files_only=true`, and logs to Comet
 - best treated as a starting point rather than the tuned project default, which now lives in `config/default.yaml`
+
+### `slurm/train_sonata_debug.slurm`
+
+- short Sonata debug run
+- 1 GPU on `a100-40gb`
+- 4 epochs, batch_size=4, 200 train / 40 val events
+- useful for validating the Sonata pipeline end-to-end before a longer run
+
+### `slurm/train_sonata.slurm`
+
+- longer Sonata training run
+- 1 GPU on `a100`
+- 20 epochs, batch_size=8, 5k train / 200 val events
+- uses `data.local_files_only=true` and logs to Comet
 
 ## Reproducibility and cache usage
 
@@ -83,12 +97,12 @@ For reproducible training, prefer pinning that revision and using `data.local_fi
 
 ## Node guidance
 
-The checked-in jobs currently split across two hardware patterns:
+The checked-in jobs split across two hardware patterns:
 
-- `slurm/train_small.slurm` and `slurm/train_medium.slurm`: single-GPU `a100-40gb`
+- `slurm/train_small.slurm`, `slurm/train_medium.slurm`, `slurm/train_sonata_debug.slurm`, `slurm/train_sonata.slurm`: single-GPU `a100` or `a100-40gb`
 - setup, smoke-test, and long-train jobs: `h100`
 
-Use those as examples rather than immutable recommendations. Adjust GPU count, CPU count, memory, and node constraints to match your queue and the run you actually want.
+When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).
 
 ## Outputs and logging
 

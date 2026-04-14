@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C a100
-#SBATCH -J train_medium
+#SBATCH -J train_sonata_debug
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
@@ -19,11 +19,13 @@ echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    training.num_epochs=12 \
-    training.batch_size=1 \
-    training.max_train_batches=24 \
-    training.max_val_batches=6 \
-    training.train_split=train[:96] \
-    training.val_split=train[96:120] \
+    model.recipe=sonata \
+    data.local_files_only=true \
+    training.num_epochs=4 \
+    training.batch_size=4 \
+    training.max_train_batches=20 \
+    training.max_val_batches=4 \
+    training.train_split=train[:200] \
+    training.val_split=val[:40] \
     training.log_backend=jsonl \
-    training.run_name=slurm_medium_train
+    training.run_name=sonata_debug

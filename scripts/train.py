@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import comet_ml
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 from omegaconf import DictConfig
 import torch
 from torch.optim import AdamW
@@ -30,14 +35,15 @@ from collider_fm.experiment_logging import (
     ensure_run_directory,
     write_run_config,
 )
-from collider_fm.model import PandaSelfDistillation, create_training_panda_model
+from collider_fm.model import create_training_model
 from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
     model_factory_kwargs,
+    select_model_config,
     to_plain_container,
 )
-from collider_fm.views import build_distillation_views
+from collider_fm.views import build_distillation_views, build_sonata_batch
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -48,9 +54,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/train.py\n"
             "  uv run python scripts/train.py training.batch_size=16 training.num_epochs=10\n"
             "  uv run python scripts/train.py data.local_files_only=true training.log_backend=jsonl\n"
-            "  uv run python scripts/train.py training.run_dir=runs training.run_name=my_run"
+            "  uv run python scripts/train.py training.run_dir=runs training.run_name=my_run\n"
+            "  uv run python scripts/train.py model.recipe=sonata"
         ),
-        config_sections=("data", "views", "model.training", "training"),
+        config_sections=(
+            "data",
+            "views",
+            "sonata_views",
+            "model.recipe",
+            "model.training",
+            "model.sonata_training",
+            "training",
+        ),
     )
 
 
@@ -160,10 +175,13 @@ def learning_rate(optimizer: AdamW) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
-def center_norm(model: PandaSelfDistillation) -> float:
+def center_norm(model: torch.nn.Module) -> float:
     """Return the current norm of the running teacher center."""
 
-    return float(torch.linalg.vector_norm(model.center).item())
+    center = getattr(model, "center", None)
+    if center is None:
+        return 0.0
+    return float(torch.linalg.vector_norm(center).item())
 
 
 def current_teacher_temperature(training_config: DictConfig, epoch_index: int) -> float:
@@ -195,13 +213,10 @@ def current_teacher_momentum(
     )
 
 
-def prototype_usage(
-    outputs: list[dict[str, torch.Tensor]], num_prototypes: int
-) -> torch.Tensor:
+def prototype_usage(logits: torch.Tensor, num_prototypes: int) -> torch.Tensor:
     """Estimate prototype occupancy from the student point assignments."""
 
-    point_logits = torch.cat([output["point_logits"] for output in outputs], dim=0)
-    assignments = point_logits.argmax(dim=-1)
+    assignments = logits.argmax(dim=-1)
     counts = torch.bincount(assignments, minlength=num_prototypes).to(
         dtype=torch.float32
     )
@@ -217,29 +232,164 @@ def prototype_entropy(probabilities: torch.Tensor) -> float:
     return float(entropy.item())
 
 
-def embedding_norm(outputs: list[dict[str, torch.Tensor]]) -> float:
-    """Average norm of the masked pooled student embeddings."""
+def embedding_norm(embeddings: torch.Tensor | None) -> float:
+    """Average norm of the monitored student embeddings."""
 
-    embeddings = torch.cat(
-        [output["masked_pooled_projection"] for output in outputs], dim=0
-    )
+    if embeddings is None or embeddings.numel() == 0:
+        return 0.0
     return float(embeddings.norm(dim=-1).mean().item())
+
+
+def fig_to_numpy(fig: plt.Figure) -> np.ndarray:
+    """Render a matplotlib Figure to an HxWx3 uint8 numpy array (RGB)."""
+
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())
+    plt.close(fig)
+    # buffer_rgba returns HxWx4; drop the alpha channel
+    return buf[:, :, :3].copy()
+
+
+def plot_prototype_usage(
+    logits: torch.Tensor, num_prototypes: int, step: int
+) -> np.ndarray:
+    """Create a sorted rank-frequency bar chart of prototype assignments.
+
+    Each point is assigned to its highest-logit prototype.  The bar chart
+    shows how many points fall into each prototype, sorted from most to
+    least occupied.  A log-scale y-axis makes it easy to spot dead
+    prototypes (flat tail at zero) and collapse (single dominant bar).
+    """
+
+    assignments = logits.argmax(dim=-1)
+    counts = torch.bincount(assignments, minlength=num_prototypes).cpu().numpy()
+    sorted_counts = np.sort(counts)[::-1]
+
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.bar(range(len(sorted_counts)), sorted_counts, width=1.0)
+    ax.set_yscale("log")
+    ax.set_xlabel("Prototype rank (sorted by occupancy)")
+    ax.set_ylabel("Number of assigned points")
+    ax.set_title(f"Prototype usage — step {step}")
+    fig.tight_layout()
+    return fig_to_numpy(fig)
+
+
+def plot_cosine_similarity_histogram(
+    cosine_similarities: torch.Tensor, step: int
+) -> np.ndarray:
+    """Histogram of per-point teacher–student cosine similarity.
+
+    Shows how well the student EMA model tracks the teacher on matched
+    point pairs.  A distribution peaked near 1.0 means the student is
+    closely following the teacher; a broad or left-shifted distribution
+    indicates misalignment.
+    """
+
+    sims = cosine_similarities.cpu().numpy()
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.hist(sims, bins=50, range=(-1.0, 1.0), edgecolor="black", linewidth=0.3)
+    ax.set_xlabel("Cosine similarity (teacher vs student)")
+    ax.set_ylabel("Number of matched points")
+    ax.set_title(f"Teacher–student alignment — step {step}")
+    ax.axvline(
+        sims.mean(),
+        color="red",
+        linestyle="--",
+        linewidth=1,
+        label=f"mean={sims.mean():.3f}",
+    )
+    ax.legend()
+    fig.tight_layout()
+    return fig_to_numpy(fig)
+
+
+def plot_views_and_mask(
+    global_origin_coord: torch.Tensor,
+    global_offset: torch.Tensor,
+    global_mask: torch.Tensor,
+    local_origin_coord: torch.Tensor,
+    local_offset: torch.Tensor,
+    step: int,
+) -> np.ndarray:
+    """3D scatter plot of the first event's global view, mask, and local views.
+
+    - Global view points are shown in light grey.
+    - Masked (held-out) points are overlaid in red.
+    - Local view points are shown in blue.
+
+    Uses origin_coord (un-augmented positions) so the plot reflects the
+    true detector geometry.  A fixed viewing angle makes images comparable
+    across steps.
+    """
+
+    # Extract the first event's global and local views
+    g_end = global_offset[0].item()
+    l_end = local_offset[0].item()
+    g_coords = global_origin_coord[:g_end].cpu().numpy()
+    l_coords = local_origin_coord[:l_end].cpu().numpy()
+    g_mask = global_mask[:g_end].cpu().numpy()
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    ax.scatter(
+        g_coords[:, 0],
+        g_coords[:, 1],
+        g_coords[:, 2],
+        c="lightgrey",
+        s=1,
+        alpha=0.3,
+        label="Global view",
+    )
+    if g_mask.any():
+        ax.scatter(
+            g_coords[g_mask, 0],
+            g_coords[g_mask, 1],
+            g_coords[g_mask, 2],
+            c="red",
+            s=2,
+            alpha=0.5,
+            label="Masked",
+        )
+    ax.scatter(
+        l_coords[:, 0],
+        l_coords[:, 1],
+        l_coords[:, 2],
+        c="blue",
+        s=3,
+        alpha=0.6,
+        label="Local views",
+    )
+
+    ax.view_init(elev=20, azim=45)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title(f"Views + mask — step {step}")
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    return fig_to_numpy(fig)
 
 
 def save_checkpoint(
     run_dir: Path,
-    model: PandaSelfDistillation,
+    model: torch.nn.Module,
     optimizer: AdamW,
     epoch: int,
     global_step: int,
     metrics: dict[str, float],
     is_best: bool = False,
+    step_tag: str | None = None,
 ) -> Path:
     """Write epoch, optimizer, and model state to the run directory."""
 
     checkpoints_dir = run_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
+    if step_tag is not None:
+        checkpoint_path = checkpoints_dir / f"step_{global_step:08d}.pt"
+    else:
+        checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
     payload = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -255,7 +405,7 @@ def save_checkpoint(
 
 
 def run_epoch(
-    model: PandaSelfDistillation,
+    model: torch.nn.Module,
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
@@ -263,6 +413,8 @@ def run_epoch(
     grad_scaler: Any,
     mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
+    recipe: str,
+    sonata_view_config: DictConfig,
     max_calo_hits: int | None,
     coord_noise_scale: float,
     energy_jitter_scale: float,
@@ -271,12 +423,30 @@ def run_epoch(
     point_dropout: float,
     teacher_momentum: float,
     phase: str,
+    logger: Any = None,
+    log_every_n_steps: int | None = None,
+    checkpoint_every_n_steps: int | None = None,
+    viz_every_n_steps: int | None = None,
+    run_dir: Path | None = None,
+    epoch_index: int = 0,
+    global_step_offset: int = 0,
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch over a bounded number of batches.
 
     The function keeps the control flow intentionally explicit: build batched
     teacher/student views, run the model, optionally step the optimizer, then
     accumulate a few simple metrics that are useful for Monday-style sanity plots.
+
+    When *logger* and *log_every_n_steps* are provided, running metrics are
+    emitted every N training batches so that long epochs are visible in
+    comet / jsonl logs without waiting for the epoch to finish.
+
+    When *checkpoint_every_n_steps*, *run_dir*, *optimizer* are all provided,
+    a step checkpoint is saved every N training batches.
+
+    When *viz_every_n_steps* and *logger* are provided, diagnostic images
+    (prototype usage histogram, teacher–student cosine similarity, 3D
+    view+mask plot) are logged every N training batches.
     """
 
     is_training = optimizer is not None
@@ -293,6 +463,9 @@ def run_epoch(
     }
     processed_batches = 0
     processed_events = 0
+    last_logged_step = global_step_offset
+    last_checkpoint_step = global_step_offset
+    last_viz_step = global_step_offset
 
     progress_bar = tqdm(
         range(max_batches),
@@ -314,16 +487,40 @@ def run_epoch(
         data_wait_seconds = time.perf_counter() - data_wait_start
 
         view_start = time.perf_counter()
-        distillation_batch = build_distillation_views(
-            events,
-            device=device,
-            max_calo_hits=max_calo_hits,
-            coord_noise_scale=coord_noise_scale,
-            feat_noise_scale=energy_jitter_scale,
-            global_crop_ratio=global_crop_ratio,
-            student_mask_fraction=student_mask_fraction,
-            point_dropout=point_dropout,
-        )
+        if recipe == "legacy":
+            model_inputs = build_distillation_views(
+                events,
+                device=device,
+                max_calo_hits=max_calo_hits,
+                coord_noise_scale=coord_noise_scale,
+                feat_noise_scale=energy_jitter_scale,
+                global_crop_ratio=global_crop_ratio,
+                student_mask_fraction=student_mask_fraction,
+                point_dropout=point_dropout,
+            )
+        elif recipe == "sonata":
+            model_inputs = build_sonata_batch(
+                events,
+                device=device,
+                max_calo_hits=sonata_view_config.max_calo_hits,
+                grid_size=float(getattr(model, "grid_size", 0.002)),
+                coord_noise_scale=sonata_view_config.coord_noise_scale,
+                feat_noise_scale=sonata_view_config.energy_jitter_scale,
+                point_dropout=sonata_view_config.point_dropout,
+                num_global_views=sonata_view_config.num_global_views,
+                num_local_views=sonata_view_config.num_local_views,
+                global_crop_min_ratio=sonata_view_config.global_crop_min_ratio,
+                global_crop_max_ratio=sonata_view_config.global_crop_max_ratio,
+                local_crop_min_ratio=sonata_view_config.local_crop_min_ratio,
+                local_crop_max_ratio=sonata_view_config.local_crop_max_ratio,
+                coord_center=sonata_view_config.coord_center,
+                coord_scale=sonata_view_config.coord_scale,
+                energy_transform=sonata_view_config.energy_transform,
+                energy_min=sonata_view_config.energy_min,
+                energy_max=sonata_view_config.energy_max,
+            )
+        else:
+            raise ValueError(f"Unsupported model recipe: {recipe}.")
         if device.type == "cuda":
             torch.cuda.synchronize()
         view_build_seconds = time.perf_counter() - view_start
@@ -336,8 +533,37 @@ def run_epoch(
                 dtype=mixed_precision_dtype or torch.float32,
                 enabled=autocast_enabled,
             ):
-                student_outputs, teacher_outputs = model(distillation_batch)
-                loss = model.distillation_loss(student_outputs, teacher_outputs)
+                if recipe == "legacy":
+                    student_outputs, teacher_outputs = model(model_inputs)
+                    loss = model.distillation_loss(student_outputs, teacher_outputs)
+                    monitor_logits = torch.cat(
+                        [output["point_logits"] for output in student_outputs], dim=0
+                    )
+                    monitor_embeddings = torch.cat(
+                        [
+                            output["masked_pooled_projection"]
+                            for output in student_outputs
+                        ],
+                        dim=0,
+                    )
+                    masked_fraction = (
+                        torch.cat(
+                            [output["mask"].float() for output in student_outputs]
+                        )
+                        .mean()
+                        .item()
+                    )
+                else:
+                    if is_training:
+                        model.step_schedules()
+                    else:
+                        pass
+                    result_dict = model(model_inputs)
+                    loss = result_dict["loss"]
+                    monitor_state = getattr(model, "last_monitoring_state", {})
+                    monitor_logits = monitor_state.get("student_logits")
+                    monitor_embeddings = monitor_state.get("point_features")
+                    masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
 
         if is_training:
             optimizer.zero_grad(set_to_none=True)
@@ -350,22 +576,26 @@ def run_epoch(
                 optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
-            model.update_center(teacher_outputs)
-            model.update_teacher(momentum=teacher_momentum)
+            if recipe == "legacy":
+                model.update_center(teacher_outputs)
+                model.update_teacher(momentum=teacher_momentum)
+            else:
+                model.update_teacher(momentum=None)
 
         if device.type == "cuda":
             torch.cuda.synchronize()
         model_step_seconds = time.perf_counter() - model_step_start
 
-        usage = prototype_usage(student_outputs, num_prototypes=model.num_prototypes)
-        masked_fraction = (
-            torch.cat([output["mask"].float() for output in student_outputs])
-            .mean()
-            .item()
+        if monitor_logits is None:
+            monitor_logits = loss.new_zeros(
+                (1, int(getattr(model, "num_prototypes", 1)))
+            )
+        usage = prototype_usage(
+            monitor_logits, num_prototypes=int(getattr(model, "num_prototypes", 1))
         )
         totals["loss"] += float(loss.item())
         totals["prototype_entropy"] += prototype_entropy(usage)
-        totals["embedding_norm"] += embedding_norm(student_outputs)
+        totals["embedding_norm"] += embedding_norm(monitor_embeddings)
         totals["masked_fraction"] += float(masked_fraction)
         totals["data_wait_seconds"] += data_wait_seconds
         totals["view_build_seconds"] += view_build_seconds
@@ -380,6 +610,107 @@ def run_epoch(
             loss=f"{loss.item():.4f}",
             masked=f"{masked_fraction:.3f}",
         )
+
+        current_absolute_step = global_step_offset + processed_batches
+        just_logged_scalars = False
+
+        if (
+            is_training
+            and logger is not None
+            and log_every_n_steps is not None
+            and log_every_n_steps > 0
+            and current_absolute_step - last_logged_step >= log_every_n_steps
+        ):
+            running = {
+                f"{phase}_loss_running": totals["loss"] / processed_batches,
+                f"{phase}_prototype_entropy_running": totals["prototype_entropy"]
+                / processed_batches,
+                f"{phase}_embedding_norm_running": totals["embedding_norm"]
+                / processed_batches,
+                f"{phase}_masked_fraction_running": totals["masked_fraction"]
+                / processed_batches,
+                "learning_rate": learning_rate(optimizer),
+                "epoch": epoch_index + 1,
+            }
+            if recipe == "sonata":
+                running["mask_size"] = float(getattr(model, "mask_size", 0.0))
+                running["mask_ratio"] = float(getattr(model, "mask_ratio", 0.0))
+                running["teacher_temperature"] = float(
+                    getattr(model, "teacher_temp", 0.07)
+                )
+                running["teacher_momentum"] = float(getattr(model, "momentum", 0.994))
+            logger.log_metrics(running, step=current_absolute_step)
+            last_logged_step = current_absolute_step
+            just_logged_scalars = True
+
+        if (
+            is_training
+            and checkpoint_every_n_steps is not None
+            and checkpoint_every_n_steps > 0
+            and run_dir is not None
+            and current_absolute_step - last_checkpoint_step >= checkpoint_every_n_steps
+        ):
+            running_metrics = {
+                key: value / processed_batches for key, value in totals.items()
+            }
+            checkpoint_path = save_checkpoint(
+                run_dir=run_dir,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch_index + 1,
+                global_step=current_absolute_step,
+                metrics=running_metrics,
+                step_tag="step",
+            )
+            print(
+                f"Saved step checkpoint (step {current_absolute_step}): {checkpoint_path}"
+            )
+            last_checkpoint_step = current_absolute_step
+
+        # --- Tier 1 & 2: Diagnostic visualizations ---
+        # Tier 1 (cheap) images are produced alongside the scalar log
+        # cadence; Tier 2 (3D view plot) uses the slower viz cadence.
+        should_log_images = is_training and logger is not None and just_logged_scalars
+        should_viz = (
+            is_training
+            and logger is not None
+            and viz_every_n_steps is not None
+            and viz_every_n_steps > 0
+            and current_absolute_step - last_viz_step >= viz_every_n_steps
+        )
+
+        if should_log_images or should_viz:
+            num_protos = int(getattr(model, "num_prototypes", 1))
+            image = plot_prototype_usage(
+                monitor_logits, num_protos, current_absolute_step
+            )
+            logger.log_image("prototype_usage", image, step=current_absolute_step)
+
+            monitor_state = getattr(model, "last_monitoring_state", {})
+            cos_sims = monitor_state.get("cosine_similarities")
+            if cos_sims is not None and cos_sims.numel() > 0:
+                image = plot_cosine_similarity_histogram(
+                    cos_sims, current_absolute_step
+                )
+                logger.log_image("cosine_similarity", image, step=current_absolute_step)
+
+            if should_viz and recipe == "sonata":
+                global_mask = monitor_state.get("global_mask")
+                if (
+                    global_mask is not None
+                    and model_inputs is not None
+                    and "global_origin_coord" in model_inputs
+                ):
+                    image = plot_views_and_mask(
+                        global_origin_coord=model_inputs["global_origin_coord"],
+                        global_offset=model_inputs["global_offset"],
+                        global_mask=global_mask,
+                        local_origin_coord=model_inputs["local_origin_coord"],
+                        local_offset=model_inputs["local_offset"],
+                        step=current_absolute_step,
+                    )
+                    logger.log_image("views_mask", image, step=current_absolute_step)
+                last_viz_step = current_absolute_step
 
     progress_bar.close()
 
@@ -402,7 +733,9 @@ def main() -> None:
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     training_config = config.training
-    view_config = config.views
+    legacy_view_config = config.views
+    sonata_view_config = config.sonata_views
+    model_recipe = str(config.model.get("recipe", "legacy"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -441,20 +774,27 @@ def main() -> None:
 
     mixed_precision_dtype = resolve_mixed_precision_dtype(training_config, device)
 
-    model = create_training_panda_model(
+    model = create_training_model(
+        recipe=model_recipe,
         device=device,
-        **model_factory_kwargs(config.model.training),
+        **model_factory_kwargs(select_model_config(config, "training")),
     )
-    grad_scaler = torch.amp.GradScaler('cuda',
-        enabled=mixed_precision_dtype is torch.float16
+    if model_recipe == "sonata":
+        model.setup_schedulers(
+            total_steps=max(1, training_config.num_epochs * max_train_batches)
+        )
+    grad_scaler = torch.amp.GradScaler(
+        "cuda", enabled=mixed_precision_dtype is torch.float16
     )
     print(f"Mixed precision: {mixed_precision_name(mixed_precision_dtype)}")
     print(
         f"Flash attention: {model.flash_attention_enabled} ({model.flash_attention_backend})"
     )
+    print(f"Model recipe: {model_recipe}")
     run_config["resolved_mixed_precision"] = mixed_precision_name(mixed_precision_dtype)
     run_config["resolved_flash_attention"] = bool(model.flash_attention_enabled)
     run_config["resolved_flash_attention_backend"] = model.flash_attention_backend
+    run_config["resolved_model_recipe"] = model_recipe
     config_path = write_run_config(run_dir, run_config)
     logger.log_params(run_config)
     print(f"Run config: {config_path}")
@@ -474,6 +814,11 @@ def main() -> None:
     global_step = 0
     best_val_loss = float("inf")
     total_train_steps = max(1, training_config.num_epochs * max_train_batches)
+    log_every_n_steps = int(training_config.get("log_every_n_steps", 500))
+    checkpoint_every_n_steps = (
+        int(training_config.get("checkpoint_every_n_steps", 0)) or None
+    )
+    viz_every_n_steps = int(training_config.get("viz_every_n_steps", 0)) or None
 
     try:
         for epoch in range(training_config.num_epochs):
@@ -483,7 +828,13 @@ def main() -> None:
             train_progress = global_step / total_train_steps
             current_momentum = current_teacher_momentum(training_config, train_progress)
             current_temperature = current_teacher_temperature(training_config, epoch)
-            model.temp_teacher = current_temperature
+            if model_recipe == "legacy":
+                model.temp_teacher = current_temperature
+            else:
+                current_momentum = float(getattr(model, "momentum", current_momentum))
+                current_temperature = float(
+                    getattr(model, "teacher_temp", current_temperature)
+                )
 
             train_metrics, train_batches = run_epoch(
                 model=model,
@@ -494,14 +845,23 @@ def main() -> None:
                 grad_scaler=grad_scaler,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_train_batches,
-                max_calo_hits=view_config.max_calo_hits,
-                coord_noise_scale=view_config.coord_noise_scale,
-                energy_jitter_scale=view_config.energy_jitter_scale,
-                global_crop_ratio=view_config.global_crop_ratio,
-                student_mask_fraction=view_config.student_mask_fraction,
-                point_dropout=view_config.point_dropout,
+                recipe=model_recipe,
+                sonata_view_config=sonata_view_config,
+                max_calo_hits=legacy_view_config.max_calo_hits,
+                coord_noise_scale=legacy_view_config.coord_noise_scale,
+                energy_jitter_scale=legacy_view_config.energy_jitter_scale,
+                global_crop_ratio=legacy_view_config.global_crop_ratio,
+                student_mask_fraction=legacy_view_config.student_mask_fraction,
+                point_dropout=legacy_view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="train",
+                logger=logger,
+                log_every_n_steps=log_every_n_steps,
+                checkpoint_every_n_steps=checkpoint_every_n_steps,
+                viz_every_n_steps=viz_every_n_steps,
+                run_dir=run_dir,
+                epoch_index=epoch,
+                global_step_offset=global_step,
             )
             global_step += train_batches
 
@@ -514,17 +874,24 @@ def main() -> None:
                 grad_scaler=None,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_val_batches,
-                max_calo_hits=view_config.max_calo_hits,
-                coord_noise_scale=view_config.coord_noise_scale,
-                energy_jitter_scale=view_config.energy_jitter_scale,
-                global_crop_ratio=view_config.global_crop_ratio,
-                student_mask_fraction=view_config.student_mask_fraction,
-                point_dropout=view_config.point_dropout,
+                recipe=model_recipe,
+                sonata_view_config=sonata_view_config,
+                max_calo_hits=legacy_view_config.max_calo_hits,
+                coord_noise_scale=legacy_view_config.coord_noise_scale,
+                energy_jitter_scale=legacy_view_config.energy_jitter_scale,
+                global_crop_ratio=legacy_view_config.global_crop_ratio,
+                student_mask_fraction=legacy_view_config.student_mask_fraction,
+                point_dropout=legacy_view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="val",
             )
 
             epoch_time_seconds = time.perf_counter() - epoch_start
+            if model_recipe == "sonata":
+                current_momentum = float(getattr(model, "momentum", current_momentum))
+                current_temperature = float(
+                    getattr(model, "teacher_temp", current_temperature)
+                )
             epoch_metrics = {
                 "epoch": epoch + 1,
                 "global_step": global_step,
@@ -556,17 +923,16 @@ def main() -> None:
             is_best = epoch_metrics["val_loss"] < best_val_loss
             if is_best:
                 best_val_loss = epoch_metrics["val_loss"]
-            if (epoch + 1) % training_config.checkpoint_every_epochs == 0 or is_best:
-                checkpoint_path = save_checkpoint(
-                    run_dir=run_dir,
-                    model=model,
-                    optimizer=optimizer,
-                    epoch=epoch + 1,
-                    global_step=global_step,
-                    metrics=epoch_metrics,
-                    is_best=is_best,
-                )
-                print(f"Saved checkpoint: {checkpoint_path}")
+            checkpoint_path = save_checkpoint(
+                run_dir=run_dir,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch + 1,
+                global_step=global_step,
+                metrics=epoch_metrics,
+                is_best=is_best,
+            )
+            print(f"Saved checkpoint: {checkpoint_path}")
     finally:
         logger.finish()
 

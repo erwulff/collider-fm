@@ -22,7 +22,12 @@ This document collects the detailed runtime contract, configuration notes, and c
   - flash attention disabled by default
   - optional flash backend selection when enabled: `torch` or `flash_attn`
 
-This is a Panda-inspired ColliderML pretraining scaffold, not a paper-faithful Panda reproduction. The current runtime path intentionally stays calo-only.
+Two training recipes are available via `model.recipe`:
+
+- **legacy** (default): Panda-inspired setup with two teacher global views and two masked student global views, point-level prototype matching on shared `source_index`, masked pooled prototype loss, EMA teacher, and running center stabilization.
+- **sonata**: Sonata self-distillation with two global views (teacher + masked student) and four local views (student only), Sinkhorn-Knott prototype assignment, separate mask/unmask heads, cosine schedulers for mask size/ratio/temperature/momentum, and `match_neighbour` alignment via `origin_coord`. Uses log energy transform by default.
+
+This is a ColliderML pretraining scaffold. The Sonata recipe follows the pimm reference architecture adapted for raw-mm coordinate space. The current runtime path intentionally stays calo-only.
 
 ## Config and overrides
 
@@ -36,12 +41,19 @@ uv run python scripts/train.py training.batch_size=8 training.num_epochs=10 trai
 
 Common overrides:
 
+- `model.recipe=legacy|sonata`
 - `training.run_dir` and `training.run_name`
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
 - `training.mixed_precision=none|bf16|fp16`
-- `model.training.backbone.enable_flash=true`
-- `model.training.backbone.flash_backend=torch|flash_attn`
+- `model.sonata_training.backbone.enable_flash=true`
+- `model.sonata_training.backbone.flash_backend=torch|flash_attn`
 - `data.dataset_revision=...` and `data.local_files_only=true`
+
+To train with the Sonata recipe:
+
+```bash
+uv run python scripts/train.py model.recipe=sonata training.num_epochs=20 training.batch_size=8 data.local_files_only=true
+```
 
 If you enable flash attention, start with PyTorch's built-in backend:
 
@@ -109,6 +121,7 @@ Open the walkthrough notebooks:
 ```bash
 uv run jupyter lab notebooks/dataset_walkthrough.ipynb
 uv run jupyter lab notebooks/model_walkthrough.ipynb
+uv run jupyter lab notebooks/sonata_views.ipynb
 ```
 
 For SLURM workflows, see `markdown/HPC.md`.
