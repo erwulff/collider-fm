@@ -167,6 +167,8 @@ training:
   mixed_precision: bf16
   train_shuffle: true
   checkpoint_every_epochs: 1
+  log_every_n_steps: 500
+  checkpoint_every_n_steps: 5000
   log_backend: auto
 
 diagnostics:

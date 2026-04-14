@@ -243,12 +243,16 @@ def save_checkpoint(
     global_step: int,
     metrics: dict[str, float],
     is_best: bool = False,
+    step_tag: str | None = None,
 ) -> Path:
     """Write epoch, optimizer, and model state to the run directory."""
 
     checkpoints_dir = run_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
+    if step_tag is not None:
+        checkpoint_path = checkpoints_dir / f"step_{global_step:08d}.pt"
+    else:
+        checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
     payload = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -282,12 +286,25 @@ def run_epoch(
     point_dropout: float,
     teacher_momentum: float,
     phase: str,
+    logger: Any = None,
+    log_every_n_steps: int | None = None,
+    checkpoint_every_n_steps: int | None = None,
+    run_dir: Path | None = None,
+    epoch_index: int = 0,
+    global_step_offset: int = 0,
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch over a bounded number of batches.
 
     The function keeps the control flow intentionally explicit: build batched
     teacher/student views, run the model, optionally step the optimizer, then
     accumulate a few simple metrics that are useful for Monday-style sanity plots.
+
+    When *logger* and *log_every_n_steps* are provided, running metrics are
+    emitted every N training batches so that long epochs are visible in
+    comet / jsonl logs without waiting for the epoch to finish.
+
+    When *checkpoint_every_n_steps*, *run_dir*, *optimizer* are all provided,
+    a step checkpoint is saved every N training batches.
     """
 
     is_training = optimizer is not None
@@ -304,6 +321,8 @@ def run_epoch(
     }
     processed_batches = 0
     processed_events = 0
+    last_logged_step = global_step_offset
+    last_checkpoint_step = global_step_offset
 
     progress_bar = tqdm(
         range(max_batches),
@@ -449,6 +468,60 @@ def run_epoch(
             masked=f"{masked_fraction:.3f}",
         )
 
+        current_absolute_step = global_step_offset + processed_batches
+
+        if (
+            is_training
+            and logger is not None
+            and log_every_n_steps is not None
+            and log_every_n_steps > 0
+            and current_absolute_step - last_logged_step >= log_every_n_steps
+        ):
+            running = {
+                f"{phase}_loss_running": totals["loss"] / processed_batches,
+                f"{phase}_prototype_entropy_running": totals["prototype_entropy"]
+                / processed_batches,
+                f"{phase}_embedding_norm_running": totals["embedding_norm"]
+                / processed_batches,
+                f"{phase}_masked_fraction_running": totals["masked_fraction"]
+                / processed_batches,
+                "learning_rate": learning_rate(optimizer),
+                "epoch": epoch_index + 1,
+            }
+            if recipe == "sonata":
+                running["mask_size"] = float(getattr(model, "mask_size", 0.0))
+                running["mask_ratio"] = float(getattr(model, "mask_ratio", 0.0))
+                running["teacher_temperature"] = float(
+                    getattr(model, "teacher_temp", 0.07)
+                )
+                running["teacher_momentum"] = float(getattr(model, "momentum", 0.994))
+            logger.log_metrics(running, step=current_absolute_step)
+            last_logged_step = current_absolute_step
+
+        if (
+            is_training
+            and checkpoint_every_n_steps is not None
+            and checkpoint_every_n_steps > 0
+            and run_dir is not None
+            and current_absolute_step - last_checkpoint_step >= checkpoint_every_n_steps
+        ):
+            running_metrics = {
+                key: value / processed_batches for key, value in totals.items()
+            }
+            checkpoint_path = save_checkpoint(
+                run_dir=run_dir,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch_index + 1,
+                global_step=current_absolute_step,
+                metrics=running_metrics,
+                step_tag="step",
+            )
+            print(
+                f"Saved step checkpoint (step {current_absolute_step}): {checkpoint_path}"
+            )
+            last_checkpoint_step = current_absolute_step
+
     progress_bar.close()
 
     if processed_batches == 0:
@@ -551,6 +624,10 @@ def main() -> None:
     global_step = 0
     best_val_loss = float("inf")
     total_train_steps = max(1, training_config.num_epochs * max_train_batches)
+    log_every_n_steps = int(training_config.get("log_every_n_steps", 500))
+    checkpoint_every_n_steps = (
+        int(training_config.get("checkpoint_every_n_steps", 0)) or None
+    )
 
     try:
         for epoch in range(training_config.num_epochs):
@@ -587,6 +664,12 @@ def main() -> None:
                 point_dropout=legacy_view_config.point_dropout,
                 teacher_momentum=current_momentum,
                 phase="train",
+                logger=logger,
+                log_every_n_steps=log_every_n_steps,
+                checkpoint_every_n_steps=checkpoint_every_n_steps,
+                run_dir=run_dir,
+                epoch_index=epoch,
+                global_step_offset=global_step,
             )
             global_step += train_batches
 
@@ -648,17 +731,16 @@ def main() -> None:
             is_best = epoch_metrics["val_loss"] < best_val_loss
             if is_best:
                 best_val_loss = epoch_metrics["val_loss"]
-            if (epoch + 1) % training_config.checkpoint_every_epochs == 0 or is_best:
-                checkpoint_path = save_checkpoint(
-                    run_dir=run_dir,
-                    model=model,
-                    optimizer=optimizer,
-                    epoch=epoch + 1,
-                    global_step=global_step,
-                    metrics=epoch_metrics,
-                    is_best=is_best,
-                )
-                print(f"Saved checkpoint: {checkpoint_path}")
+            checkpoint_path = save_checkpoint(
+                run_dir=run_dir,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch + 1,
+                global_step=global_step,
+                metrics=epoch_metrics,
+                is_best=is_best,
+            )
+            print(f"Saved checkpoint: {checkpoint_path}")
     finally:
         logger.finish()
 
