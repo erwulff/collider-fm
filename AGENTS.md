@@ -29,6 +29,7 @@ This repo currently implements a calo-only Panda-style self-distillation pipelin
 - Leave generated outputs in `runs/` and `diagnostics/` uncommitted unless the user explicitly asks otherwise.
 - Do not touch unrelated submodule changes in `Panda_repo/`.
 - Always think extra hard before making changes.
+- Ask the user before committing changes — let them review first.
 
 ## Cluster notes
 
