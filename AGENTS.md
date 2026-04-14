@@ -4,23 +4,21 @@ Operational guide for coding agents. Prefer current code over stale docs.
 
 ## Architecture
 
-Two self-distillation recipes on ColliderML Release 1 (calo-only, `CERN/ColliderML-Release-1`):
+Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/ColliderML-Release-1`):
 
-| | Legacy (`recipe=legacy`) | Sonata (`recipe=sonata`) |
-|---|---|---|
-| Model | `PandaSelfDistillation` (`model.py`) | `SonataSelfDistillation` (`sonata_model.py`) |
-| Views | `build_distillation_views` (`views.py`) | `build_sonata_batch` (`views.py`) |
-| Heads | Single prototype head + center | Dual `OnlineCluster` heads (mask/unmask) + Sinkhorn-Knopp |
-| Scheduling | Per-epoch teacher temp/momentum | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
-| Monitoring | `last_monitoring_state` | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
+| Component | Implementation |
+|---|---|
+| Model | `SonataSelfDistillation` (`sonata_model.py`) |
+| Views | `build_sonata_batch` (`views.py`) |
+| Heads | Dual `OnlineCluster` heads (mask/unmask) + Sinkhorn-Knopp |
+| Scheduling | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
+| Monitoring | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
 
-**Active recipe**: Sonata. Legacy is maintained but not the focus.
-
-**Backbone** (both recipes): Vendored PTv3 in `src/collider_fm/_panda/` — do not modify.
+**Backbone**: Vendored PTv3 in `src/collider_fm/_panda/` — do not modify.
 
 **Data flow**: `ColliderMLDataset` → `collate_fn` → `build_sonata_batch` → `SonataBatch` → `SonataSelfDistillation.forward()`
 
-**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `sonata_views`, `model.*`, `training`, `diagnostics`.
+**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`.
 
 **Training loop**: `scripts/train.py` — epoch loop with within-epoch logging/checkpointing/viz.
 
@@ -29,7 +27,7 @@ Two self-distillation recipes on ColliderML Release 1 (calo-only, `CERN/Collider
 ## Key files
 
 - `src/collider_fm/sonata_model.py` — Sonata model, schedulers, mask generation, matching
-- `src/collider_fm/model.py` — Factory functions, PandaSelfDistillation
+- `src/collider_fm/model.py` — Factory functions (`create_small_model`, `create_training_model`)
 - `src/collider_fm/views.py` — View construction, augmentation, batching
 - `src/collider_fm/data.py` — Dataset and collate
 - `src/collider_fm/experiment_logging.py` — Null/Jsonl/Comet loggers + `log_image`

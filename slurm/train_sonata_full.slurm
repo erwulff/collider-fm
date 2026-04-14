@@ -18,7 +18,6 @@ echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    model.recipe=sonata \
     data.local_files_only=true \
     training.num_epochs=5 \
     training.batch_size=8 \

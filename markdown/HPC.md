@@ -38,7 +38,7 @@ For a fresh cluster environment:
 ```bash
 sbatch slurm/create_uv_venv.slurm
 sbatch slurm/test_model.slurm
-sbatch slurm/train_small.slurm
+sbatch slurm/train_sonata_debug.slurm
 ```
 
 If you want to prewarm the dataset cache first, either edit `slurm/download.slurm` for `calo_hits` or use `scripts/download_data.py` directly with the desired object types.
@@ -51,38 +51,25 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - currently targets H100 nodes
 - the checked-in resource request is larger than the script strictly needs, so treat it as a cluster-specific example
 
-### `slurm/train_small.slurm`
-
-- short debug run
-- 1 GPU on `a100-40gb`
-- tiny train and validation slices
-- useful for validating trainer, checkpointing, and metric logging quickly
-
-### `slurm/train_medium.slurm`
-
-- medium debug run
-- 1 GPU on `a100-40gb`
-- still intentionally small enough for quick turnaround and curve inspection
-
-### `slurm/train.slurm`
-
-- longer example training job (legacy recipe)
-- currently targets 1 GPU on `h100`
-- overrides `training.batch_size=32`, uses `data.local_files_only=true`, and logs to Comet
-- best treated as a starting point rather than the tuned project default, which now lives in `config/default.yaml`
-
 ### `slurm/train_sonata_debug.slurm`
 
 - short Sonata debug run
-- 1 GPU on `a100-40gb`
+- 1 GPU on `a100`
 - 4 epochs, batch_size=4, 200 train / 40 val events
 - useful for validating the Sonata pipeline end-to-end before a longer run
 
 ### `slurm/train_sonata.slurm`
 
 - longer Sonata training run
-- 1 GPU on `a100`
+- 1 GPU on `a100-80gb`
 - 20 epochs, batch_size=8, 5k train / 200 val events
+- uses `data.local_files_only=true` and logs to Comet
+
+### `slurm/train_sonata_full.slurm`
+
+- full-dataset Sonata run
+- 1 GPU on `a100-80gb`
+- 5 epochs, batch_size=8, full train and val splits
 - uses `data.local_files_only=true` and logs to Comet
 
 ## Reproducibility and cache usage
@@ -99,7 +86,7 @@ For reproducible training, prefer pinning that revision and using `data.local_fi
 
 The checked-in jobs split across two hardware patterns:
 
-- `slurm/train_small.slurm`, `slurm/train_medium.slurm`, `slurm/train_sonata_debug.slurm`, `slurm/train_sonata.slurm`: single-GPU `a100` or `a100-40gb`
+- debug and medium training jobs: single-GPU `a100` or `a100-80gb`
 - setup, smoke-test, and long-train jobs: `h100`
 
 When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).
