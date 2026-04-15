@@ -14,6 +14,12 @@
 
 source slurm/load_env.sh
 
+PREFIX="${1:-}"
+RUN_NAME="${PREFIX:+${PREFIX}_}sonata"
+JOB_NAME="${PREFIX:+${PREFIX}_}sonata"
+
+export SLURM_JOB_NAME="$JOB_NAME"
+
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
@@ -28,4 +34,4 @@ uv run python scripts/train.py \
     training.train_split=train[:5000] \
     training.val_split=val[:200] \
     training.log_backend=comet \
-    training.run_name=sonata_norm_lr
+    training.run_name="$RUN_NAME"
