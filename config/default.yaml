@@ -143,5 +143,4 @@ download:
 
 smoke_test:
   train_split: train[:1]
-  max_calo_hits: 256
   allow_synthetic_fallback: false

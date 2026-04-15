@@ -11,6 +11,8 @@ from PIL import Image
 
 
 class NullLogger:
+    """No-op logger used when all external logging is disabled."""
+
     def log_params(self, params: Mapping[str, Any]) -> None:
         del params
 
@@ -27,6 +29,8 @@ class NullLogger:
 
 
 class JsonlLogger:
+    """Local run logger that writes metrics JSONL and PNG visualizations."""
+
     def __init__(self, run_dir: Path) -> None:
         self.metrics_path = run_dir / "metrics.jsonl"
         self.viz_dir = run_dir / "viz"
@@ -55,6 +59,8 @@ class JsonlLogger:
 
 
 class CometLogger:
+    """Thin adapter over a Comet experiment instance."""
+
     def __init__(self, experiment: Any) -> None:
         self.experiment = experiment
 
@@ -75,6 +81,8 @@ class CometLogger:
 
 
 class CompositeLogger:
+    """Broadcast logging calls to multiple backends."""
+
     def __init__(self, loggers: list[Any]) -> None:
         self.loggers = loggers
 
@@ -112,6 +120,8 @@ def comet_is_configured(
 def resolve_comet_config(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str | None]:
+    """Resolve the minimal Comet settings used by this project."""
+
     env = os.environ if env is None else env
     return {
         "api_key": env.get("COMET_API_KEY") or None,
@@ -159,6 +169,8 @@ def create_experiment_logger(
     experiment_factory: Any | None = None,
     home_dir: Path | None = None,
 ) -> Any:
+    """Create the requested logging backend for a training run."""
+
     if backend not in {"none", "jsonl", "auto", "comet"}:
         raise ValueError(f"Unsupported log backend: {backend}")
 
@@ -204,6 +216,8 @@ def ensure_run_directory(
     suffix = timestamp_suffix()
     if run_dir is not None:
         resolved_run_dir = Path(run_dir)
+        # Keep an explicit output location stable, but still make the logged run name
+        # unique so external trackers and config snapshots do not collide.
         base_run_name = run_name or resolved_run_dir.name
         resolved_run_name = f"{base_run_name}_{suffix}"
     else:

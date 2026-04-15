@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Import Comet before torch so the optional backend can initialize cleanly.
 import comet_ml
 import matplotlib
 
@@ -38,6 +39,7 @@ from collider_fm.project_config import (
     load_project_config,
     model_factory_kwargs,
     select_model_config,
+    sonata_batch_kwargs,
     to_plain_container,
 )
 from collider_fm.views import build_sonata_batch
@@ -251,17 +253,19 @@ def plot_views_and_mask(
     local_offset: torch.Tensor,
     step: int,
 ) -> np.ndarray:
-    """3D scatter plot of the first event's global view, mask, and local views.
+    """3D scatter plot of the first packed global view, mask, and first local view.
 
     - Global view points are shown in light grey.
     - Masked (held-out) points are overlaid in red.
-    - Local view points are shown in blue.
+    - One local view is shown in blue.
 
     Uses origin_coord (un-augmented positions) so the plot reflects the
     true detector geometry.  A fixed viewing angle makes images comparable
     across steps.
     """
 
+    # The packed offsets are [event0_view0, event0_view1, ...], so the first offset in
+    # each tensor gives one concrete view to inspect rather than the whole packed batch.
     g_end = global_offset[0].item()
     l_end = local_offset[0].item()
     g_coords = global_origin_coord[:g_end].cpu().numpy()
@@ -318,13 +322,13 @@ def save_checkpoint(
     global_step: int,
     metrics: dict[str, float],
     is_best: bool = False,
-    step_tag: str | None = None,
+    step_checkpoint: bool = False,
 ) -> Path:
     """Write epoch, optimizer, and model state to the run directory."""
 
     checkpoints_dir = run_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    if step_tag is not None:
+    if step_checkpoint:
         checkpoint_path = checkpoints_dir / f"step_{global_step:08d}.pt"
     else:
         checkpoint_path = checkpoints_dir / f"epoch_{epoch:03d}.pt"
@@ -351,7 +355,7 @@ def run_epoch(
     grad_scaler: Any,
     mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
-    view_config: DictConfig,
+    batch_kwargs: dict[str, Any],
     phase: str,
     logger: Any = None,
     log_every_n_steps: int | None = None,
@@ -409,24 +413,7 @@ def run_epoch(
         model_inputs = build_sonata_batch(
             events,
             device=device,
-            max_calo_hits=view_config.max_calo_hits,
-            grid_size=float(getattr(model, "grid_size", 0.002)),
-            coord_noise_scale=view_config.coord_noise_scale,
-            feat_noise_scale=view_config.energy_jitter_scale,
-            point_dropout=view_config.point_dropout,
-            num_global_views=view_config.num_global_views,
-            num_local_views=view_config.num_local_views,
-            global_crop_min_ratio=view_config.global_crop_min_ratio,
-            global_crop_max_ratio=view_config.global_crop_max_ratio,
-            local_crop_min_ratio=view_config.local_crop_min_ratio,
-            local_crop_max_ratio=view_config.local_crop_max_ratio,
-            coord_center=view_config.coord_center,
-            coord_scale=view_config.coord_scale,
-            energy_transform=view_config.energy_transform,
-            energy_min=view_config.energy_min,
-            energy_max=view_config.energy_max,
-            grid_sample_enabled=bool(view_config.get("grid_sample_enabled", False)),
-            grid_sample_size=float(view_config.get("grid_sample_size", 0.002)),
+            **batch_kwargs,
         )
 
         with torch.set_grad_enabled(is_training):
@@ -524,7 +511,7 @@ def run_epoch(
                 epoch=epoch_index + 1,
                 global_step=current_absolute_step,
                 metrics=running_metrics,
-                step_tag="step",
+                step_checkpoint=True,
             )
             print(
                 f"Saved step checkpoint (step {current_absolute_step}): {checkpoint_path}"
@@ -553,23 +540,18 @@ def run_epoch(
                 )
                 logger.log_image("cosine_similarity", image, step=current_absolute_step)
 
-            if should_viz:
-                global_mask = monitor_state.get("global_mask")
-                if (
-                    global_mask is not None
-                    and model_inputs is not None
-                    and "global_origin_coord" in model_inputs
-                ):
-                    image = plot_views_and_mask(
-                        global_origin_coord=model_inputs["global_origin_coord"],
-                        global_offset=model_inputs["global_offset"],
-                        global_mask=global_mask,
-                        local_origin_coord=model_inputs["local_origin_coord"],
-                        local_offset=model_inputs["local_offset"],
-                        step=current_absolute_step,
-                    )
-                    logger.log_image("views_mask", image, step=current_absolute_step)
-                last_viz_step = current_absolute_step
+            global_mask = monitor_state.get("global_mask")
+            if global_mask is not None and "global_origin_coord" in model_inputs:
+                image = plot_views_and_mask(
+                    global_origin_coord=model_inputs["global_origin_coord"],
+                    global_offset=model_inputs["global_offset"],
+                    global_mask=global_mask,
+                    local_origin_coord=model_inputs["local_origin_coord"],
+                    local_offset=model_inputs["local_offset"],
+                    step=current_absolute_step,
+                )
+                logger.log_image("views_mask", image, step=current_absolute_step)
+            last_viz_step = current_absolute_step
 
     progress_bar.close()
 
@@ -586,7 +568,6 @@ def main() -> None:
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     training_config = config.training
-    view_config = config.views
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -601,6 +582,11 @@ def main() -> None:
         config, training_config.train_split, shuffle=training_config.train_shuffle
     )
     val_loader = create_dataloader(config, training_config.val_split, shuffle=False)
+    batch_kwargs = sonata_batch_kwargs(
+        config,
+        "training",
+        max_calo_hits=config.views.max_calo_hits,
+    )
     max_train_batches = resolve_epoch_batch_limit(
         train_loader, training_config.max_train_batches, "train"
     )
@@ -682,7 +668,7 @@ def main() -> None:
                 grad_scaler=grad_scaler,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_train_batches,
-                view_config=view_config,
+                batch_kwargs=batch_kwargs,
                 phase="train",
                 logger=logger,
                 log_every_n_steps=log_every_n_steps,
@@ -703,7 +689,7 @@ def main() -> None:
                 grad_scaler=None,
                 mixed_precision_dtype=mixed_precision_dtype,
                 max_batches=max_val_batches,
-                view_config=view_config,
+                batch_kwargs=batch_kwargs,
                 phase="val",
             )
 

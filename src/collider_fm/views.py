@@ -73,7 +73,9 @@ def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
     Points are quantized onto a regular grid with spacing *grid_size*.  When
     multiple points fall into the same voxel, one is selected at random.  The
     returned index tensor can be used to index into coord and any per-point
-    tensors (energy, source_index, etc.).
+    tensors (energy, source_index, etc.).  This uses a small NumPy/CPU path to
+    match the reference-style voxel hashing code and only returns the chosen
+    indices to the original device.
     """
     if coord.numel() == 0:
         return torch.arange(0, device=coord.device, dtype=torch.long)
@@ -318,6 +320,8 @@ def build_point_view_from_event(
         gs_indices = grid_sample(coord, grid_size=grid_sample_size)
         coord = coord[gs_indices]
         total_energy = total_energy[gs_indices]
+        # Keep the original hit indices after subsampling so masking/matching can
+        # still refer back to the underlying event layout.
         source_index = source_index[gs_indices]
 
     return validate_point_view(
