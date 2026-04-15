@@ -48,8 +48,8 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 ### `slurm/test_model.slurm`
 
 - runs `scripts/smoke_test_model.py`
-- currently targets H100 nodes
-- the checked-in resource request is larger than the script strictly needs, so treat it as a cluster-specific example
+- 1 GPU on `a100-80gb`
+- uses the shared `slurm/load_env.sh` bootstrap
 
 ### `slurm/train_sonata_debug.slurm`
 
@@ -57,6 +57,7 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - 1 GPU on `a100`
 - 4 epochs, batch_size=4, 200 train / 40 val events
 - useful for validating the Sonata pipeline end-to-end before a longer run
+- optional positional prefix: `sbatch slurm/train_sonata_debug.slurm test_x` -> `test_x_sonata_debug`
 
 ### `slurm/train_sonata.slurm`
 
@@ -64,6 +65,7 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - 1 GPU on `a100-80gb`
 - 20 epochs, batch_size=8, 5k train / 200 val events
 - uses `data.local_files_only=true` and logs to Comet
+- optional positional prefix: `sbatch slurm/train_sonata.slurm test_x` -> `test_x_sonata`
 
 ### `slurm/train_sonata_full.slurm`
 
@@ -71,6 +73,7 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - 1 GPU on `a100-80gb`
 - 5 epochs, batch_size=8, full train and val splits
 - uses `data.local_files_only=true` and logs to Comet
+- optional positional prefix: `sbatch slurm/train_sonata_full.slurm test_x` -> `test_x_sonata_full`
 
 ## Reproducibility and cache usage
 
@@ -84,10 +87,10 @@ For reproducible training, prefer pinning that revision and using `data.local_fi
 
 ## Node guidance
 
-The checked-in jobs split across two hardware patterns:
+The checked-in jobs currently use these hardware patterns:
 
-- debug and medium training jobs: single-GPU `a100` or `a100-80gb`
-- setup, smoke-test, and long-train jobs: `h100`
+- smoke test and training jobs: single-GPU `a100` or `a100-80gb`
+- environment bootstrap jobs: `h100`
 
 When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).
 

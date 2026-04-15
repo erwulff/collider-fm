@@ -78,7 +78,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 |---|---|
 | Model | `SonataSelfDistillation` (`sonata_model.py`) |
 | Views | `build_sonata_batch` (`views.py`) |
-| Heads | Dual `OnlineCluster` heads (mask/unmask) + Sinkhorn-Knopp; teacher uses unified mask_head for both branches |
+| Heads | Dual `OnlineCluster` student heads (mask/unmask) + Sinkhorn-Knopp; teacher uses unified mask_head for both branches |
 | Scheduling | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
 | Monitoring | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
 

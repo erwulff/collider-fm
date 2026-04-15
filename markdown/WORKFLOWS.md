@@ -13,15 +13,17 @@ This document collects the detailed runtime contract, configuration notes, and c
   - bounded slices like `val[:100]` stay inside the validation window
 - current training recipe: Sonata self-distillation
   - two global views (teacher + masked student) and four local views (student only)
-  - Sinkhorn-Knott prototype assignment
-  - separate mask/unmask heads
+  - Sinkhorn-Knopp prototype assignment
+  - separate student mask/unmask heads with a unified teacher mask head during training
   - cosine schedulers for mask size, mask ratio, temperature, and EMA momentum
   - `match_neighbour` alignment via `origin_coord`
 - current training defaults:
   - `training.batch_size=8`
   - `training.mixed_precision=bf16`
-  - flash attention disabled by default
-  - optional flash backend selection when enabled: `torch` or `flash_attn`
+  - flash attention enabled by default via `flash_attn`
+  - `views.grid_sample_enabled=true`, `views.grid_sample_size=0.002`
+  - `model.training.up_cast_level=2`
+  - `model.training.head_embed_channels=256`
 
 ## Config and overrides
 
@@ -39,7 +41,6 @@ Common overrides:
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
-- `model.training.backbone.flash_backend=torch|flash_attn`
 - `data.dataset_revision=...` and `data.local_files_only=true`
 
 To start a training run:
@@ -48,10 +49,10 @@ To start a training run:
 uv run python scripts/train.py training.num_epochs=20 training.batch_size=8 data.local_files_only=true
 ```
 
-If you enable flash attention, start with PyTorch's built-in backend:
+To disable flash attention for comparison:
 
 ```bash
-uv run python scripts/train.py model.training.backbone.enable_flash=true model.training.backbone.flash_backend=torch
+uv run python scripts/train.py model.training.backbone.enable_flash=false
 ```
 
 ## Data and caching
