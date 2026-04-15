@@ -127,6 +127,24 @@ def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
     }
 
 
+def diagnostic_view_kwargs(project_config: Any) -> dict[str, Any]:
+    """Reuse the same point-view transform as training/diagnostics configs."""
+
+    view_config = project_config.views
+    model_config = select_model_config(project_config, "diagnostics")
+    return {
+        "max_calo_hits": project_config.diagnostics.max_calo_hits,
+        "grid_size": float(model_config.grid_size),
+        "coord_center": view_config.coord_center,
+        "coord_scale": view_config.coord_scale,
+        "energy_transform": view_config.energy_transform,
+        "energy_min": view_config.energy_min,
+        "energy_max": view_config.energy_max,
+        "grid_sample_enabled": bool(view_config.get("grid_sample_enabled", False)),
+        "grid_sample_size": float(view_config.get("grid_sample_size", 0.002)),
+    }
+
+
 def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
     calo_hits = event["calo_hits"]
     coord = np.stack(
@@ -615,9 +633,9 @@ def main() -> None:
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
-    base_view = build_point_view_from_event(
-        detail_event, device=device, max_calo_hits=diagnostics_config.max_calo_hits
-    )
+    view_kwargs = diagnostic_view_kwargs(project_config)
+
+    base_view = build_point_view_from_event(detail_event, device=device, **view_kwargs)
     aug_a = augment_point_view(normalize_tensor_view(base_view))
     aug_b = augment_point_view(normalize_tensor_view(base_view))
 
@@ -635,11 +653,7 @@ def main() -> None:
     )
 
     representation_views = [
-        build_point_view_from_event(
-            event,
-            device=device,
-            max_calo_hits=diagnostics_config.max_calo_hits,
-        )
+        build_point_view_from_event(event, device=device, **view_kwargs)
         for event in representation_events
     ]
     normalized_base_view = normalize_tensor_view(base_view)

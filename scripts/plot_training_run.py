@@ -206,22 +206,19 @@ def plot_representation_curves(
 def plot_optimization_curves(
     records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
 ) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     plot_metric_single(
-        axes[0, 0], records, "Learning Rate", "learning_rate", best_epoch_index
+        axes[0], records, "Learning Rate", "learning_rate", best_epoch_index
     )
     plot_metric_single(
-        axes[0, 1], records, "Teacher Momentum", "teacher_momentum", best_epoch_index
+        axes[1], records, "Teacher Momentum", "teacher_momentum", best_epoch_index
     )
     plot_metric_single(
-        axes[1, 0],
+        axes[2],
         records,
         "Teacher Temperature",
         "teacher_temperature",
         best_epoch_index,
-    )
-    plot_metric_single(
-        axes[1, 1], records, "Center Norm", "center_norm", best_epoch_index
     )
     fig.suptitle("Optimization And Teacher Schedules")
     save_figure(fig, path)
@@ -255,8 +252,13 @@ def plot_run_health(
         "val_embedding_norm",
         best_epoch_index,
     )
-    plot_metric_single(
-        axes[1, 1], records, "Epoch Time [s]", "epoch_time_seconds", best_epoch_index
+    plot_gap_series(
+        axes[1, 1],
+        records,
+        "Masked Fraction Gap",
+        "train_masked_fraction",
+        "val_masked_fraction",
+        best_epoch_index,
     )
     fig.suptitle("Run Health")
     save_figure(fig, path)
@@ -290,7 +292,7 @@ def summarize_run(
         "run_dir": str(run_dir),
         "output_dir": str(output_dir),
         "num_metric_records": len(records),
-        "configured_num_epochs": config.get("num_epochs"),
+        "configured_num_epochs": config.get("training", {}).get("num_epochs"),
         "best_epoch": best_epoch_index,
         "best_val_loss": best_record.get("val_loss"),
         "final_epoch": final_record.get("epoch"),
@@ -300,9 +302,6 @@ def summarize_run(
         "final_val_prototype_entropy": final_record.get("val_prototype_entropy"),
         "final_train_embedding_norm": final_record.get("train_embedding_norm"),
         "final_val_embedding_norm": final_record.get("val_embedding_norm"),
-        "total_epoch_time_seconds": sum(
-            float(record.get("epoch_time_seconds", 0.0)) for record in records
-        ),
         "checkpoint_files": checkpoint_files,
     }
 
@@ -319,7 +318,6 @@ def write_summary(path: Path, summary: dict[str, Any]) -> None:
         f"Final epoch: {summary['final_epoch']}",
         f"Final train_loss: {summary['final_train_loss']}",
         f"Final val_loss: {summary['final_val_loss']}",
-        f"Total recorded epoch time [s]: {summary['total_epoch_time_seconds']:.2f}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
