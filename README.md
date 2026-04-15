@@ -11,7 +11,7 @@ The project uses a shared OmegaConf config in `config/default.yaml`. Runtime scr
 - `src/collider_fm/model.py` contains the current point-level student-teacher training scaffold
 - `scripts/train.py` runs training with checkpointing, JSONL metrics, optional Comet logging, and mixed precision
 - `scripts/plot_diagnostics.py` and `scripts/plot_training_run.py` cover diagnostics and completed-run plotting
-- `notebooks/dataset_walkthrough.ipynb` and `notebooks/model_walkthrough.ipynb` explain the data and training path
+- `notebooks/dataset_walkthrough.ipynb`, `notebooks/sonata_views.ipynb`, and `notebooks/model_walkthrough.ipynb` explain the data and training path
 
 ## Repository layout
 

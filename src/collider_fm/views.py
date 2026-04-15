@@ -10,6 +10,7 @@ make masking, batching, and teacher/student alignment easy to follow.
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict, cast
 
+import numpy as np
 import torch
 
 DEFAULT_POINT_GRID_SIZE = 10.0
@@ -27,14 +28,6 @@ class PointView(TypedDict):
     patch_id: torch.Tensor
     mask: torch.Tensor
     view_kind: str
-
-
-class DistillationBatch(TypedDict):
-    """Batched views consumed by the student/teacher training loop."""
-
-    teacher_views: list[PointView]
-    student_views: list[PointView]
-    base_views: list[PointView]
 
 
 class SonataBatch(TypedDict):
@@ -63,6 +56,43 @@ def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Ten
     stride_y = base[2].clamp_min(1)
     stride_x = (base[1] * stride_y).clamp_min(1)
     return grid_coord[:, 0] * stride_x + grid_coord[:, 1] * stride_y + grid_coord[:, 2]
+
+
+def _fnv_hash_vec(arr: np.ndarray) -> np.ndarray:
+    arr = arr.astype(np.uint64, copy=True)
+    hashed = np.full(arr.shape[0], np.uint64(14695981039346656037))
+    for j in range(arr.shape[1]):
+        hashed *= np.uint64(1099511628211)
+        hashed = np.bitwise_xor(hashed, arr[:, j])
+    return hashed
+
+
+def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
+    """Return indices of one representative point per voxel (train-mode random pick).
+
+    Points are quantized onto a regular grid with spacing *grid_size*.  When
+    multiple points fall into the same voxel, one is selected at random.  The
+    returned index tensor can be used to index into coord and any per-point
+    tensors (energy, source_index, etc.).
+    """
+    if coord.numel() == 0:
+        return torch.arange(0, device=coord.device, dtype=torch.long)
+
+    scaled = coord.cpu().numpy() / np.array(grid_size)
+    grid_coord = np.floor(scaled).astype(np.int64)
+    grid_coord -= grid_coord.min(axis=0)
+
+    key = _fnv_hash_vec(grid_coord)
+    idx_sort = np.argsort(key)
+    key_sort = key[idx_sort]
+    _, _, count = np.unique(key_sort, return_inverse=True, return_counts=True)
+
+    idx_select = (
+        np.cumsum(np.insert(count, 0, 0)[:-1])
+        + np.random.randint(0, int(count.max()), count.size) % count
+    )
+    idx_unique = idx_sort[idx_select]
+    return torch.from_numpy(idx_unique).to(device=coord.device, dtype=torch.long)
 
 
 def assemble_point_features(
@@ -239,6 +269,8 @@ def build_point_view_from_event(
     energy_transform: str = "raw",
     energy_min: float = 1.0e-2,
     energy_max: float = 20.0,
+    grid_sample_enabled: bool = True,
+    grid_sample_size: float = 0.002,
 ) -> PointView:
     """Convert one raw ColliderML event into a single point view.
 
@@ -281,6 +313,12 @@ def build_point_view_from_event(
     )
     source_index = torch.as_tensor(calo_indices, dtype=torch.long, device=device)
     grid_size_tensor = torch.tensor(grid_size, dtype=torch.float32, device=device)
+
+    if grid_sample_enabled:
+        gs_indices = grid_sample(coord, grid_size=grid_sample_size)
+        coord = coord[gs_indices]
+        total_energy = total_energy[gs_indices]
+        source_index = source_index[gs_indices]
 
     return validate_point_view(
         {
@@ -344,37 +382,6 @@ def crop_point_view(view: Mapping[str, Any], keep_ratio: float) -> PointView:
     )
 
 
-def apply_patch_mask(view: Mapping[str, Any], mask_fraction: float) -> PointView:
-    """Mask whole coarse patches so the student sees incomplete events."""
-    base_view = validate_point_view(view)
-    if mask_fraction <= 0.0:
-        return base_view
-
-    unique_patches = torch.unique(base_view["patch_id"])
-    if unique_patches.numel() == 0:
-        return base_view
-
-    num_masked_patches = max(1, int(round(unique_patches.numel() * mask_fraction)))
-    permutation = torch.randperm(
-        unique_patches.numel(), device=base_view["coord"].device
-    )
-    masked_patch_ids = unique_patches[permutation[:num_masked_patches]]
-    mask = torch.isin(base_view["patch_id"], masked_patch_ids)
-
-    masked_view: PointView = {
-        "coord": base_view["coord"],
-        "feat": assemble_point_features(base_view["coord"], base_view["total_energy"]),
-        "offset": base_view["offset"],
-        "grid_size": base_view["grid_size"],
-        "source_index": base_view["source_index"],
-        "total_energy": base_view["total_energy"],
-        "patch_id": base_view["patch_id"],
-        "mask": mask,
-        "view_kind": base_view["view_kind"],
-    }
-    return validate_point_view(masked_view)
-
-
 def augment_point_view(
     view: Mapping[str, Any],
     coord_noise_scale: float = 0.5,
@@ -382,7 +389,6 @@ def augment_point_view(
     phi_rotation_max: float = 0.25,
     point_dropout: float = 0.0,
     crop_keep_ratio: float = 1.0,
-    mask_fraction: float = 0.0,
     view_kind: str = "augmented",
 ) -> PointView:
     """Create a simple collider-safe augmentation of one point view.
@@ -393,7 +399,8 @@ def augment_point_view(
     - coordinate jitter
     - multiplicative energy jitter
     - random point dropout
-    - coarse patch masking
+
+    Masking is handled by the Sonata model during forward(), not here.
     """
     working_view = crop_point_view(view, keep_ratio=crop_keep_ratio)
     coord = working_view["coord"].clone()
@@ -426,7 +433,7 @@ def augment_point_view(
         source_index = source_index[keep_mask]
         patch_id = patch_id[keep_mask]
 
-    masked_view = validate_point_view(
+    return validate_point_view(
         {
             "coord": coord,
             "origin_coord": origin_coord,
@@ -442,9 +449,6 @@ def augment_point_view(
             "view_kind": view_kind,
         }
     )
-    remasked_view = apply_patch_mask(masked_view, mask_fraction=mask_fraction)
-    remasked_view["view_kind"] = view_kind
-    return remasked_view
 
 
 def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
@@ -501,100 +505,6 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     )
 
 
-def _batch_augmented_views(
-    base_views: Sequence[PointView],
-    *,
-    coord_noise_scale: float,
-    feat_noise_scale: float,
-    global_crop_ratio: float,
-    point_dropout: float,
-    mask_fraction: float,
-    view_kind: str,
-) -> PointView:
-    """Apply one augmentation recipe to each event and batch the result."""
-
-    return batch_point_views(
-        [
-            augment_point_view(
-                view,
-                coord_noise_scale=coord_noise_scale,
-                feat_noise_scale=feat_noise_scale,
-                crop_keep_ratio=global_crop_ratio,
-                point_dropout=point_dropout,
-                mask_fraction=mask_fraction,
-                view_kind=view_kind,
-            )
-            for view in base_views
-        ]
-    )
-
-
-def build_distillation_views(
-    events: Sequence[Mapping[str, Any]],
-    device: torch.device,
-    max_calo_hits: int | None = None,
-    coord_noise_scale: float = 0.5,
-    feat_noise_scale: float = 0.01,
-    global_crop_ratio: float = 0.9,
-    student_mask_fraction: float = 0.4,
-    point_dropout: float = 0.05,
-) -> DistillationBatch:
-    """Build a small, easy-to-read masked-global SSL batch.
-
-    The returned dictionary contains two teacher global views and two student global
-    views. Student views share the same event content but have extra patch masking.
-    This is intentionally simpler than full Panda, but it is enough to train and
-    diagnose a first point-level student-teacher pipeline.
-    """
-    base_views = [
-        build_point_view_from_event(event, device=device, max_calo_hits=max_calo_hits)
-        for event in events
-    ]
-
-    teacher_view_a = _batch_augmented_views(
-        base_views,
-        coord_noise_scale=coord_noise_scale,
-        feat_noise_scale=feat_noise_scale,
-        global_crop_ratio=global_crop_ratio,
-        point_dropout=point_dropout,
-        mask_fraction=0.0,
-        view_kind="teacher_global_a",
-    )
-    teacher_view_b = _batch_augmented_views(
-        base_views,
-        coord_noise_scale=coord_noise_scale,
-        feat_noise_scale=feat_noise_scale,
-        global_crop_ratio=global_crop_ratio,
-        point_dropout=point_dropout,
-        mask_fraction=0.0,
-        view_kind="teacher_global_b",
-    )
-    student_view_a = _batch_augmented_views(
-        base_views,
-        coord_noise_scale=coord_noise_scale,
-        feat_noise_scale=feat_noise_scale,
-        global_crop_ratio=global_crop_ratio,
-        point_dropout=point_dropout,
-        mask_fraction=student_mask_fraction,
-        view_kind="student_masked_a",
-    )
-    student_view_b = _batch_augmented_views(
-        base_views,
-        coord_noise_scale=coord_noise_scale,
-        feat_noise_scale=feat_noise_scale,
-        global_crop_ratio=global_crop_ratio,
-        point_dropout=point_dropout,
-        mask_fraction=student_mask_fraction,
-        view_kind="student_masked_b",
-    )
-
-    return {
-        "teacher_views": [teacher_view_a, teacher_view_b],
-        "student_views": [student_view_a, student_view_b],
-        "base_views": base_views,
-    }
-
-
 def _sample_crop_keep_ratio(
     min_ratio: float, max_ratio: float, device: torch.device
 ) -> float:
@@ -627,6 +537,8 @@ def build_sonata_batch(
     energy_transform: str = "raw",
     energy_min: float = 1.0e-2,
     energy_max: float = 20.0,
+    grid_sample_enabled: bool = True,
+    grid_sample_size: float = 0.002,
 ) -> SonataBatch:
     """Build the packed global/local multiview batch expected by Sonata."""
 
@@ -643,6 +555,8 @@ def build_sonata_batch(
             energy_transform=energy_transform,
             energy_min=energy_min,
             energy_max=energy_max,
+            grid_sample_enabled=grid_sample_enabled,
+            grid_sample_size=grid_sample_size,
         )
 
         for view_index in range(num_global_views):
@@ -656,7 +570,6 @@ def build_sonata_batch(
                     feat_noise_scale=feat_noise_scale,
                     crop_keep_ratio=keep_ratio,
                     point_dropout=point_dropout,
-                    mask_fraction=0.0,
                     view_kind=f"sonata_global_{view_index}",
                 )
             )
@@ -672,7 +585,6 @@ def build_sonata_batch(
                     feat_noise_scale=feat_noise_scale,
                     crop_keep_ratio=keep_ratio,
                     point_dropout=point_dropout,
-                    mask_fraction=0.0,
                     view_kind=f"sonata_local_{view_index}",
                 )
             )
@@ -690,31 +602,3 @@ def build_sonata_batch(
         "local_offset": local_batch["offset"],
         "grid_size": torch.tensor([grid_size], dtype=torch.float32, device=device),
     }
-
-
-def make_random_view(
-    num_points: int, in_channels: int, device: torch.device
-) -> PointView:
-    """Generate a synthetic calorimeter point view for quick smoke tests."""
-    if in_channels != POINT_FEATURE_DIM:
-        raise ValueError(
-            f"Random views in this project require {POINT_FEATURE_DIM} input channels."
-        )
-
-    coord = torch.rand(num_points, 3, device=device)
-    total_energy = torch.rand(num_points, device=device)
-    grid_size = torch.tensor(DEFAULT_POINT_GRID_SIZE, device=device)
-    return validate_point_view(
-        {
-            "coord": coord,
-            "origin_coord": coord.clone(),
-            "feat": assemble_point_features(coord, total_energy),
-            "offset": torch.tensor([num_points], dtype=torch.long, device=device),
-            "grid_size": grid_size,
-            "source_index": _default_source_index(num_points, device),
-            "total_energy": total_energy,
-            "patch_id": _default_patch_id(coord, grid_size),
-            "mask": torch.zeros(num_points, dtype=torch.bool, device=device),
-            "view_kind": "random",
-        }
-    )

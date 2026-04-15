@@ -11,23 +11,19 @@ This document collects the detailed runtime contract, configuration notes, and c
   - `train` means `train[:950000]`
   - `val` means `train[950000:1000000]`
   - bounded slices like `val[:100]` stay inside the validation window
-- current training recipe:
-  - two teacher global views
-  - two masked student global views
-  - point-level prototype matching on shared `source_index`
-  - masked pooled prototype loss per event
+- current training recipe: Sonata self-distillation
+  - two global views (teacher + masked student) and four local views (student only)
+  - Sinkhorn-Knopp prototype assignment
+  - separate student mask/unmask heads with a unified teacher mask head during training
+  - cosine schedulers for mask size, mask ratio, temperature, and EMA momentum
+  - `match_neighbour` alignment via `origin_coord`
 - current training defaults:
   - `training.batch_size=8`
   - `training.mixed_precision=bf16`
-  - flash attention disabled by default
-  - optional flash backend selection when enabled: `torch` or `flash_attn`
-
-Two training recipes are available via `model.recipe`:
-
-- **legacy** (default): Panda-inspired setup with two teacher global views and two masked student global views, point-level prototype matching on shared `source_index`, masked pooled prototype loss, EMA teacher, and running center stabilization.
-- **sonata**: Sonata self-distillation with two global views (teacher + masked student) and four local views (student only), Sinkhorn-Knott prototype assignment, separate mask/unmask heads, cosine schedulers for mask size/ratio/temperature/momentum, and `match_neighbour` alignment via `origin_coord`. Uses log energy transform by default.
-
-This is a ColliderML pretraining scaffold. The Sonata recipe follows the pimm reference architecture adapted for raw-mm coordinate space. The current runtime path intentionally stays calo-only.
+  - flash attention enabled by default via `flash_attn`
+  - `views.grid_sample_enabled=true`, `views.grid_sample_size=0.002`
+  - `model.training.up_cast_level=2`
+  - `model.training.head_embed_channels=256`
 
 ## Config and overrides
 
@@ -41,24 +37,22 @@ uv run python scripts/train.py training.batch_size=8 training.num_epochs=10 trai
 
 Common overrides:
 
-- `model.recipe=legacy|sonata`
 - `training.run_dir` and `training.run_name`
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
 - `training.mixed_precision=none|bf16|fp16`
-- `model.sonata_training.backbone.enable_flash=true`
-- `model.sonata_training.backbone.flash_backend=torch|flash_attn`
+- `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
 
-To train with the Sonata recipe:
+To start a training run:
 
 ```bash
-uv run python scripts/train.py model.recipe=sonata training.num_epochs=20 training.batch_size=8 data.local_files_only=true
+uv run python scripts/train.py training.num_epochs=20 training.batch_size=8 data.local_files_only=true
 ```
 
-If you enable flash attention, start with PyTorch's built-in backend:
+To disable flash attention for comparison:
 
 ```bash
-uv run python scripts/train.py model.training.backbone.enable_flash=true model.training.backbone.flash_backend=torch
+uv run python scripts/train.py model.training.backbone.enable_flash=false
 ```
 
 ## Data and caching

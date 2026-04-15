@@ -7,18 +7,15 @@ This document tracks the near-term roadmap for the current calo-only training pi
 - ColliderML Release 1 loading through Hugging Face `datasets`
 - calo-only runtime path with point features `[x, y, z, energy]`
 - point-view batching with masking, patch ids, and `source_index` alignment
-- Two training recipes selectable via `model.recipe`:
-  - **legacy**: Panda-inspired PTv3 student-teacher with point-level prototype matching, masked pooled loss, EMA teacher, and running center stabilization
-  - **sonata**: Sonata self-distillation with global/local view crops, Sinkhorn-Knott prototype assignment, separate mask/unmask heads, cosine schedulers for mask size, mask ratio, teacher temperature, and EMA momentum, and `match_neighbour` alignment via `origin_coord`
+- Sonata self-distillation recipe with global/local view crops, Sinkhorn-Knopp prototype assignment, separate student mask/unmask heads, a unified teacher mask head during training, cosine schedulers for mask size, mask ratio, teacher temperature, and EMA momentum, and `match_neighbour` alignment via `origin_coord`
 - OmegaConf-based config shared across scripts in `config/default.yaml`
-- mixed-precision training support and optional flash backends when explicitly enabled
+- mixed-precision training support and flash attention enabled by default via `flash_attn`
 - smoke test, diagnostics plotting, run-level metric plotting, and walkthrough notebooks
 
 ## Current limitations
 
-- the legacy training recipe is a simplified masked-global Panda-style setup rather than full paper parity
 - there is no downstream evaluation or frozen-embedding export path yet
-- the Sonata recipe uses a much smaller backbone and head than the reference pimm implementation (enc_channels=[16..128] vs [48..512], 256 vs 4096 prototypes)
+- the Sonata recipe uses a much smaller backbone and head than the reference pimm implementation (enc_channels=[16..128] vs [48..512], 4096 vs 4096 prototypes but much smaller head_embed_channels)
 
 ## Next priorities
 
@@ -32,7 +29,7 @@ This document tracks the near-term roadmap for the current calo-only training pi
 ### 2. Performance characterization
 
 - profile the Sonata forward path on realistic runs rather than just short debug slices
-- compare `model.sonata_training.backbone.flash_backend=torch` against `flash_attn` when both are available
+- profile the remaining bottlenecks after restoring `up_cast_level=2`, `head_embed_channels=256`, and the simpler pimm-style head computation
 - identify whether the next bottleneck is view count, sparse PTv3 kernels, or the remaining loss and bookkeeping path
 
 ### 3. Evaluation and export

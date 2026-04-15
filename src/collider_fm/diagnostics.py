@@ -9,7 +9,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from .data import ColliderMLDataset, collate_fn
-from .model import PandaSelfDistillation
 
 
 def create_dataloader(

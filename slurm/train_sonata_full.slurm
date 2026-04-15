@@ -12,17 +12,22 @@
 
 source slurm/load_env.sh
 
+PREFIX="${1:-}"
+RUN_NAME="${PREFIX:+${PREFIX}_}sonata_full"
+JOB_NAME="${PREFIX:+${PREFIX}_}sonata_full"
+
+export SLURM_JOB_NAME="$JOB_NAME"
+
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
 uv run python --version
 
 uv run python scripts/train.py \
-    model.recipe=sonata \
     data.local_files_only=true \
     training.num_epochs=5 \
     training.batch_size=8 \
     training.train_split=train \
     training.val_split=val \
     training.log_backend=comet \
-    training.run_name=sonata_full
+    training.run_name="$RUN_NAME"

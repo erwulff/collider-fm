@@ -66,12 +66,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         config_sections=(
             "data",
             "views",
-            "sonata_views",
-            "model.recipe",
             "model.diagnostics",
-            "model.sonata_diagnostics",
             "model.training",
-            "model.sonata_training",
             "diagnostics",
         ),
     )
@@ -128,6 +124,24 @@ def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
         "total_energy": normalized["total_energy"],
         "patch_id": normalized["patch_id"],
         "mask": normalized["mask"],
+    }
+
+
+def diagnostic_view_kwargs(project_config: Any) -> dict[str, Any]:
+    """Reuse the same point-view transform as training/diagnostics configs."""
+
+    view_config = project_config.views
+    model_config = select_model_config(project_config, "diagnostics")
+    return {
+        "max_calo_hits": project_config.diagnostics.max_calo_hits,
+        "grid_size": float(model_config.grid_size),
+        "coord_center": view_config.coord_center,
+        "coord_scale": view_config.coord_scale,
+        "energy_transform": view_config.energy_transform,
+        "energy_min": view_config.energy_min,
+        "energy_max": view_config.energy_max,
+        "grid_sample_enabled": bool(view_config.get("grid_sample_enabled", False)),
+        "grid_sample_size": float(view_config.get("grid_sample_size", 0.002)),
     }
 
 
@@ -582,7 +596,6 @@ def main() -> None:
     project_config = load_project_config(cli_args.config, cli_args.overrides)
     data_config = project_config.data
     diagnostics_config = project_config.diagnostics
-    model_recipe = str(project_config.model.get("recipe", "legacy"))
     set_seed(diagnostics_config.seed)
 
     output_root = (
@@ -620,9 +633,9 @@ def main() -> None:
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
-    base_view = build_point_view_from_event(
-        detail_event, device=device, max_calo_hits=diagnostics_config.max_calo_hits
-    )
+    view_kwargs = diagnostic_view_kwargs(project_config)
+
+    base_view = build_point_view_from_event(detail_event, device=device, **view_kwargs)
     aug_a = augment_point_view(normalize_tensor_view(base_view))
     aug_b = augment_point_view(normalize_tensor_view(base_view))
 
@@ -640,11 +653,7 @@ def main() -> None:
     )
 
     representation_views = [
-        build_point_view_from_event(
-            event,
-            device=device,
-            max_calo_hits=diagnostics_config.max_calo_hits,
-        )
+        build_point_view_from_event(event, device=device, **view_kwargs)
         for event in representation_events
     ]
     normalized_base_view = normalize_tensor_view(base_view)
@@ -698,13 +707,11 @@ def main() -> None:
     if device.type == "cuda":
         model = (
             create_training_model(
-                recipe=model_recipe,
                 device=device,
                 **model_factory_kwargs(select_model_config(project_config, "training")),
             )
             if diagnostics_config.get("checkpoint") is not None
             else create_small_model(
-                recipe=model_recipe,
                 device=device,
                 **model_factory_kwargs(
                     select_model_config(project_config, "diagnostics")

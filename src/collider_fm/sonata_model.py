@@ -213,7 +213,7 @@ class SonataSelfDistillation(nn.Module):
             "enc_patch_size": (8, 8, 8, 8, 8),
             "shuffle_orders": False,
             "enable_flash": False,
-            "flash_backend": "torch",
+            "flash_backend": "flash_attn",
             "upcast_attention": False,
             "upcast_softmax": False,
             "enable_rpe": False,
@@ -388,12 +388,10 @@ class SonataSelfDistillation(nn.Module):
     def update_teacher(self, momentum: float | None = None) -> None:
         if momentum is not None:
             self.momentum = float(momentum)
-        for student_param, teacher_param in zip(
-            self.student.parameters(), self.teacher.parameters()
-        ):
-            teacher_param.data.mul_(self.momentum).add_(
-                student_param.data, alpha=1 - self.momentum
-            )
+        teacher_params = list(self.teacher.parameters())
+        student_params = list(self.student.parameters())
+        torch._foreach_mul_(teacher_params, self.momentum)
+        torch._foreach_add_(teacher_params, student_params, alpha=1 - self.momentum)
 
     @staticmethod
     def sinkhorn_knopp(
@@ -678,9 +676,16 @@ class SonataSelfDistillation(nn.Module):
         monitor_global_mask = global_mask.detach()
         monitor_cosine_similarities: torch.Tensor | None = None
 
+        # Match pimm v1m2: the teacher reuses one head for both branches when
+        # any mask-based loss is active, while the student keeps separate heads.
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             with torch.no_grad():
                 global_point_.feat = self.teacher["mask_head"](global_feat)
+        elif self.unmask_loss_weight > 0:
+            with torch.no_grad():
+                global_point_.feat = self.teacher["unmask_head"](global_feat)
+
+        if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             mask_global_point_ = self.student["backbone"](mask_global_point)
             mask_global_point_ = self.up_cast(mask_global_point_)
             mask_pred_sim = self.student["mask_head"](mask_global_point_.feat)
@@ -696,9 +701,6 @@ class SonataSelfDistillation(nn.Module):
                         global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
-                    # Compute teacher-student cosine similarity on matched
-                    # points for monitoring.  This is cheap (O(M*C)) and
-                    # avoids storing the full matched feature tensors.
                     monitor_cosine_similarities = F.cosine_similarity(
                         mask_global_point_.feat[match_index[:, 0]],
                         global_feat[match_index[:, 1]],
@@ -759,8 +761,6 @@ class SonataSelfDistillation(nn.Module):
                 result_dict["loss"].append(roll_mask_loss * self.roll_mask_loss_weight)
 
         if self.unmask_loss_weight > 0:
-            with torch.no_grad():
-                global_point_.feat = self.teacher["unmask_head"](global_feat)
             local_point_ = self.student["backbone"](local_point)
             local_point_ = self.up_cast(local_point_)
             unmask_pred_sim = self.student["unmask_head"](local_point_.feat)

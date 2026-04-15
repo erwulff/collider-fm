@@ -5,13 +5,12 @@ import torch
 from collider_fm.views import (
     DEFAULT_POINT_GRID_SIZE,
     POINT_FEATURE_DIM,
-    apply_patch_mask,
     augment_point_view,
     batch_point_views,
-    build_distillation_views,
     build_point_view_from_event,
     build_sonata_batch,
     crop_point_view,
+    grid_sample,
     rotate_around_beam_axis,
     sample_hit_indices,
 )
@@ -31,7 +30,9 @@ class ViewTests(unittest.TestCase):
     def test_build_point_view_from_event_uses_calo_hits_only(self):
         event = self.make_event()
 
-        view = build_point_view_from_event(event, device=torch.device("cpu"))
+        view = build_point_view_from_event(
+            event, device=torch.device("cpu"), grid_sample_enabled=False
+        )
 
         self.assertEqual(tuple(view["coord"].shape), (4, 3))
         self.assertEqual(tuple(view["feat"].shape), (4, POINT_FEATURE_DIM))
@@ -51,7 +52,7 @@ class ViewTests(unittest.TestCase):
 
     def test_crop_point_view_reduces_point_count(self):
         view = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu")
+            self.make_event(), device=torch.device("cpu"), grid_sample_enabled=False
         )
 
         cropped = crop_point_view(view, keep_ratio=0.5)
@@ -59,19 +60,9 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(cropped["coord"].shape[0], 2)
         self.assertTrue(torch.equal(cropped["offset"], torch.tensor([2])))
 
-    def test_apply_patch_mask_marks_at_least_one_patch(self):
-        view = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu"), grid_size=1.0
-        )
-
-        masked = apply_patch_mask(view, mask_fraction=0.5)
-
-        self.assertTrue(masked["mask"].any())
-        self.assertEqual(masked["mask"].dtype, torch.bool)
-
     def test_augment_point_view_preserves_contract(self):
         view = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu")
+            self.make_event(), device=torch.device("cpu"), grid_sample_enabled=False
         )
 
         augmented = augment_point_view(
@@ -79,21 +70,26 @@ class ViewTests(unittest.TestCase):
             coord_noise_scale=0.1,
             feat_noise_scale=0.1,
             crop_keep_ratio=1.0,
-            mask_fraction=0.5,
             point_dropout=0.0,
-            view_kind="student_masked",
+            view_kind="global",
         )
 
         self.assertEqual(augmented["feat"].shape[1], POINT_FEATURE_DIM)
         self.assertTrue(torch.equal(augmented["feat"][:, 3], augmented["total_energy"]))
-        self.assertEqual(augmented["view_kind"], "student_masked")
+        self.assertEqual(augmented["view_kind"], "global")
 
     def test_batch_point_views_builds_cumulative_offsets_and_unique_indices(self):
         first = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu"), grid_size=100.0
+            self.make_event(),
+            device=torch.device("cpu"),
+            grid_size=100.0,
+            grid_sample_enabled=False,
         )
         second = build_point_view_from_event(
-            self.make_event(), device=torch.device("cpu"), grid_size=100.0
+            self.make_event(),
+            device=torch.device("cpu"),
+            grid_size=100.0,
+            grid_sample_enabled=False,
         )
 
         batched = batch_point_views([first, second])
@@ -104,25 +100,6 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(batched["source_index"], torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]))
         )
-
-    def test_build_distillation_views_returns_student_and_teacher_batches(self):
-        batch = build_distillation_views(
-            [self.make_event(), self.make_event()],
-            device=torch.device("cpu"),
-            coord_noise_scale=0.0,
-            feat_noise_scale=0.0,
-            global_crop_ratio=1.0,
-            student_mask_fraction=0.5,
-            point_dropout=0.0,
-        )
-
-        self.assertEqual(len(batch["student_views"]), 2)
-        self.assertEqual(len(batch["teacher_views"]), 2)
-        self.assertTrue(
-            torch.equal(batch["student_views"][0]["offset"], torch.tensor([4, 8]))
-        )
-        self.assertTrue(batch["student_views"][0]["mask"].any())
-        self.assertFalse(batch["teacher_views"][0]["mask"].any())
 
     def test_build_sonata_batch_returns_packed_global_and_local_views(self):
         batch = build_sonata_batch(
@@ -168,6 +145,54 @@ class ViewTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "zero calorimeter hits"):
             build_point_view_from_event(event, device=torch.device("cpu"))
+
+    def test_grid_sample_returns_subset_or_equal(self):
+        coord = torch.randn(100, 3)
+        indices = grid_sample(coord, grid_size=0.01)
+        self.assertLessEqual(indices.shape[0], 100)
+        self.assertEqual(indices.dtype, torch.long)
+        self.assertEqual(indices.ndim, 1)
+
+    def test_grid_sample_with_identical_points_deduplicates(self):
+        coord = torch.zeros(10, 3)
+        indices = grid_sample(coord, grid_size=0.01)
+        self.assertEqual(indices.shape[0], 1)
+
+    def test_grid_sample_with_widely_spaced_points_keeps_all(self):
+        coord = torch.randn(5, 3) * 10.0
+        indices = grid_sample(coord, grid_size=0.001)
+        self.assertEqual(indices.shape[0], 5)
+
+    def test_build_point_view_grid_sample_disabled_is_identity(self):
+        event = self.make_event()
+        view_disabled = build_point_view_from_event(
+            event, device=torch.device("cpu"), grid_sample_enabled=False
+        )
+        self.assertEqual(tuple(view_disabled["coord"].shape), (4, 3))
+
+    def test_build_point_view_grid_sample_enabled_reduces_or_preserves(self):
+        event = {
+            "calo_hits": {
+                "x": torch.randn(50) * 100.0,
+                "y": torch.randn(50) * 100.0,
+                "z": torch.randn(50) * 100.0,
+                "total_energy": torch.rand(50) * 10.0,
+            }
+        }
+        view_no_gs = build_point_view_from_event(
+            event,
+            device=torch.device("cpu"),
+            coord_scale=5000.0,
+            grid_sample_enabled=False,
+        )
+        view_gs = build_point_view_from_event(
+            event,
+            device=torch.device("cpu"),
+            coord_scale=5000.0,
+            grid_sample_enabled=True,
+            grid_sample_size=0.002,
+        )
+        self.assertLessEqual(view_gs["coord"].shape[0], view_no_gs["coord"].shape[0])
 
 
 if __name__ == "__main__":

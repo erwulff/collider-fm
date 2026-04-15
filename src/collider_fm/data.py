@@ -160,7 +160,7 @@ class ColliderMLDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, dict[str, Any]]:
         event = {}
-        # TODO: When moving beyond ttbar_pu0 we nay want to interleave datasets
+        # TODO: When moving beyond ttbar_pu0 we may want to interleave datasets
         for obj_type, ds in self.datasets.items():
             event[obj_type] = dict(ds[idx])
 
