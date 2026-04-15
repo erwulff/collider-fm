@@ -8,13 +8,15 @@ import torch
 from .sonata_model import SonataSelfDistillation
 from .views import POINT_FEATURE_DIM
 
+# Keep these fallback factory defaults aligned with config/default.yaml so
+# notebooks and ad-hoc scripts behave like the checked-in runtime.
 SMALL_SONATA_MODEL_BACKBONE_KWARGS = {
     "enc_depths": (1, 1, 1, 1, 1),
     "enc_channels": (8, 12, 16, 24, 32),
     "enc_num_head": (1, 1, 2, 4, 4),
     "enc_patch_size": (4, 4, 4, 4, 4),
     "shuffle_orders": False,
-    "enable_flash": False,
+    "enable_flash": True,
     "flash_backend": "flash_attn",
     "upcast_attention": False,
     "upcast_softmax": False,
@@ -30,7 +32,7 @@ TRAINING_SONATA_MODEL_BACKBONE_KWARGS = {
     "enc_num_head": (1, 2, 4, 4, 8),
     "enc_patch_size": (8, 8, 8, 8, 8),
     "shuffle_orders": False,
-    "enable_flash": False,
+    "enable_flash": True,
     "flash_backend": "flash_attn",
     "upcast_attention": False,
     "upcast_softmax": False,
@@ -89,7 +91,7 @@ def create_training_sonata_model(
     resolved_model_kwargs = {
         "in_channels": POINT_FEATURE_DIM,
         "grid_size": 0.002,
-        "head_embed_channels": 512,
+        "head_embed_channels": 256,
         "head_num_prototypes": 4096,
         "num_global_view": 2,
         "num_local_view": 4,

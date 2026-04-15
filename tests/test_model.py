@@ -17,8 +17,21 @@ class ModelTests(unittest.TestCase):
         model = create_small_sonata_model()
 
         self.assertEqual(model.grid_size, 0.002)
+        self.assertEqual(model.num_prototypes, 32)
         self.assertEqual(model.num_global_view, 2)
         self.assertEqual(model.num_local_view, 4)
+        self.assertTrue(model.flash_attention_enabled)
+        self.assertEqual(model.flash_attention_backend, "flash_attn")
+
+    def test_training_sonata_factory_uses_expected_defaults(self):
+        model = create_training_sonata_model()
+
+        self.assertEqual(model.grid_size, 0.002)
+        self.assertEqual(model.num_prototypes, 4096)
+        self.assertEqual(model.up_cast_level, 2)
+        self.assertTrue(model.flash_attention_enabled)
+        self.assertEqual(model.flash_attention_backend, "flash_attn")
+        self.assertEqual(model.student["mask_head"].prototype.in_features, 256)
 
     def test_create_small_model_returns_sonata(self):
         model = create_small_model()

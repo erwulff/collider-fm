@@ -268,6 +268,7 @@ class SonataSelfDistillation(nn.Module):
             if self.flash_attention_enabled
             else "disabled"
         )
+        self.num_prototypes = int(head_num_prototypes)
         self.last_monitoring_state: dict[str, Any] = {
             "student_logits": None,
             "point_features": None,
@@ -675,6 +676,8 @@ class SonataSelfDistillation(nn.Module):
         monitor_global_mask = global_mask.detach()
         monitor_cosine_similarities: torch.Tensor | None = None
 
+        # Match pimm v1m2: the teacher reuses one head for both branches when
+        # any mask-based loss is active, while the student keeps separate heads.
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             with torch.no_grad():
                 global_point_.feat = self.teacher["mask_head"](global_feat)

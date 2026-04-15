@@ -457,13 +457,18 @@ def run_epoch(
                 lr_scheduler.step()
             model.update_teacher(momentum=None)
 
-        if monitor_logits is None:
-            monitor_logits = loss.new_zeros(
-                (1, int(getattr(model, "num_prototypes", 1)))
+        num_prototypes = int(
+            getattr(
+                model,
+                "num_prototypes",
+                monitor_logits.shape[-1]
+                if monitor_logits is not None and monitor_logits.ndim == 2
+                else 1,
             )
-        usage = prototype_usage(
-            monitor_logits, num_prototypes=int(getattr(model, "num_prototypes", 1))
         )
+        if monitor_logits is None:
+            monitor_logits = loss.new_zeros((1, num_prototypes))
+        usage = prototype_usage(monitor_logits, num_prototypes=num_prototypes)
         totals["loss"] += float(loss.item())
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(monitor_embeddings)
@@ -535,9 +540,8 @@ def run_epoch(
         )
 
         if should_viz:
-            num_protos = int(getattr(model, "num_prototypes", 1))
             image = plot_prototype_usage(
-                monitor_logits, num_protos, current_absolute_step
+                monitor_logits, num_prototypes, current_absolute_step
             )
             logger.log_image("prototype_usage", image, step=current_absolute_step)
 
