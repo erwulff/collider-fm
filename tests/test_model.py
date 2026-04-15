@@ -29,7 +29,7 @@ class ModelTests(unittest.TestCase):
         model = create_training_model()
         self.assertEqual(getattr(model, "model_recipe", "unknown"), "sonata")
 
-    def test_point_transformer_accepts_torch_flash_backend(self):
+    def test_point_transformer_accepts_flash_attn_backend(self):
         model = PointTransformerV3(
             in_channels=POINT_FEATURE_DIM,
             enc_channels=(8, 12, 16, 24, 32),
@@ -37,7 +37,7 @@ class ModelTests(unittest.TestCase):
             enc_patch_size=(4, 4, 4, 4, 4),
             enc_depths=(1, 1, 1, 1, 1),
             enable_flash=True,
-            flash_backend="torch",
+            flash_backend="flash_attn",
             upcast_attention=False,
             upcast_softmax=False,
             enable_rpe=False,
@@ -47,7 +47,7 @@ class ModelTests(unittest.TestCase):
         first_stage = model.enc[0]
         first_block = first_stage[0]
         self.assertTrue(first_block.attn.enable_flash)
-        self.assertEqual(first_block.attn.flash_backend, "torch")
+        self.assertEqual(first_block.attn.flash_backend, "flash_attn")
 
 
 if __name__ == "__main__":
