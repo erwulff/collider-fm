@@ -268,7 +268,6 @@ class SonataSelfDistillation(nn.Module):
             if self.flash_attention_enabled
             else "disabled"
         )
-        self.num_prototypes = int(head_num_prototypes)
         self.last_monitoring_state: dict[str, Any] = {
             "student_logits": None,
             "point_features": None,
@@ -686,84 +685,39 @@ class SonataSelfDistillation(nn.Module):
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             mask_global_point_ = self.student["backbone"](mask_global_point)
             mask_global_point_ = self.up_cast(mask_global_point_)
+            mask_pred_sim = self.student["mask_head"](mask_global_point_.feat)
+            monitor_logits = mask_pred_sim.detach()
+            monitor_features = mask_global_point_.feat.detach()
 
-            with torch.no_grad():
-                mask_match_index = (
-                    self.match_neighbour(
+            if self.mask_loss_weight > 0:
+                with torch.no_grad():
+                    match_index = self.match_neighbour(
                         mask_global_point_.origin_coord,
                         mask_global_point_.offset,
                         global_point_.origin_coord,
                         global_point_.offset,
                     )
-                    if self.mask_loss_weight > 0
-                    else torch.empty(
-                        (0, 2), dtype=torch.long, device=mask_global_point_.coord.device
-                    )
-                )
-                if self.roll_mask_loss_weight > 0:
-                    roll_global_point_ = self.roll_point(global_point_)
-                    roll_match_index = self.match_neighbour(
-                        mask_global_point_.origin_coord,
-                        mask_global_point_.offset,
-                        roll_global_point_.origin_coord,
-                        roll_global_point_.offset,
-                    )
-                else:
-                    roll_match_index = torch.empty(
-                        (0, 2), dtype=torch.long, device=mask_global_point_.coord.device
-                    )
-
-            all_student_idx = torch.cat(
-                [mask_match_index[:, 0], roll_match_index[:, 0]]
-            )
-            if all_student_idx.numel() > 0:
-                unique_idx, inverse = torch.unique(all_student_idx, return_inverse=True)
-                mask_pred_sim = self.student["mask_head"](
-                    mask_global_point_.feat[unique_idx]
-                )
-                n_mask_matched = mask_match_index.shape[0]
-                mask_inverse = inverse[:n_mask_matched]
-                roll_inverse = inverse[n_mask_matched:]
-            else:
-                mask_pred_sim = torch.empty(
-                    (0, self.num_prototypes), device=mask_global_point_.coord.device
-                )
-                unique_idx = torch.empty(
-                    0, dtype=torch.long, device=mask_global_point_.coord.device
-                )
-                n_mask_matched = 0
-                mask_inverse = torch.empty(
-                    0, dtype=torch.long, device=mask_global_point_.coord.device
-                )
-                roll_inverse = torch.empty(
-                    0, dtype=torch.long, device=mask_global_point_.coord.device
-                )
-
-            monitor_logits = mask_pred_sim.detach()
-            monitor_features = mask_global_point_.feat[unique_idx].detach()
-
-            if self.mask_loss_weight > 0:
-                if mask_match_index.shape[0] > 0:
+                if match_index.shape[0] > 0:
                     monitor_cosine_similarities = F.cosine_similarity(
-                        mask_global_point_.feat[mask_match_index[:, 0]],
-                        global_feat[mask_match_index[:, 1]],
+                        mask_global_point_.feat[match_index[:, 0]],
+                        global_feat[match_index[:, 1]],
                         dim=-1,
                     ).detach()
                     with torch.no_grad():
                         mask_target_sim = self.sinkhorn_knopp(
-                            global_point_.feat[mask_match_index[:, 1]],
+                            global_point_.feat[match_index[:, 1]],
                             self.teacher_temp,
                         )
                     mask_loss = -torch.sum(
                         mask_target_sim
                         * F.log_softmax(
-                            mask_pred_sim[mask_inverse] / self.student_temp, dim=-1
+                            mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
                         ),
                         dim=-1,
                     )
                     mask_loss = torch_scatter.segment_coo(
                         mask_loss,
-                        index=mask_global_point_.batch[mask_match_index[:, 0]],
+                        index=mask_global_point_.batch[match_index[:, 0]],
                         reduce="mean",
                     ).mean()
                 else:
@@ -772,22 +726,30 @@ class SonataSelfDistillation(nn.Module):
                 result_dict["loss"].append(mask_loss * self.mask_loss_weight)
 
             if self.roll_mask_loss_weight > 0:
-                if roll_match_index.shape[0] > 0:
+                roll_global_point_ = self.roll_point(global_point_)
+                with torch.no_grad():
+                    match_index = self.match_neighbour(
+                        mask_global_point_.origin_coord,
+                        mask_global_point_.offset,
+                        roll_global_point_.origin_coord,
+                        roll_global_point_.offset,
+                    )
+                if match_index.shape[0] > 0:
                     with torch.no_grad():
                         roll_mask_target_sim = self.sinkhorn_knopp(
-                            roll_global_point_.feat[roll_match_index[:, 1]],
+                            roll_global_point_.feat[match_index[:, 1]],
                             self.teacher_temp,
                         )
                     roll_mask_loss = -torch.sum(
                         roll_mask_target_sim
                         * F.log_softmax(
-                            mask_pred_sim[roll_inverse] / self.student_temp, dim=-1
+                            mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
                         ),
                         dim=-1,
                     )
                     roll_mask_loss = torch_scatter.segment_coo(
                         roll_mask_loss,
-                        index=mask_global_point_.batch[roll_match_index[:, 0]],
+                        index=mask_global_point_.batch[match_index[:, 0]],
                         reduce="mean",
                     ).mean()
                 else:
@@ -798,6 +760,10 @@ class SonataSelfDistillation(nn.Module):
         if self.unmask_loss_weight > 0:
             local_point_ = self.student["backbone"](local_point)
             local_point_ = self.up_cast(local_point_)
+            unmask_pred_sim = self.student["unmask_head"](local_point_.feat)
+            if monitor_logits is None:
+                monitor_logits = unmask_pred_sim.detach()
+                monitor_features = local_point_.feat.detach()
 
             with torch.no_grad():
                 principal_view_mask = global_point_.batch % self.num_global_view == 0
@@ -807,37 +773,28 @@ class SonataSelfDistillation(nn.Module):
                 local_principal_offset = local_point_.offset[
                     self.num_local_view - 1 :: self.num_local_view
                 ]
-                unmask_match_index = self.match_neighbour(
+                match_index = self.match_neighbour(
                     local_point_.origin_coord,
                     local_principal_offset,
                     global_point_.origin_coord[principal_view_mask],
                     batch2offset(principal_view_batch),
                 )
-
-            if unmask_match_index.shape[0] > 0:
-                unmask_pred_sim = self.student["unmask_head"](
-                    local_point_.feat[unmask_match_index[:, 0]]
-                )
-                if monitor_logits is None:
-                    monitor_logits = unmask_pred_sim.detach()
-                    monitor_features = local_point_.feat[
-                        unmask_match_index[:, 0]
-                    ].detach()
+            if match_index.shape[0] > 0:
                 with torch.no_grad():
                     unmask_target_sim = self.sinkhorn_knopp(
-                        global_point_.feat[principal_view_mask][
-                            unmask_match_index[:, 1]
-                        ],
+                        global_point_.feat[principal_view_mask][match_index[:, 1]],
                         self.teacher_temp,
                     )
                 unmask_loss = -torch.sum(
                     unmask_target_sim
-                    * F.log_softmax(unmask_pred_sim / self.student_temp, dim=-1),
+                    * F.log_softmax(
+                        unmask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
+                    ),
                     dim=-1,
                 )
                 unmask_loss = torch_scatter.segment_coo(
                     unmask_loss,
-                    index=local_point_.batch[unmask_match_index[:, 0]],
+                    index=local_point_.batch[match_index[:, 0]],
                     reduce="mean",
                 ).mean()
             else:
