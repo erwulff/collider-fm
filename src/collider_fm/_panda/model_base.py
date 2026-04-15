@@ -118,20 +118,7 @@ class SerializedAttention(PointModule):
             assert upcast_softmax is False, (
                 "Set upcast_softmax to False when enable Flash Attention"
             )
-            if flash_backend == "flash_attn":
-                assert flash_attn is not None, "Make sure flash_attn is installed."
-            elif flash_backend == "torch":
-                assert hasattr(torch.nn.functional, "scaled_dot_product_attention"), (
-                    "This PyTorch build does not provide scaled_dot_product_attention."
-                )
-                assert patch_size != -1, (
-                    "The torch flash backend currently requires a fixed patch size."
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported flash backend: {flash_backend}. "
-                    "Use 'flash_attn' or 'torch'."
-                )
+            assert flash_attn is not None, "Make sure flash_attn is installed."
             self.patch_size = patch_size
             self.attn_drop = attn_drop
         else:
@@ -261,7 +248,7 @@ class SerializedAttention(PointModule):
             attn = self.softmax(attn)
             attn = self.attn_drop(attn).to(qkv.dtype)
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
-        elif self.flash_backend == "flash_attn":
+        else:
             feat = flash_attn.flash_attn_varlen_qkvpacked_func(
                 qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
                 cu_seqlens,
@@ -270,18 +257,6 @@ class SerializedAttention(PointModule):
                 softmax_scale=self.scale,
             ).reshape(-1, C)
             feat = feat.to(qkv.dtype)
-        elif self.flash_backend == "torch":
-            feat = torch.nn.functional.scaled_dot_product_attention(
-                q.contiguous(),
-                k.contiguous(),
-                v.contiguous(),
-                dropout_p=self.attn_drop if self.training else 0.0,
-                scale=self.scale,
-            )
-            feat = feat.transpose(1, 2).reshape(-1, C)
-            feat = feat.to(qkv.dtype)
-        else:
-            raise ValueError(f"Unsupported flash backend: {self.flash_backend}")
 
         if pad is not None:
             feat = feat[inverse]

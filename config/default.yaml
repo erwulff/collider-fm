@@ -62,8 +62,7 @@ model:
       enc_num_head: [1, 2, 4, 4, 8]
       enc_patch_size: [8, 8, 8, 8, 8]
       shuffle_orders: false
-      enable_flash: false
-      flash_backend: torch
+      enable_flash: true
   diagnostics:
     in_channels: 4
     grid_size: 0.002
@@ -98,8 +97,7 @@ model:
       enc_num_head: [1, 1, 2, 4, 4]
       enc_patch_size: [4, 4, 4, 4, 4]
       shuffle_orders: false
-      enable_flash: false
-      flash_backend: torch
+      enable_flash: true
 
 training:
   run_dir:

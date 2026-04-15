@@ -213,7 +213,7 @@ class SonataSelfDistillation(nn.Module):
             "enc_patch_size": (8, 8, 8, 8, 8),
             "shuffle_orders": False,
             "enable_flash": False,
-            "flash_backend": "torch",
+            "flash_backend": "flash_attn",
             "upcast_attention": False,
             "upcast_softmax": False,
             "enable_rpe": False,
