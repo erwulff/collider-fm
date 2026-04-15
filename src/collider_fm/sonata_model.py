@@ -678,13 +678,12 @@ class SonataSelfDistillation(nn.Module):
         monitor_global_mask = global_mask.detach()
         monitor_cosine_similarities: torch.Tensor | None = None
 
-        if (
-            self.mask_loss_weight > 0
-            or self.roll_mask_loss_weight > 0
-            or self.unmask_loss_weight > 0
-        ):
+        if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             with torch.no_grad():
                 global_point_.feat = self.teacher["mask_head"](global_feat)
+        elif self.unmask_loss_weight > 0:
+            with torch.no_grad():
+                global_point_.feat = self.teacher["unmask_head"](global_feat)
 
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             mask_global_point_ = self.student["backbone"](mask_global_point)
