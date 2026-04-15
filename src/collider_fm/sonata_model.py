@@ -26,6 +26,8 @@ def get_world_size() -> int:
 
 
 class CosineScheduler:
+    """Small per-step cosine schedule with optional warmup and freeze phases."""
+
     def __init__(
         self,
         base_value: float,
@@ -85,6 +87,8 @@ class SonataBackbone(nn.Module):
 
 
 class OnlineCluster(nn.Module):
+    """Projection head plus prototype layer used for Sonata assignments."""
+
     def __init__(
         self,
         in_channels: int,
@@ -129,6 +133,8 @@ class OnlineCluster(nn.Module):
 
 
 def mean_pool_features(feat: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+    """Average point features within each packed event slice."""
+
     counts = torch.diff(offset, prepend=offset.new_zeros(1))
     batch_index = torch.arange(offset.numel(), device=feat.device).repeat_interleave(
         counts
@@ -146,6 +152,8 @@ def gather_by_offset(values: torch.Tensor, offset: torch.Tensor) -> list[torch.T
 def masked_mean_pool(
     point_projection: torch.Tensor, mask: torch.Tensor, offset: torch.Tensor
 ) -> torch.Tensor:
+    """Pool masked points per event, falling back to all points when needed."""
+
     chunks = gather_by_offset(point_projection, offset)
     mask_chunks = gather_by_offset(mask.to(dtype=torch.bool), offset)
     pooled = []
@@ -160,6 +168,8 @@ def masked_mean_pool(
 
 
 class SonataSelfDistillation(nn.Module):
+    """Calo-only Sonata self-distillation model with EMA teacher/student heads."""
+
     model_recipe = "sonata"
 
     def __init__(
@@ -315,6 +325,8 @@ class SonataSelfDistillation(nn.Module):
         self.mask_jitter_scheduler: CosineScheduler | None = None
 
     def setup_schedulers(self, total_steps: int, current_step: int = 0) -> None:
+        """Initialize the per-step Sonata schedules from the configured warmups."""
+
         self.mask_size_scheduler = CosineScheduler(
             start_value=self.mask_size_start,
             base_value=self.mask_size_base,
@@ -360,6 +372,8 @@ class SonataSelfDistillation(nn.Module):
             self.mask_jitter_scheduler.iter = current_step
 
     def step_schedules(self) -> dict[str, float]:
+        """Advance all configured schedules by one optimization step."""
+
         if (
             self.mask_size_scheduler is None
             or self.mask_ratio_scheduler is None
@@ -386,6 +400,8 @@ class SonataSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def update_teacher(self, momentum: float | None = None) -> None:
+        """EMA-update the teacher weights from the current student weights."""
+
         if momentum is not None:
             self.momentum = float(momentum)
         teacher_params = list(self.teacher.parameters())
@@ -397,6 +413,8 @@ class SonataSelfDistillation(nn.Module):
     def sinkhorn_knopp(
         feat: torch.Tensor, temp: float, num_iter: int = 3
     ) -> torch.Tensor:
+        """Normalize teacher logits into balanced prototype assignments."""
+
         if feat.shape[0] == 0:
             return feat.new_zeros((0, feat.shape[1]))
 
@@ -425,8 +443,12 @@ class SonataSelfDistillation(nn.Module):
     def generate_mask(
         self, coord: torch.Tensor, offset: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Voxelize each event and mask a random subset of occupied patches."""
+
         batch = offset2batch(offset)
         min_coord = torch_scatter.segment_coo(coord, batch, reduce="min")
+        # Shift each event to its own local origin before voxelizing so one batch can
+        # mask independently even though all points are packed together.
         grid_coord = ((coord - min_coord[batch]) // self.mask_size).int()
         grid_coord = torch.cat([batch.unsqueeze(-1), grid_coord], dim=-1)
         unique, point_cluster, _ = torch.unique(
@@ -452,6 +474,8 @@ class SonataSelfDistillation(nn.Module):
         view2_coord: torch.Tensor,
         view2_offset: torch.Tensor,
     ) -> torch.Tensor:
+        """Match each point in `view1` to its nearest in-batch neighbor from `view2`."""
+
         view1_starts = torch.cat([view1_offset.new_zeros(1), view1_offset[:-1]], dim=0)
         view2_starts = torch.cat([view2_offset.new_zeros(1), view2_offset[:-1]], dim=0)
         if view1_offset.shape[0] != view2_offset.shape[0]:
@@ -485,6 +509,8 @@ class SonataSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def roll_point(self, point: Point) -> Point:
+        """Swap the two packed global views within each event for roll-mask targets."""
+
         counts = offset2bincount(point.offset).tolist()
         bs = len(point.offset) // self.num_global_view
         data_dict: dict[str, torch.Tensor] = {}
@@ -492,6 +518,8 @@ class SonataSelfDistillation(nn.Module):
             if key not in {"feat", "coord", "origin_coord", "batch"}:
                 continue
             value = point[key].split(counts)
+            # Packed global views are ordered [event0_view0, event0_view1, ...].  The
+            # roll loss wants the opposite teacher view from the same event.
             value = chain(
                 *[
                     value[self.num_global_view * b : self.num_global_view * (b + 1)][
@@ -509,6 +537,8 @@ class SonataSelfDistillation(nn.Module):
         return Point(data_dict)
 
     def up_cast(self, point: Point) -> Point:
+        """Rebuild multiscale features from the PTv3 traceable pooling chain."""
+
         for _ in range(self.up_cast_level):
             if (
                 "pooling_parent" not in point.keys()
@@ -541,6 +571,8 @@ class SonataSelfDistillation(nn.Module):
     def encode_view(
         self, view: Mapping[str, Any], use_teacher: bool
     ) -> dict[str, torch.Tensor]:
+        """Encode one point view into plotting-friendly tensors for diagnostics."""
+
         point = Point(
             feat=torch.as_tensor(
                 view["feat"], dtype=torch.float32, device=view["coord"].device
@@ -615,6 +647,8 @@ class SonataSelfDistillation(nn.Module):
     def forward(
         self, data_dict: Mapping[str, Any], return_point: bool = False
     ) -> dict[str, torch.Tensor]:
+        """Run the Sonata loss on packed global/local views or return teacher features."""
+
         grid_size = self._grid_size_value(data_dict)
         if return_point:
             point = Point(
@@ -769,6 +803,9 @@ class SonataSelfDistillation(nn.Module):
                 monitor_features = local_point_.feat.detach()
 
             with torch.no_grad():
+                # Only the first global view in each event serves as the unmask teacher
+                # target.  Local views are packed per event, so we keep one offset per
+                # event by selecting the last local-view boundary in each group.
                 principal_view_mask = global_point_.batch % self.num_global_view == 0
                 principal_view_batch = (
                     global_point_.batch[principal_view_mask] // self.num_global_view
