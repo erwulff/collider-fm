@@ -388,12 +388,10 @@ class SonataSelfDistillation(nn.Module):
     def update_teacher(self, momentum: float | None = None) -> None:
         if momentum is not None:
             self.momentum = float(momentum)
-        for student_param, teacher_param in zip(
-            self.student.parameters(), self.teacher.parameters()
-        ):
-            teacher_param.data.mul_(self.momentum).add_(
-                student_param.data, alpha=1 - self.momentum
-            )
+        teacher_params = list(self.teacher.parameters())
+        student_params = list(self.student.parameters())
+        torch._foreach_mul_(teacher_params, self.momentum)
+        torch._foreach_add_(teacher_params, student_params, alpha=1 - self.momentum)
 
     @staticmethod
     def sinkhorn_knopp(
