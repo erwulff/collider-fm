@@ -64,6 +64,8 @@ def _build_sonata_kwargs(config: DictConfig) -> dict:
         energy_transform=view_config.energy_transform,
         energy_min=view_config.energy_min,
         energy_max=view_config.energy_max,
+        grid_sample_enabled=bool(view_config.get("grid_sample_enabled", False)),
+        grid_sample_size=float(view_config.get("grid_sample_size", 0.002)),
     )
 
 

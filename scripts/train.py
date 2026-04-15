@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -384,12 +383,8 @@ def run_epoch(
         "prototype_entropy": 0.0,
         "embedding_norm": 0.0,
         "masked_fraction": 0.0,
-        "data_wait_seconds": 0.0,
-        "view_build_seconds": 0.0,
-        "model_step_seconds": 0.0,
     }
     processed_batches = 0
-    processed_events = 0
     last_logged_step = global_step_offset
     last_checkpoint_step = global_step_offset
     last_viz_step = global_step_offset
@@ -406,14 +401,11 @@ def run_epoch(
     data_iter = iter(dataloader)
 
     for batch_index in progress_bar:
-        data_wait_start = time.perf_counter()
         try:
             events = next(data_iter)
         except StopIteration:
             break
-        data_wait_seconds = time.perf_counter() - data_wait_start
 
-        view_start = time.perf_counter()
         model_inputs = build_sonata_batch(
             events,
             device=device,
@@ -433,12 +425,9 @@ def run_epoch(
             energy_transform=view_config.energy_transform,
             energy_min=view_config.energy_min,
             energy_max=view_config.energy_max,
+            grid_sample_enabled=bool(view_config.get("grid_sample_enabled", False)),
+            grid_sample_size=float(view_config.get("grid_sample_size", 0.002)),
         )
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        view_build_seconds = time.perf_counter() - view_start
-
-        model_step_start = time.perf_counter()
 
         with torch.set_grad_enabled(is_training):
             with torch.autocast(
@@ -468,10 +457,6 @@ def run_epoch(
                 lr_scheduler.step()
             model.update_teacher(momentum=None)
 
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        model_step_seconds = time.perf_counter() - model_step_start
-
         if monitor_logits is None:
             monitor_logits = loss.new_zeros(
                 (1, int(getattr(model, "num_prototypes", 1)))
@@ -483,16 +468,9 @@ def run_epoch(
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(monitor_embeddings)
         totals["masked_fraction"] += float(masked_fraction)
-        totals["data_wait_seconds"] += data_wait_seconds
-        totals["view_build_seconds"] += view_build_seconds
-        totals["model_step_seconds"] += model_step_seconds
         processed_batches += 1
-        processed_events += len(events)
 
         progress_bar.set_postfix(
-            data=f"{data_wait_seconds:.1f}s",
-            view=f"{view_build_seconds:.1f}s",
-            model=f"{model_step_seconds:.1f}s",
             loss=f"{loss.item():.4f}",
             masked=f"{masked_fraction:.3f}",
         )
@@ -597,12 +575,6 @@ def run_epoch(
         )
 
     averaged_metrics = {key: value / processed_batches for key, value in totals.items()}
-    averaged_metrics["events_per_second"] = processed_events / max(
-        1.0e-6,
-        totals["data_wait_seconds"]
-        + totals["view_build_seconds"]
-        + totals["model_step_seconds"],
-    )
     return averaged_metrics, processed_batches
 
 
@@ -693,7 +665,6 @@ def main() -> None:
     try:
         for epoch in range(training_config.num_epochs):
             print(f"Epoch {epoch + 1}/{training_config.num_epochs}")
-            epoch_start = time.perf_counter()
 
             current_momentum = float(getattr(model, "momentum", 0.994))
             current_temperature = float(getattr(model, "teacher_temp", 0.07))
@@ -732,7 +703,6 @@ def main() -> None:
                 phase="val",
             )
 
-            epoch_time_seconds = time.perf_counter() - epoch_start
             current_momentum = float(getattr(model, "momentum", current_momentum))
             current_temperature = float(
                 getattr(model, "teacher_temp", current_temperature)
@@ -748,18 +718,9 @@ def main() -> None:
                 "val_embedding_norm": val_metrics["embedding_norm"],
                 "train_masked_fraction": train_metrics["masked_fraction"],
                 "val_masked_fraction": val_metrics["masked_fraction"],
-                "train_data_wait_seconds": train_metrics["data_wait_seconds"],
-                "val_data_wait_seconds": val_metrics["data_wait_seconds"],
-                "train_view_build_seconds": train_metrics["view_build_seconds"],
-                "val_view_build_seconds": val_metrics["view_build_seconds"],
-                "train_model_step_seconds": train_metrics["model_step_seconds"],
-                "val_model_step_seconds": val_metrics["model_step_seconds"],
-                "train_events_per_second": train_metrics["events_per_second"],
-                "val_events_per_second": val_metrics["events_per_second"],
                 "learning_rate": learning_rate(optimizer),
                 "teacher_momentum": current_momentum,
                 "teacher_temperature": current_temperature,
-                "epoch_time_seconds": epoch_time_seconds,
             }
             logger.log_metrics(epoch_metrics, step=global_step)
             print("epoch summary: " + json.dumps(epoch_metrics, sort_keys=True))

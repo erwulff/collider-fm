@@ -10,6 +10,7 @@ make masking, batching, and teacher/student alignment easy to follow.
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict, cast
 
+import numpy as np
 import torch
 
 DEFAULT_POINT_GRID_SIZE = 10.0
@@ -55,6 +56,43 @@ def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Ten
     stride_y = base[2].clamp_min(1)
     stride_x = (base[1] * stride_y).clamp_min(1)
     return grid_coord[:, 0] * stride_x + grid_coord[:, 1] * stride_y + grid_coord[:, 2]
+
+
+def _fnv_hash_vec(arr: np.ndarray) -> np.ndarray:
+    arr = arr.astype(np.uint64, copy=True)
+    hashed = np.full(arr.shape[0], np.uint64(14695981039346656037))
+    for j in range(arr.shape[1]):
+        hashed *= np.uint64(1099511628211)
+        hashed = np.bitwise_xor(hashed, arr[:, j])
+    return hashed
+
+
+def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
+    """Return indices of one representative point per voxel (train-mode random pick).
+
+    Points are quantized onto a regular grid with spacing *grid_size*.  When
+    multiple points fall into the same voxel, one is selected at random.  The
+    returned index tensor can be used to index into coord and any per-point
+    tensors (energy, source_index, etc.).
+    """
+    if coord.numel() == 0:
+        return torch.arange(0, device=coord.device, dtype=torch.long)
+
+    scaled = coord.cpu().numpy() / np.array(grid_size)
+    grid_coord = np.floor(scaled).astype(np.int64)
+    grid_coord -= grid_coord.min(axis=0)
+
+    key = _fnv_hash_vec(grid_coord)
+    idx_sort = np.argsort(key)
+    key_sort = key[idx_sort]
+    _, _, count = np.unique(key_sort, return_inverse=True, return_counts=True)
+
+    idx_select = (
+        np.cumsum(np.insert(count, 0, 0)[:-1])
+        + np.random.randint(0, int(count.max()), count.size) % count
+    )
+    idx_unique = idx_sort[idx_select]
+    return torch.from_numpy(idx_unique).to(device=coord.device, dtype=torch.long)
 
 
 def assemble_point_features(
@@ -231,6 +269,8 @@ def build_point_view_from_event(
     energy_transform: str = "raw",
     energy_min: float = 1.0e-2,
     energy_max: float = 20.0,
+    grid_sample_enabled: bool = True,
+    grid_sample_size: float = 0.002,
 ) -> PointView:
     """Convert one raw ColliderML event into a single point view.
 
@@ -273,6 +313,12 @@ def build_point_view_from_event(
     )
     source_index = torch.as_tensor(calo_indices, dtype=torch.long, device=device)
     grid_size_tensor = torch.tensor(grid_size, dtype=torch.float32, device=device)
+
+    if grid_sample_enabled:
+        gs_indices = grid_sample(coord, grid_size=grid_sample_size)
+        coord = coord[gs_indices]
+        total_energy = total_energy[gs_indices]
+        source_index = source_index[gs_indices]
 
     return validate_point_view(
         {
@@ -491,6 +537,8 @@ def build_sonata_batch(
     energy_transform: str = "raw",
     energy_min: float = 1.0e-2,
     energy_max: float = 20.0,
+    grid_sample_enabled: bool = True,
+    grid_sample_size: float = 0.002,
 ) -> SonataBatch:
     """Build the packed global/local multiview batch expected by Sonata."""
 
@@ -507,6 +555,8 @@ def build_sonata_batch(
             energy_transform=energy_transform,
             energy_min=energy_min,
             energy_max=energy_max,
+            grid_sample_enabled=grid_sample_enabled,
+            grid_sample_size=grid_sample_size,
         )
 
         for view_index in range(num_global_views):
