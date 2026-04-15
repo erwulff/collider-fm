@@ -19,6 +19,7 @@ from collider_fm.project_config import (
     load_project_config,
     model_factory_kwargs,
     select_model_config,
+    sonata_batch_kwargs,
 )
 from collider_fm.views import (
     SonataBatch,
@@ -45,33 +46,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
 
-def _build_sonata_kwargs(config: DictConfig) -> dict:
-    view_config = config.views
-    return dict(
-        max_calo_hits=view_config.max_calo_hits,
-        grid_size=float(select_model_config(config, "diagnostics").grid_size),
-        coord_noise_scale=view_config.coord_noise_scale,
-        feat_noise_scale=view_config.energy_jitter_scale,
-        point_dropout=view_config.point_dropout,
-        num_global_views=view_config.num_global_views,
-        num_local_views=view_config.num_local_views,
-        global_crop_min_ratio=view_config.global_crop_min_ratio,
-        global_crop_max_ratio=view_config.global_crop_max_ratio,
-        local_crop_min_ratio=view_config.local_crop_min_ratio,
-        local_crop_max_ratio=view_config.local_crop_max_ratio,
-        coord_center=view_config.coord_center,
-        coord_scale=view_config.coord_scale,
-        energy_transform=view_config.energy_transform,
-        energy_min=view_config.energy_min,
-        energy_max=view_config.energy_max,
-        grid_sample_enabled=bool(view_config.get("grid_sample_enabled", False)),
-        grid_sample_size=float(view_config.get("grid_sample_size", 0.002)),
-    )
-
-
 def load_smoke_test_views(
-    config: DictConfig, device: torch.device
+    config: DictConfig, device: torch.device, batch_kwargs: dict[str, object]
 ) -> tuple[SonataBatch, str]:
+    """Load one cached event, or optionally synthesize one for a CUDA-only check."""
+
     data_config = config.data
     smoke_config = config.smoke_test
     try:
@@ -86,9 +65,7 @@ def load_smoke_test_views(
             local_files_only=data_config.local_files_only,
         )
         event = dataset[0]
-        model_inputs = build_sonata_batch(
-            [event], device=device, **_build_sonata_kwargs(config)
-        )
+        model_inputs = build_sonata_batch([event], device=device, **batch_kwargs)
         return model_inputs, "ColliderML cached event"
     except Exception as exc:
         if not smoke_config.get("allow_synthetic_fallback", False):
@@ -108,15 +85,18 @@ def load_smoke_test_views(
                 "total_energy": total_energy,
             }
         }
-        model_inputs = build_sonata_batch(
-            [base_event], device=device, **_build_sonata_kwargs(config)
-        )
+        model_inputs = build_sonata_batch([base_event], device=device, **batch_kwargs)
         return model_inputs, f"synthetic fallback ({type(exc).__name__}: {exc})"
 
 
 def run_smoke_test(project_config: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    batch_kwargs = sonata_batch_kwargs(
+        project_config,
+        "diagnostics",
+        max_calo_hits=project_config.views.max_calo_hits,
+    )
 
     model = create_small_model(
         device=device,
@@ -131,14 +111,15 @@ def run_smoke_test(project_config: DictConfig) -> None:
         )
         return
 
-    batch, data_source = load_smoke_test_views(project_config, device)
-    max_calo_hits = project_config.smoke_test.max_calo_hits
+    batch, data_source = load_smoke_test_views(project_config, device, batch_kwargs)
+    max_calo_hits = batch_kwargs["max_calo_hits"]
+    point_limit = (
+        "full-event point views" if max_calo_hits is None else f"calo<={max_calo_hits}"
+    )
     print(f"Smoke test data source: {data_source}")
     model.setup_schedulers(total_steps=1)
     model.step_schedules()
-    print(
-        f"Smoke test global points: {batch['global_coord'].shape[0]} (calo<={max_calo_hits})"
-    )
+    print(f"Smoke test global points: {batch['global_coord'].shape[0]} ({point_limit})")
     result_dict = model(batch)
     loss = result_dict["loss"]
     model.update_teacher(momentum=None)

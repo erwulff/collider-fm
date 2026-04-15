@@ -13,6 +13,8 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.yaml"
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
+    """Resolve a config path relative to the repository root when needed."""
+
     if config_path is None:
         return DEFAULT_CONFIG_PATH
     candidate = Path(config_path)
@@ -25,6 +27,8 @@ def load_project_config(
     config_path: str | Path | None = None,
     overrides: Sequence[str] | None = None,
 ) -> DictConfig:
+    """Load the default config, optionally merge a file, then apply dotlist overrides."""
+
     base_config = OmegaConf.load(DEFAULT_CONFIG_PATH)
     resolved_path = resolve_config_path(config_path)
     merged_config = base_config
@@ -91,6 +95,8 @@ def build_config_arg_parser(
 
 
 def to_plain_container(config: Any) -> Any:
+    """Convert OmegaConf containers into plain Python values."""
+
     if not OmegaConf.is_config(config):
         return config
     return OmegaConf.to_container(config, resolve=True)
@@ -116,6 +122,8 @@ def _collect_override_lines(prefix: str, value: Any) -> list[str]:
 def model_factory_kwargs(
     model_config: DictConfig | dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Translate config sections into the model factory's kwargs shape."""
+
     if model_config is None:
         return {}
     plain_config = dict(to_plain_container(model_config))
@@ -126,6 +134,55 @@ def model_factory_kwargs(
 
 
 def select_model_config(config: DictConfig, flavor: str) -> DictConfig:
+    """Select one named model config block from the shared project config."""
+
     if flavor not in {"training", "diagnostics"}:
         raise ValueError(f"Unsupported model flavor: {flavor}.")
     return config.model[flavor]
+
+
+def point_view_kwargs(
+    config: DictConfig, flavor: str, *, max_calo_hits: int | None
+) -> dict[str, Any]:
+    """Build `build_point_view_from_event()` kwargs from the shared config."""
+
+    view_config = config.views
+    model_config = select_model_config(config, flavor)
+    return {
+        "max_calo_hits": max_calo_hits,
+        "grid_size": float(model_config.grid_size),
+        "coord_center": view_config.coord_center,
+        "coord_scale": view_config.coord_scale,
+        "energy_transform": view_config.energy_transform,
+        "energy_min": view_config.energy_min,
+        "energy_max": view_config.energy_max,
+        "grid_sample_enabled": bool(view_config.get("grid_sample_enabled", False)),
+        "grid_sample_size": float(view_config.get("grid_sample_size", 0.002)),
+    }
+
+
+def sonata_batch_kwargs(
+    config: DictConfig, flavor: str, *, max_calo_hits: int | None
+) -> dict[str, Any]:
+    """Build `build_sonata_batch()` kwargs from the shared config."""
+
+    view_config = config.views
+    batch_kwargs = point_view_kwargs(
+        config,
+        flavor,
+        max_calo_hits=max_calo_hits,
+    )
+    batch_kwargs.update(
+        {
+            "coord_noise_scale": view_config.coord_noise_scale,
+            "feat_noise_scale": view_config.energy_jitter_scale,
+            "point_dropout": view_config.point_dropout,
+            "num_global_views": view_config.num_global_views,
+            "num_local_views": view_config.num_local_views,
+            "global_crop_min_ratio": view_config.global_crop_min_ratio,
+            "global_crop_max_ratio": view_config.global_crop_max_ratio,
+            "local_crop_min_ratio": view_config.local_crop_min_ratio,
+            "local_crop_max_ratio": view_config.local_crop_max_ratio,
+        }
+    )
+    return batch_kwargs
