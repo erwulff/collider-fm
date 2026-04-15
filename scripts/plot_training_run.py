@@ -53,22 +53,26 @@ def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
 
 
 def metric_series(
-    records: list[dict[str, Any]], key: str
+    records: list[dict[str, Any]], key: str, *, x_key: str = "epoch"
 ) -> tuple[list[float], list[float]]:
-    """Extract one metric series against epoch index."""
+    """Extract one metric series against an explicit x-axis key."""
 
     xs = []
     ys = []
     for index, record in enumerate(records, start=1):
         if key not in record:
             continue
-        xs.append(float(record.get("epoch", index)))
+        xs.append(float(record.get(x_key, index)))
         ys.append(float(record[key]))
     return xs, ys
 
 
 def metric_gap(
-    records: list[dict[str, Any]], train_key: str, val_key: str
+    records: list[dict[str, Any]],
+    train_key: str,
+    val_key: str,
+    *,
+    x_key: str = "epoch",
 ) -> tuple[list[float], list[float]]:
     """Compute the validation-minus-training gap for one metric pair."""
 
@@ -77,7 +81,7 @@ def metric_gap(
     for index, record in enumerate(records, start=1):
         if train_key not in record or val_key not in record:
             continue
-        xs.append(float(record.get("epoch", index)))
+        xs.append(float(record.get(x_key, index)))
         ys.append(float(record[val_key]) - float(record[train_key]))
     return xs, ys
 
@@ -111,9 +115,12 @@ def plot_metric_pair(
     train_key: str,
     val_key: str,
     best_epoch_index: int | None,
+    *,
+    x_key: str = "epoch",
+    x_label: str = "epoch",
 ) -> None:
-    train_x, train_y = metric_series(records, train_key)
-    val_x, val_y = metric_series(records, val_key)
+    train_x, train_y = metric_series(records, train_key, x_key=x_key)
+    val_x, val_y = metric_series(records, val_key, x_key=x_key)
     if not train_y and not val_y:
         axis.set_axis_off()
         return
@@ -123,7 +130,7 @@ def plot_metric_pair(
         axis.plot(val_x, val_y, marker="o", label="val")
     add_best_epoch_marker(axis, best_epoch_index)
     axis.set_title(title)
-    axis.set_xlabel("epoch")
+    axis.set_xlabel(x_label)
     axis.legend()
 
 
@@ -133,15 +140,18 @@ def plot_metric_single(
     title: str,
     key: str,
     best_epoch_index: int | None,
+    *,
+    x_key: str = "epoch",
+    x_label: str = "epoch",
 ) -> None:
-    xs, ys = metric_series(records, key)
+    xs, ys = metric_series(records, key, x_key=x_key)
     if not ys:
         axis.set_axis_off()
         return
     axis.plot(xs, ys, marker="o")
     add_best_epoch_marker(axis, best_epoch_index)
     axis.set_title(title)
-    axis.set_xlabel("epoch")
+    axis.set_xlabel(x_label)
 
 
 def plot_gap_series(
@@ -151,8 +161,11 @@ def plot_gap_series(
     train_key: str,
     val_key: str,
     best_epoch_index: int | None,
+    *,
+    x_key: str = "epoch",
+    x_label: str = "epoch",
 ) -> None:
-    xs, ys = metric_gap(records, train_key, val_key)
+    xs, ys = metric_gap(records, train_key, val_key, x_key=x_key)
     if not ys:
         axis.set_axis_off()
         return
@@ -160,7 +173,7 @@ def plot_gap_series(
     axis.axhline(0.0, color="tab:gray", linestyle=":", linewidth=1)
     add_best_epoch_marker(axis, best_epoch_index)
     axis.set_title(title)
-    axis.set_xlabel("epoch")
+    axis.set_xlabel(x_label)
 
 
 def plot_loss_curves(
@@ -206,19 +219,34 @@ def plot_representation_curves(
 def plot_optimization_curves(
     records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
 ) -> None:
+    del best_epoch_index
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     plot_metric_single(
-        axes[0], records, "Learning Rate", "learning_rate", best_epoch_index
+        axes[0],
+        records,
+        "Learning Rate",
+        "learning_rate",
+        None,
+        x_key="step",
+        x_label="step",
     )
     plot_metric_single(
-        axes[1], records, "Teacher Momentum", "teacher_momentum", best_epoch_index
+        axes[1],
+        records,
+        "Teacher Momentum",
+        "teacher_momentum",
+        None,
+        x_key="step",
+        x_label="step",
     )
     plot_metric_single(
         axes[2],
         records,
         "Teacher Temperature",
         "teacher_temperature",
-        best_epoch_index,
+        None,
+        x_key="step",
+        x_label="step",
     )
     fig.suptitle("Optimization And Teacher Schedules")
     save_figure(fig, path)

@@ -39,6 +39,7 @@ from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
     model_factory_kwargs,
+    point_view_kwargs,
     select_model_config,
     to_plain_container,
 )
@@ -124,24 +125,6 @@ def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
         "total_energy": normalized["total_energy"],
         "patch_id": normalized["patch_id"],
         "mask": normalized["mask"],
-    }
-
-
-def diagnostic_view_kwargs(project_config: Any) -> dict[str, Any]:
-    """Reuse the same point-view transform as training/diagnostics configs."""
-
-    view_config = project_config.views
-    model_config = select_model_config(project_config, "diagnostics")
-    return {
-        "max_calo_hits": project_config.diagnostics.max_calo_hits,
-        "grid_size": float(model_config.grid_size),
-        "coord_center": view_config.coord_center,
-        "coord_scale": view_config.coord_scale,
-        "energy_transform": view_config.energy_transform,
-        "energy_min": view_config.energy_min,
-        "energy_max": view_config.energy_max,
-        "grid_sample_enabled": bool(view_config.get("grid_sample_enabled", False)),
-        "grid_sample_size": float(view_config.get("grid_sample_size", 0.002)),
     }
 
 
@@ -537,14 +520,16 @@ def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
 
 
 def _metric_series(
-    records: Sequence[dict[str, Any]], key: str
+    records: Sequence[dict[str, Any]], key: str, *, x_key: str = "epoch"
 ) -> tuple[list[float], list[float]]:
+    """Extract one metric series against an explicit x-axis key."""
+
     xs = []
     ys = []
-    for record in records:
+    for index, record in enumerate(records, start=1):
         if key not in record:
             continue
-        xs.append(float(record.get("epoch", len(xs) + 1)))
+        xs.append(float(record.get(x_key, index)))
         ys.append(float(record[key]))
     return xs, ys
 
@@ -581,11 +566,11 @@ def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
     ]
 
     for axis, (title, key) in zip(axes, curve_specs):
-        xs, ys = _metric_series(records, key)
+        xs, ys = _metric_series(records, key, x_key="step")
         if ys:
             axis.plot(xs, ys, marker="o")
         axis.set_title(title)
-        axis.set_xlabel("epoch")
+        axis.set_xlabel("step")
 
     fig.suptitle("Training schedules")
     save_figure(fig, path)
@@ -633,7 +618,11 @@ def main() -> None:
     if not representation_events:
         raise ValueError("The representation diagnostic split returned no events.")
 
-    view_kwargs = diagnostic_view_kwargs(project_config)
+    view_kwargs = point_view_kwargs(
+        project_config,
+        "diagnostics",
+        max_calo_hits=diagnostics_config.max_calo_hits,
+    )
 
     base_view = build_point_view_from_event(detail_event, device=device, **view_kwargs)
     aug_a = augment_point_view(normalize_tensor_view(base_view))
