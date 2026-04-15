@@ -31,7 +31,7 @@ model:
   training:
     in_channels: 4
     grid_size: 0.002
-    head_embed_channels: 512
+    head_embed_channels: 256
     head_num_prototypes: 4096
     num_global_view: 2
     num_local_view: 4
