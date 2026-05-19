@@ -30,6 +30,7 @@ dependencies = [
     "flash-attn",
     "packaging",
     "ninja",
+    "ray[train,tune]>=2.47",
 ]
 
 [tool.setuptools]
