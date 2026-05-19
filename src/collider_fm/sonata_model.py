@@ -413,10 +413,20 @@ class SonataSelfDistillation(nn.Module):
     def sinkhorn_knopp(
         feat: torch.Tensor, temp: float, num_iter: int = 3
     ) -> torch.Tensor:
-        """Normalize teacher logits into balanced prototype assignments."""
+        """Normalize teacher logits into balanced prototype assignments.
 
-        if feat.shape[0] == 0:
-            return feat.new_zeros((0, feat.shape[1]))
+        Always participates in distributed collectives so that ranks with
+        zero-length local inputs do not cause hangs under DDP.
+        """
+
+        num_prototypes = feat.shape[1] if feat.ndim == 2 else 1
+        empty = feat.shape[0] == 0
+
+        if empty:
+            # Build a zero-valued placeholder that has the right shape for
+            # the collective operations below.  The result is replaced with
+            # a true zero-tensor before returning.
+            feat = feat.new_zeros((1, num_prototypes))
 
         feat = feat.float()
         q = torch.exp(feat / temp).t()
@@ -438,6 +448,9 @@ class SonataSelfDistillation(nn.Module):
             q = q / q_row_sum.clamp_min(1e-12) / k
             q = q / q.sum(dim=0, keepdim=True).clamp_min(1e-12) / n
         q *= n
+
+        if empty:
+            return q.new_zeros((0, num_prototypes))
         return q.t()
 
     def generate_mask(
