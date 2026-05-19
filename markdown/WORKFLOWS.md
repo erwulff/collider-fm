@@ -18,7 +18,8 @@ This document collects the detailed runtime contract, configuration notes, and c
   - cosine schedulers for mask size, mask ratio, temperature, and EMA momentum
   - `match_neighbour` alignment via `origin_coord`
 - current training defaults:
-  - `training.batch_size=8`
+  - `training.batch_size=8` (per-GPU; global batch = `batch_size * num_gpus`)
+  - `training.num_gpus=1`
   - `training.mixed_precision=bf16`
   - flash attention enabled by default via `flash_attn`
   - `views.grid_sample_enabled=true`, `views.grid_sample_size=0.002`
@@ -38,15 +39,22 @@ uv run python scripts/train.py training.batch_size=8 training.num_epochs=10 trai
 Common overrides:
 
 - `training.run_dir` and `training.run_name`
+- `training.num_gpus` (per-GPU batch size; global batch scales with GPU count)
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
 
-To start a training run:
+To start a single-GPU training run:
 
 ```bash
 uv run python scripts/train.py training.num_epochs=20 training.batch_size=8 data.local_files_only=true
+```
+
+To start a multi-GPU run:
+
+```bash
+uv run python scripts/train.py training.num_gpus=4 training.batch_size=8 data.local_files_only=true
 ```
 
 To disable flash attention for comparison:
@@ -122,15 +130,35 @@ For SLURM workflows, see `markdown/HPC.md`.
 
 ## Outputs and logging
 
-Training runs are written by default under `runs/<run_name>_<timestamp>/` and typically include:
+Training runs write two kinds of artifacts:
 
+**Local run directory** (`runs/<run_name>_<timestamp>/`):
 - `config.json`
 - `metrics.jsonl`
-- `checkpoints/best.pt`
-- `checkpoints/latest.pt`
-- per-epoch checkpoints such as `checkpoints/epoch_001.pt`
+- `viz/` (diagnostic PNGs)
+- `checkpoint_path.txt` (points to the Ray checkpoint directory)
 
-Run-level metric plots are written into `runs/<run_name>_<timestamp>/plots/`. Checkpoint-backed diagnostics are typically written under `diagnostics/`.
+**Ray checkpoint storage** (`/mnt/ceph/users/ewulff/raytrain_results/<run_name>/`):
+- `checkpoint_000000/`, `checkpoint_000001/`, ... (each contains `model.pt`, `optimizer.pt`, `scheduler.pt`, `scaler.pt`, `training_state.pt`)
+- Ray keeps the 3 best checkpoints by `val_loss` and prunes the rest
+
+To resume a run, re-run with the same `training.run_name`:
+
+```bash
+uv run python scripts/train.py training.run_name=my_run training.num_gpus=4 data.local_files_only=true
+```
+
+Generate checkpoint-backed diagnostics by pointing at a Ray checkpoint directory:
+
+```bash
+uv run python scripts/plot_diagnostics.py diagnostics.checkpoint=/mnt/ceph/users/ewulff/raytrain_results/<run_name>/checkpoint_000015/
+```
+
+Plot the saved metrics from a local run directory:
+
+```bash
+uv run python scripts/plot_training_run.py runs/<run_name>_<timestamp>
+```
 
 Training always writes local JSONL metrics. Optional Comet logging can be enabled by either a saved `~/.comet.config` or exported variables:
 

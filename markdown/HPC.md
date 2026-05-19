@@ -75,6 +75,23 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - uses `data.local_files_only=true` and logs to Comet
 - optional positional prefix: `sbatch slurm/train_sonata_full.slurm test_x` -> `test_x_sonata_full`
 
+### `slurm/train_sonata_ray_debug.slurm`
+
+- 2-GPU Ray Train debug run
+- 2 GPUs on `a100-80gb`, 16 CPUs
+- 1 epoch, batch_size=4 per GPU, 20 train / 5 val batches
+- uses `training.num_gpus=2`, `training.num_workers=4`
+- optional positional prefix: `sbatch slurm/train_sonata_ray_debug.slurm test_x` -> `test_x_sonata_ray_debug`
+
+### `slurm/train_sonata_ray.slurm`
+
+- 8-GPU Ray Train full run
+- 8 GPUs on `h100`, 64 CPUs
+- 5 epochs, batch_size=8 per GPU (global batch=64), full splits
+- uses `training.num_gpus=8`, `training.num_workers=4`, `data.local_files_only=true`
+- checkpoints persisted to `/mnt/ceph/users/ewulff/raytrain_results/`
+- optional positional prefix: `sbatch slurm/train_sonata_ray.slurm test_x` -> `test_x_sonata_ray_full`
+
 ## Reproducibility and cache usage
 
 The checked-in default dataset revision is:
@@ -89,7 +106,8 @@ For reproducible training, prefer pinning that revision and using `data.local_fi
 
 The checked-in jobs currently use these hardware patterns:
 
-- smoke test and training jobs: single-GPU `a100` or `a100-80gb`
+- smoke test and single-GPU training jobs: `a100` or `a100-80gb`
+- multi-GPU training jobs (2 GPUs for debug, 8 GPUs for full): `h100`/`h200`
 - environment bootstrap jobs: `h100`
 
 When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).

@@ -81,6 +81,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 | Heads | Dual `OnlineCluster` student heads (mask/unmask) + Sinkhorn-Knopp; teacher uses unified mask_head for both branches |
 | Scheduling | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
 | Monitoring | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
+| Multi-GPU | Ray Train (`training_loop.py`) with PyTorch DDP; future Ray Tune HPO compatible |
 
 **Backbone**: Vendored PTv3 in `src/collider_fm/_panda/` — do not modify.
 
@@ -88,7 +89,9 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 **Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`.
 
-**Training loop**: `scripts/train.py` — epoch loop with within-epoch logging/checkpointing/viz.
+**Training loop**: `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint I/O. `scripts/train.py` is a thin CLI driver that launches a `TorchTrainer`.
+
+**Multi-GPU**: `training.num_gpus` controls GPU count per run. `training.batch_size` is per-GPU; global batch = `batch_size * num_gpus`. Checkpoints are persisted by Ray at `training.ray_storage_path`; local `runs/` holds metrics, config, and viz.
 
 **Coordinates**: Normalized (÷5000.0, ~[-1,1]). All spatial params (grid_size, mask_size, match_max_r) are in normalized space.
 
@@ -98,9 +101,10 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 - `src/collider_fm/model.py` — Factory functions (`create_small_model`, `create_training_model`)
 - `src/collider_fm/views.py` — View construction, augmentation, batching
 - `src/collider_fm/data.py` — Dataset and collate
+- `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint save/load
 - `src/collider_fm/experiment_logging.py` — Null/Jsonl/Comet loggers + `log_image`
 - `src/collider_fm/project_config.py` — OmegaConf config loading
-- `scripts/train.py` — Training loop, checkpointing, diagnostic images
+- `scripts/train.py` — Ray Train CLI driver
 - `config/default.yaml` — All defaults
 
 ### Operating principles
@@ -127,7 +131,10 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 - HF cache: `/mnt/ceph/users/ewulff/data/hf`
 - Dataset revision: `e28a24cc9c1641a478ae4e5bc3b376eb624b7283`
 - SLURM jobs source `slurm/load_env.sh`
-- Single-GPU → `a100-80gb`. Multi-GPU (4+) → `h100`/`h200`.
+- Single-GPU → `a100-80gb`. Multi-GPU (2 for debug, 8 for full) → `h100`/`h200`.
+- Ray Train checkpoints: `/mnt/ceph/users/ewulff/raytrain_results/`
+- Ray Tune checkpoints (future HPO): `/mnt/ceph/users/ewulff/raytune_results/`
+- Resume: re-run `scripts/train.py` with the same `training.run_name`.
 - `torch_scatter` requires A100/H100 (no CUDA kernels for RTX Ada / compute 8.9).
 
 ### Docs
