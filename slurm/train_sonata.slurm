@@ -11,7 +11,6 @@
 #SBATCH -e logs_slurm/log_%x_%j.err
 
 
-
 source slurm/load_env.sh
 
 PREFIX="${1:-}"
@@ -23,9 +22,9 @@ export SLURM_JOB_NAME="$JOB_NAME"
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
-uv run python --version
+python --version
 
-uv run python scripts/train.py \
+python scripts/train.py \
     data.local_files_only=true \
     training.num_epochs=20 \
     training.batch_size=8 \

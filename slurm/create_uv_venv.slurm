@@ -19,6 +19,7 @@ uv venv --python 3.12
 
 # Activate the local virtual environment
 source .venv/bin/activate
+export UV_NO_PYTHON_DOWNLOADS=1
 
 echo "Using uv: $(command -v uv)"
 echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"
@@ -26,5 +27,5 @@ echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"
 # Install the project dependencies from pyproject.toml.
 # torch and torchvision resolve from the CUDA 12.8 PyTorch index, and
 # torch-scatter is built from source per the uv settings in pyproject.toml.
-uv sync
+uv sync --locked
  

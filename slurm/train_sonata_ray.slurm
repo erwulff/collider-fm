@@ -21,9 +21,9 @@ export SLURM_JOB_NAME="$JOB_NAME"
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
-uv run python --version
+python --version
 
-uv run python scripts/train.py \
+python scripts/train.py \
     training.num_gpus=8 \
     training.num_workers=4 \
     data.local_files_only=true \

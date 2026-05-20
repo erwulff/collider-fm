@@ -17,10 +17,11 @@ Load `uv` once at the start of the session:
 module load uv
 uv venv --python 3.12
 source .venv/bin/activate
-uv sync --dev
+uv sync --locked --dev
 ```
 
 The shared batch bootstrap lives in `slurm/load_env.sh`. Runtime jobs source that file and fail early if `.venv` has not been created yet.
+The checked-in runtime jobs execute with the activated environment's `python`; `uv` is reserved for environment creation and dependency mutation jobs.
 
 ## Environment bootstrap jobs
 

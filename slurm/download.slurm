@@ -22,7 +22,7 @@ module load slurm uv
 source .venv/bin/activate
 
 # Run the Python script to download the pu0 datasets
-uv run python scripts/download_data.py \
+python scripts/download_data.py \
     download.dataset_types=[ttbar] \
     download.object_types=[calo_hits,tracker_hits,particles] \
     download.pu_config=pu0 \
