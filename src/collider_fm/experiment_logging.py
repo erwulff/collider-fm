@@ -164,7 +164,6 @@ def _default_comet_experiment_factory(
 def create_experiment_logger(
     backend: str,
     run_dir: Path,
-    run_name: str,
     env: Mapping[str, str] | None = None,
     experiment_factory: Any | None = None,
     home_dir: Path | None = None,
@@ -186,6 +185,7 @@ def create_experiment_logger(
                     "Comet logging requested, but neither COMET_API_KEY nor ~/.comet.config was found."
                 )
         else:
+            run_name = run_dir.name
             comet_config = resolve_comet_config(env)
             factory = experiment_factory or _default_comet_experiment_factory
             experiment = factory(
@@ -206,27 +206,6 @@ def create_experiment_logger(
 def timestamp_suffix(timestamp: datetime | None = None) -> str:
     resolved_timestamp = datetime.now() if timestamp is None else timestamp
     return resolved_timestamp.strftime("%Y%m%d_%H%M%S")
-
-
-def ensure_run_directory(
-    project_root: Path, run_dir: str | None = None, run_name: str | None = None
-) -> tuple[Path, str]:
-    """Create or resolve the run directory and attach a timestamped run name."""
-
-    suffix = timestamp_suffix()
-    if run_dir is not None:
-        resolved_run_dir = Path(run_dir)
-        # Keep an explicit output location stable, but still make the logged run name
-        # unique so external trackers and config snapshots do not collide.
-        base_run_name = run_name or resolved_run_dir.name
-        resolved_run_name = f"{base_run_name}_{suffix}"
-    else:
-        base_run_name = run_name or "run"
-        resolved_run_name = f"{base_run_name}_{suffix}"
-        resolved_run_dir = project_root / "runs" / resolved_run_name
-
-    resolved_run_dir.mkdir(parents=True, exist_ok=True)
-    return resolved_run_dir, resolved_run_name
 
 
 def write_run_config(run_dir: Path, config: Mapping[str, Any]) -> Path:

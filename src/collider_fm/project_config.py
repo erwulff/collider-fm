@@ -3,10 +3,14 @@ from __future__ import annotations
 """Shared OmegaConf-based configuration helpers for ColliderFM."""
 
 import argparse
+import shutil
+import warnings
 from pathlib import Path
 from typing import Any, Sequence
 
 from omegaconf import DictConfig, OmegaConf
+
+from .experiment_logging import timestamp_suffix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.yaml"
@@ -100,6 +104,83 @@ def to_plain_container(config: Any) -> Any:
     if not OmegaConf.is_config(config):
         return config
     return OmegaConf.to_container(config, resolve=True)
+
+
+def resolve_run_identity(
+    project_root: Path, run_dir: str | None = None, run_name: str | None = None
+) -> tuple[Path, str]:
+    if run_dir is not None:
+        resolved_run_dir = Path(run_dir)
+        if run_name is None:
+            resolved_run_name = resolved_run_dir.name
+        else:
+            resolved_run_name = str(run_name)
+            if resolved_run_dir.name != resolved_run_name:
+                raise ValueError(
+                    "training.run_dir and training.run_name must refer to the same run identity. "
+                    f"Got run_dir name {resolved_run_dir.name} and run_name {resolved_run_name}."
+                )
+        return resolved_run_dir, resolved_run_name
+
+    resolved_run_name = str(run_name) if run_name else f"run_{timestamp_suffix()}"
+    resolved_run_dir = project_root / "runs" / resolved_run_name
+    return resolved_run_dir, resolved_run_name
+
+
+def resolve_run_lifecycle(
+    project_root: Path,
+    *,
+    ray_storage_path: str | Path,
+    run_dir: str | None = None,
+    run_name: str | None = None,
+    resume: bool = False,
+    overwrite: bool = False,
+) -> tuple[Path, str]:
+    resolved_run_dir, resolved_run_name = resolve_run_identity(
+        project_root, run_dir=run_dir, run_name=run_name
+    )
+    ray_run_dir = Path(ray_storage_path) / resolved_run_name
+
+    if resume and overwrite:
+        raise ValueError(
+            "training.resume=true cannot be combined with training.overwrite=true."
+        )
+
+    if overwrite:
+        warnings.warn(
+            f"Overwriting existing run state for {resolved_run_name}. Removing {resolved_run_dir} and {ray_run_dir} before starting fresh.",
+            stacklevel=2,
+        )
+        if resolved_run_dir.exists():
+            shutil.rmtree(resolved_run_dir)
+        if ray_run_dir.exists():
+            shutil.rmtree(ray_run_dir)
+        return resolved_run_dir, resolved_run_name
+
+    if resume:
+        if run_name is None:
+            raise ValueError(
+                "training.resume=true requires an explicit training.run_name."
+            )
+        if not resolved_run_dir.exists():
+            raise ValueError(
+                f"Run {resolved_run_name} cannot be resumed because local run directory "
+                f"{resolved_run_dir} does not exist."
+            )
+        if not ray_run_dir.exists():
+            raise ValueError(
+                f"Run {resolved_run_name} cannot be resumed because Ray storage directory "
+                f"{ray_run_dir} does not exist."
+            )
+        return resolved_run_dir, resolved_run_name
+
+    if resolved_run_dir.exists() or ray_run_dir.exists():
+        raise ValueError(
+            f"Run {resolved_run_name} already exists. Set training.resume=true to continue, "
+            "choose a new training.run_name, or use training.overwrite=true to start fresh."
+        )
+
+    return resolved_run_dir, resolved_run_name
 
 
 def _format_override_value(value: Any) -> str:

@@ -26,7 +26,6 @@ from .data import ColliderMLDataset, collate_fn
 from .experiment_logging import (
     NullLogger,
     create_experiment_logger,
-    ensure_run_directory,
     write_run_config,
 )
 from .model import create_training_model
@@ -539,18 +538,16 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     )
 
     # Run directory & logging — only rank 0 creates real artifacts
-    project_root = Path(train_loop_config.get("_project_root", "."))
     run_dir: Path | None = None
     logger: Any = NullLogger()
     if is_rank0:
-        run_dir, run_name = ensure_run_directory(
-            project_root,
-            run_dir=training_config.get("run_dir"),
-            run_name=training_config.get("run_name"),
-        )
-        logger = create_experiment_logger(
-            training_config.log_backend, run_dir=run_dir, run_name=run_name
-        )
+        run_dir_value = training_config.get("run_dir")
+        if run_dir_value is None:
+            raise ValueError("training.run_dir must be resolved before entering train_loop_per_worker.")
+        run_dir = Path(run_dir_value)
+        run_name = run_dir.name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        logger = create_experiment_logger(training_config.log_backend, run_dir=run_dir)
         run_config_dict = to_plain_container(config) | {
             "device": str(device),
             "run_dir": str(run_dir),
@@ -563,9 +560,8 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
         storage_path = training_config.get(
             "ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/"
         )
-        ray_run_name = training_config.get("ray_run_name", run_name)
         (run_dir / "checkpoint_path.txt").write_text(
-            str(Path(storage_path) / ray_run_name) + "\n"
+            str(Path(storage_path) / run_name) + "\n"
         )
 
     mixed_precision_dtype = resolve_mixed_precision_dtype(training_config, device)
@@ -711,9 +707,9 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             if is_best:
                 best_val_loss = epoch_metrics["val_loss"]
 
-            ray_checkpoint = None
-            if is_rank0:
-                with tempfile.TemporaryDirectory() as tmpdir:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ray_checkpoint = None
+                if is_rank0:
                     save_checkpoint_to_dir(
                         Path(tmpdir), model, optimizer, lr_scheduler, grad_scaler,
                         epoch=epoch + 1,
@@ -722,10 +718,10 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                     )
                     ray_checkpoint = ray.train.Checkpoint.from_directory(tmpdir)
 
-            ray.train.report(
-                metrics={"val_loss": epoch_metrics["val_loss"]} if not is_rank0 else epoch_metrics,
-                checkpoint=ray_checkpoint,
-            )
+                ray.train.report(
+                    metrics={"val_loss": epoch_metrics["val_loss"]} if not is_rank0 else epoch_metrics,
+                    checkpoint=ray_checkpoint,
+                )
 
     finally:
         if is_rank0:

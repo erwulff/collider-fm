@@ -21,6 +21,7 @@ from ray.train.torch import TorchTrainer
 from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
+    resolve_run_lifecycle,
     to_plain_container,
 )
 from collider_fm.training_loop import train_loop_per_worker
@@ -51,15 +52,26 @@ def main() -> None:
     training_config = config.training
 
     num_gpus = int(training_config.get("num_gpus", 1))
-    run_name = str(training_config.get("run_name") or "sonata_run")
+    resume = bool(training_config.get("resume", False))
+    overwrite = bool(training_config.get("overwrite", False))
     storage_path = str(
         training_config.get("ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/")
+    )
+    resolved_run_dir, resolved_run_name = resolve_run_lifecycle(
+        PROJECT_ROOT,
+        ray_storage_path=storage_path,
+        run_dir=training_config.get("run_dir"),
+        run_name=training_config.get("run_name"),
+        resume=resume,
+        overwrite=overwrite,
     )
 
     # Serialize the full config so each Ray worker gets a copy
     config_dict = to_plain_container(config)
     config_dict["_project_root"] = str(PROJECT_ROOT)
-    config_dict["training"]["ray_run_name"] = run_name
+    config_dict["training"]["run_dir"] = str(resolved_run_dir)
+    config_dict["training"]["resume"] = resume
+    config_dict["training"]["overwrite"] = overwrite
 
     trainer = TorchTrainer(
         train_loop_per_worker,
@@ -69,7 +81,7 @@ def main() -> None:
             use_gpu=True,
         ),
         run_config=ray.train.RunConfig(
-            name=run_name,
+            name=resolved_run_name,
             storage_path=storage_path,
             failure_config=ray.train.FailureConfig(max_failures=3),
             checkpoint_config=ray.train.CheckpointConfig(
@@ -80,7 +92,10 @@ def main() -> None:
         ),
     )
 
-    print(f"Launching Ray Train: {num_gpus} GPU(s), storage={storage_path}, name={run_name}")
+    print(
+        f"Launching Ray Train: {num_gpus} GPU(s), storage={storage_path}, "
+        f"name={resolved_run_name}, resume={resume}"
+    )
     result = trainer.fit()
     print(f"Training finished. Best checkpoint: {result.checkpoint.path}")
 
