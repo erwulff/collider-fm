@@ -39,6 +39,7 @@ uv run python scripts/train.py training.batch_size=8 training.num_epochs=10 trai
 Common overrides:
 
 - `training.run_dir` and `training.run_name`
+- `training.resume=true|false`
 - `training.num_gpus` (per-GPU batch size; global batch scales with GPU count)
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
 - `training.mixed_precision=none|bf16|fp16`
@@ -109,13 +110,13 @@ uv run python scripts/train.py training.num_epochs=1 training.max_train_batches=
 Generate checkpoint-backed diagnostics:
 
 ```bash
-uv run python scripts/plot_diagnostics.py diagnostics.checkpoint=runs/<run_name>_<timestamp>/checkpoints/best.pt
+uv run python scripts/plot_diagnostics.py diagnostics.checkpoint=/mnt/ceph/users/ewulff/raytrain_results/<run_name>/checkpoint_000015/
 ```
 
 Plot the saved metrics from a completed run:
 
 ```bash
-uv run python scripts/plot_training_run.py runs/<run_name>_<timestamp>
+uv run python scripts/plot_training_run.py runs/<run_name>
 ```
 
 Open the walkthrough notebooks:
@@ -132,7 +133,7 @@ For SLURM workflows, see `markdown/HPC.md`.
 
 Training runs write two kinds of artifacts:
 
-**Local run directory** (`runs/<run_name>_<timestamp>/`):
+**Local run directory** (`runs/<run_name>/` by default):
 - `config.json`
 - `metrics.jsonl`
 - `viz/` (diagnostic PNGs)
@@ -142,10 +143,21 @@ Training runs write two kinds of artifacts:
 - `checkpoint_000000/`, `checkpoint_000001/`, ... (each contains `model.pt`, `optimizer.pt`, `scheduler.pt`, `scaler.pt`, `training_state.pt`)
 - Ray keeps the 3 best checkpoints by `val_loss` and prunes the rest
 
-To resume a run, re-run with the same `training.run_name`:
+Fresh runs are explicit:
+
+- If `training.run_name` is set, that value is used verbatim for both the local run directory and the Ray storage folder.
+- If `training.run_name` is unset, a unique `run_<timestamp>` ID is generated for a fresh run.
+- A fresh run fails if the target local run directory or Ray storage directory already exists.
+
+Resume is also explicit:
+
+- `training.resume=true` requires an explicit `training.run_name`.
+- Resume fails unless the local run directory already exists and a valid checkpoint is present under `/mnt/ceph/users/ewulff/raytrain_results/<run_name>/`.
+
+To resume a run, re-run with the same `training.run_name` and set `training.resume=true`:
 
 ```bash
-uv run python scripts/train.py training.run_name=my_run training.num_gpus=4 data.local_files_only=true
+uv run python scripts/train.py training.run_name=my_run training.resume=true training.num_gpus=4 data.local_files_only=true
 ```
 
 Generate checkpoint-backed diagnostics by pointing at a Ray checkpoint directory:
@@ -157,7 +169,7 @@ uv run python scripts/plot_diagnostics.py diagnostics.checkpoint=/mnt/ceph/users
 Plot the saved metrics from a local run directory:
 
 ```bash
-uv run python scripts/plot_training_run.py runs/<run_name>_<timestamp>
+uv run python scripts/plot_training_run.py runs/<run_name>
 ```
 
 Training always writes local JSONL metrics. Optional Comet logging can be enabled by either a saved `~/.comet.config` or exported variables:

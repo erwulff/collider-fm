@@ -134,7 +134,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 - Single-GPU → `a100-80gb`. Multi-GPU (2 for debug, 8 for full) → `h100`/`h200`.
 - Ray Train checkpoints: `/mnt/ceph/users/ewulff/raytrain_results/`
 - Ray Tune checkpoints (future HPO): `/mnt/ceph/users/ewulff/raytune_results/`
-- Resume: re-run `scripts/train.py` with the same `training.run_name`.
+- Resume: re-run `scripts/train.py` with the same `training.run_name` and `training.resume=true`.
 - `torch_scatter` requires A100/H100 (no CUDA kernels for RTX Ada / compute 8.9).
 
 ### Docs
