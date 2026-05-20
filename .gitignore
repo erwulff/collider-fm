@@ -13,5 +13,7 @@ wheels/
 logs_slurm/*
 
 # Generated local outputs
+.vscode/
+
 runs/
 diagnostics/
