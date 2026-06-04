@@ -177,27 +177,3 @@ def collate_fn(
     """
     return batch
 
-
-if __name__ == "__main__":
-    # Test the dataset
-    print("Testing ColliderMLDataset...")
-    dataset = ColliderMLDataset(split="train[:10]")
-    print(f"Dataset size: {len(dataset)}")
-
-    # Get the first event
-    sample = dataset[0]
-    print("\nKeys in first sample:")
-    for obj_type in sample.keys():
-        print(f"  {obj_type}: {sample[obj_type].keys()}")
-
-    calo_hits = sample["calo_hits"]
-    num_hits = len(calo_hits["x"])
-    print(f"\nNumber of calorimeter hits in event 0: {num_hits}")
-    print(f"First 5 calorimeter energies: {calo_hits['total_energy'][:5]}")
-
-    # Create a DataLoader
-    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
-    for i, batch in enumerate(dataloader):
-        print(f"\nBatch {i} size: {len(batch)}")
-        if i >= 0:
-            break

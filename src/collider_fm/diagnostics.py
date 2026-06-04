@@ -84,13 +84,6 @@ def to_numpy(tensor: torch.Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
 
 
-def radius(values: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Compute the radial distance for hit dictionaries with x/y/z coordinates."""
-    return torch.linalg.norm(
-        torch.stack([values["x"], values["y"], values["z"]], dim=1), dim=1
-    )
-
-
 def tensor_summary(tensor: torch.Tensor) -> dict[str, Any]:
     """Return lightweight shape and summary statistics for a tensor."""
     array = tensor.detach().cpu()
@@ -120,14 +113,6 @@ def compute_pca(features: np.ndarray, n_components: int = 2) -> np.ndarray:
     _, _, vt = np.linalg.svd(centered, full_matrices=False)
     components = vt[:n_components]
     return centered @ components.T
-
-
-def sample_indices(num_items: int, max_items: int, seed: int) -> np.ndarray:
-    """Pick a reproducible subset of indices when a point cloud is too large to plot."""
-    if num_items <= max_items:
-        return np.arange(num_items)
-    rng = np.random.default_rng(seed)
-    return np.sort(rng.choice(num_items, size=max_items, replace=False))
 
 
 @torch.no_grad()
