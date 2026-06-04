@@ -102,6 +102,11 @@ model:
 training:
   run_dir:
   run_name:
+  resume: false
+  overwrite: false
+  num_gpus: 1
+  seed: 42
+  ray_storage_path: /mnt/ceph/users/ewulff/raytrain_results/
   train_split: train
   val_split: val
   batch_size: 8

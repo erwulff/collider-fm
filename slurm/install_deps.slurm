@@ -15,6 +15,7 @@ module load slurm gcc cmake cuda/12.8.0 cudnn/9.2.0.82-12 nccl openmpi apptainer
 
 # Activate the local virtual environment
 source .venv/bin/activate
+export UV_NO_PYTHON_DOWNLOADS=1
 
 echo "Using uv: $(command -v uv)"
 echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"

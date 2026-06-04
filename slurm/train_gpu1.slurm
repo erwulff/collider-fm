@@ -1,37 +1,30 @@
 #!/bin/bash
-#SBATCH -t 08:00:00
+#SBATCH -t 72:00:00
 #SBATCH -N 1
 #SBATCH --tasks-per-node=1
 #SBATCH -p gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C a100-80gb
-#SBATCH -J train_sonata
+#SBATCH -J train_gpu1
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
-
-
 
 source slurm/load_env.sh
 
 PREFIX="${1:-}"
-RUN_NAME="${PREFIX:+${PREFIX}_}sonata"
-JOB_NAME="${PREFIX:+${PREFIX}_}sonata"
-
-export SLURM_JOB_NAME="$JOB_NAME"
+RUN_NAME="${PREFIX:+${PREFIX}_}sonata_full"
 
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
-uv run python --version
+python --version
 
-uv run python scripts/train.py \
+python scripts/train.py \
     data.local_files_only=true \
-    training.num_epochs=20 \
+    training.num_epochs=5 \
     training.batch_size=8 \
-    training.max_train_batches=100 \
-    training.max_val_batches=10 \
-    training.train_split=train[:5000] \
-    training.val_split=val[:200] \
+    training.train_split=train \
+    training.val_split=val \
     training.log_backend=comet \
     training.run_name="$RUN_NAME"

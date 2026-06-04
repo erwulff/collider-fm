@@ -9,9 +9,10 @@ if [ ! -f .venv/bin/activate ]; then
 fi
 
 source .venv/bin/activate
+export UV_NO_PYTHON_DOWNLOADS=1
+
 echo "Using Python: $(which python)"
 python --version
 
 echo "Using uv: $(command -v uv)"
 echo "uv version: $(uv --version)"
-echo "uv Python version: $(uv run python --version)"

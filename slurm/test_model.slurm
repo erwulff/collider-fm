@@ -14,6 +14,6 @@ source slurm/load_env.sh
 
 nvidia-smi
 echo "Using uv: $(command -v uv)"
-uv run python --version
+python --version
 
-uv run python scripts/smoke_test_model.py
+python scripts/smoke_test_model.py

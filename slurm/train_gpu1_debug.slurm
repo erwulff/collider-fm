@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C a100
-#SBATCH -J train_sonata_debug
+#SBATCH -J dbg_train_gpu1
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
@@ -15,16 +15,13 @@ source slurm/load_env.sh
 
 PREFIX="${1:-}"
 RUN_NAME="${PREFIX:+${PREFIX}_}sonata_debug"
-JOB_NAME="${PREFIX:+${PREFIX}_}sonata_debug"
-
-export SLURM_JOB_NAME="$JOB_NAME"
 
 nvidia-smi
 
 echo "Using uv: $(command -v uv)"
-uv run python --version
+python --version
 
-uv run python scripts/train.py \
+python scripts/train.py \
     data.local_files_only=true \
     training.num_epochs=4 \
     training.batch_size=4 \
