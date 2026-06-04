@@ -14,9 +14,6 @@ source slurm/load_env.sh
 
 PREFIX="${1:-}"
 RUN_NAME="${PREFIX:+${PREFIX}_}train_multigpu"
-JOB_NAME="${PREFIX:+${PREFIX}_}train_multigpu"
-
-export SLURM_JOB_NAME="$JOB_NAME"
 
 nvidia-smi
 

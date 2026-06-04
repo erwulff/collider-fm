@@ -15,9 +15,6 @@ source slurm/load_env.sh
 
 PREFIX="${1:-}"
 RUN_NAME="${PREFIX:+${PREFIX}_}sonata_debug"
-JOB_NAME="${PREFIX:+${PREFIX}_}sonata_debug"
-
-export SLURM_JOB_NAME="$JOB_NAME"
 
 nvidia-smi
 

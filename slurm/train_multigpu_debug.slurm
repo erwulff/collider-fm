@@ -14,9 +14,6 @@ source slurm/load_env.sh
 
 PREFIX="${1:-}"
 RUN_NAME="${PREFIX:+${PREFIX}_}train_multigpu_debug"
-JOB_NAME="${PREFIX:+${PREFIX}_}train_multigpu_debug"
-
-export SLURM_JOB_NAME="$JOB_NAME"
 
 nvidia-smi
 
@@ -29,7 +26,7 @@ python scripts/train.py \
     training.max_train_batches=20 \
     training.max_val_batches=5 \
     data.local_files_only=true \
-    training.num_epochs=1 \
+    training.num_epochs=2 \
     training.batch_size=4 \
     training.log_backend=jsonl \
     training.run_name="$RUN_NAME"
