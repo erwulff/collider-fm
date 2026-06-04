@@ -13,8 +13,8 @@
 source slurm/load_env.sh
 
 PREFIX="${1:-}"
-RUN_NAME="${PREFIX:+${PREFIX}_}sonata_ray_debug"
-JOB_NAME="${PREFIX:+${PREFIX}_}sonata_ray_debug"
+RUN_NAME="${PREFIX:+${PREFIX}_}train_multigpu_debug"
+JOB_NAME="${PREFIX:+${PREFIX}_}train_multigpu_debug"
 
 export SLURM_JOB_NAME="$JOB_NAME"
 
