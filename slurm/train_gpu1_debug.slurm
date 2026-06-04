@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH -C a100
-#SBATCH -J train_sonata_debug
+#SBATCH -J dbg_train_gpu1
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 

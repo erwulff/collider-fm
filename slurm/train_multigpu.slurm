@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=64
 #SBATCH -C h100
-#SBATCH -J sonata_ray
+#SBATCH -J train_multigpu
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
