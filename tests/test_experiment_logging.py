@@ -26,8 +26,8 @@ class FakeExperiment:
     def log_parameters(self, params):
         self.params = params
 
-    def log_metrics(self, metrics, step=None):
-        self.metrics.append((metrics, step))
+    def log_metrics(self, metrics, step=None, epoch=None):
+        self.metrics.append((metrics, step, epoch))
 
     def end(self):
         self.finished = True
@@ -57,6 +57,18 @@ class ExperimentLoggingTests(unittest.TestCase):
             ]
             self.assertEqual(records, [{"epoch": 1, "step": 4, "train_loss": 1.23}])
 
+    def test_jsonl_logger_preserves_metric_epoch_when_explicit_epoch_is_passed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = create_experiment_logger("jsonl", Path(tmpdir))
+            logger.log_metrics({"epoch": 3, "train_loss": 1.23}, step=4, epoch=2)
+            logger.finish()
+
+            records = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(records, [{"epoch": 3, "step": 4, "train_loss": 1.23}])
+
     def test_auto_logger_combines_jsonl_and_comet_when_configured(self):
         fake_experiment = FakeExperiment()
 
@@ -84,7 +96,7 @@ class ExperimentLoggingTests(unittest.TestCase):
             self.assertIsInstance(logger, CompositeLogger)
 
             logger.log_params({"batch_size": 1})
-            logger.log_metrics({"epoch": 1, "val_loss": 0.5}, step=2)
+            logger.log_metrics({"epoch": 1, "val_loss": 0.5}, step=2, epoch=0)
             logger.finish()
 
             records = [
@@ -94,7 +106,7 @@ class ExperimentLoggingTests(unittest.TestCase):
             self.assertEqual(records, [{"epoch": 1, "step": 2, "val_loss": 0.5}])
             self.assertEqual(fake_experiment.params, {"batch_size": 1})
             self.assertEqual(
-                fake_experiment.metrics, [({"epoch": 1, "val_loss": 0.5}, 2)]
+                fake_experiment.metrics, [({"epoch": 1, "val_loss": 0.5}, 2, 0)]
             )
             self.assertTrue(fake_experiment.finished)
             self.assertEqual(fake_experiment.name, "demo-run")
@@ -141,10 +153,10 @@ class ExperimentLoggingTests(unittest.TestCase):
                 home_dir=home,
             )
 
-            logger.log_metrics({"epoch": 1}, step=1)
+            logger.log_metrics({"epoch": 1}, step=1, epoch=0)
             logger.finish()
 
-            self.assertEqual(fake_experiment.metrics, [({"epoch": 1}, 1)])
+            self.assertEqual(fake_experiment.metrics, [({"epoch": 1}, 1, 0)])
             self.assertTrue(fake_experiment.finished)
 
 

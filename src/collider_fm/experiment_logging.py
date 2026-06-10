@@ -16,8 +16,13 @@ class NullLogger:
     def log_params(self, params: Mapping[str, Any]) -> None:
         del params
 
-    def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
-        del metrics, step
+    def log_metrics(
+        self,
+        metrics: Mapping[str, Any],
+        step: int | None = None,
+        epoch: int | None = None,
+    ) -> None:
+        del metrics, step, epoch
 
     def log_image(
         self, name: str, image_data: np.ndarray, step: int | None = None
@@ -38,10 +43,17 @@ class JsonlLogger:
     def log_params(self, params: Mapping[str, Any]) -> None:
         del params
 
-    def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
+    def log_metrics(
+        self,
+        metrics: Mapping[str, Any],
+        step: int | None = None,
+        epoch: int | None = None,
+    ) -> None:
         record = dict(metrics)
         if step is not None:
             record.setdefault("step", step)
+        if epoch is not None:
+            record.setdefault("epoch", epoch)
         with self.metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
@@ -67,8 +79,13 @@ class CometLogger:
     def log_params(self, params: Mapping[str, Any]) -> None:
         self.experiment.log_parameters(dict(params))
 
-    def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
-        self.experiment.log_metrics(dict(metrics), step=step)
+    def log_metrics(
+        self,
+        metrics: Mapping[str, Any],
+        step: int | None = None,
+        epoch: int | None = None,
+    ) -> None:
+        self.experiment.log_metrics(dict(metrics), step=step, epoch=epoch)
 
     def log_image(
         self, name: str, image_data: np.ndarray, step: int | None = None
@@ -90,9 +107,14 @@ class CompositeLogger:
         for logger in self.loggers:
             logger.log_params(params)
 
-    def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
+    def log_metrics(
+        self,
+        metrics: Mapping[str, Any],
+        step: int | None = None,
+        epoch: int | None = None,
+    ) -> None:
         for logger in self.loggers:
-            logger.log_metrics(metrics, step=step)
+            logger.log_metrics(metrics, step=step, epoch=epoch)
 
     def log_image(
         self, name: str, image_data: np.ndarray, step: int | None = None

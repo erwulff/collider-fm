@@ -431,7 +431,7 @@ def run_epoch(
 
         current_absolute_step = global_step_offset + processed_batches
 
-        # Periodic logging (rank 0 only)
+        # Periodic logging — reduce across ranks so running metrics are global averages
         if (
             is_training
             and logger is not None
@@ -439,13 +439,19 @@ def run_epoch(
             and log_every_n_steps > 0
             and current_absolute_step - last_logged_step >= log_every_n_steps
         ):
+            global_totals = dict(totals)
+            global_batches = processed_batches
+            if world_size > 1:
+                for key in global_totals:
+                    global_totals[key] = reduce_scalar(global_totals[key], device) / world_size
+                global_batches = int(reduce_scalar(float(processed_batches), device) / world_size)
             running = {
-                f"{phase}_loss_running": totals["loss"] / processed_batches,
-                f"{phase}_prototype_entropy_running": totals["prototype_entropy"] / processed_batches,
-                f"{phase}_embedding_norm_running": totals["embedding_norm"] / processed_batches,
-                f"{phase}_masked_fraction_running": totals["masked_fraction"] / processed_batches,
+                f"{phase}_loss_running": global_totals["loss"] / max(1, global_batches),
+                f"{phase}_prototype_entropy_running": global_totals["prototype_entropy"] / max(1, global_batches),
+                f"{phase}_embedding_norm_running": global_totals["embedding_norm"] / max(1, global_batches),
+                f"{phase}_masked_fraction_running": global_totals["masked_fraction"] / max(1, global_batches),
                 "learning_rate": learning_rate(optimizer),
-                "epoch": epoch_index + 1,
+                "epoch": epoch_index,
                 "mask_size": float(getattr(base_model, "mask_size", 0.0)),
                 "mask_ratio": float(getattr(base_model, "mask_ratio", 0.0)),
                 "teacher_temperature": float(getattr(base_model, "teacher_temp", 0.07)),
@@ -642,7 +648,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     try:
         for epoch in range(start_epoch, training_config.num_epochs):
             if is_rank0:
-                print(f"Epoch {epoch + 1}/{training_config.num_epochs}")
+                print(f"Epoch {epoch}/{max(0, training_config.num_epochs - 1)}")
 
             # Set epoch on the DistributedSampler so shuffling differs per epoch
             if world_size > 1 and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
@@ -683,7 +689,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             current_momentum = float(getattr(base_model, "momentum", 0.994))
             current_temperature = float(getattr(base_model, "teacher_temp", 0.07))
             epoch_metrics = {
-                "epoch": epoch + 1,
+                "epoch": epoch,
                 "global_step": global_step,
                 "train_loss": train_metrics["loss"],
                 "val_loss": val_metrics["loss"],
@@ -699,7 +705,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             }
 
             if is_rank0:
-                logger.log_metrics(epoch_metrics, step=global_step)
+                logger.log_metrics(epoch_metrics, step=global_step, epoch=epoch)
                 print("epoch summary: " + json.dumps(epoch_metrics, sort_keys=True))
 
             # Checkpoint: rank 0 writes, all workers report
@@ -712,7 +718,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 if is_rank0:
                     save_checkpoint_to_dir(
                         Path(tmpdir), model, optimizer, lr_scheduler, grad_scaler,
-                        epoch=epoch + 1,
+                        epoch=epoch + 1,  # + 1 because training_state.epoch is the next epoch to run
                         global_step=global_step,
                         best_val_loss=best_val_loss,
                     )
