@@ -365,6 +365,11 @@ def run_epoch(
         "prototype_entropy": 0.0,
         "embedding_norm": 0.0,
         "masked_fraction": 0.0,
+        "mask_loss": 0.0,
+        "roll_mask_loss": 0.0,
+        "unmask_loss": 0.0,
+        "cosine_similarity": 0.0,
+        "gradient_norm": 0.0,
     }
     processed_batches = 0
     last_logged_step = global_step_offset
@@ -400,15 +405,30 @@ def run_epoch(
                 monitor_logits = monitor_state.get("student_logits")
                 monitor_embeddings = monitor_state.get("point_features")
                 masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
+                batch_mask_loss = float(result_dict.get("mask_loss", 0.0))
+                batch_roll_mask_loss = float(result_dict.get("roll_mask_loss", 0.0))
+                batch_unmask_loss = float(result_dict.get("unmask_loss", 0.0))
+                cos_sims = monitor_state.get("cosine_similarities")
+                batch_cosine_sim = float(cos_sims.mean().item()) if cos_sims is not None and cos_sims.numel() > 0 else 0.0
 
+        batch_grad_norm = 0.0
         if is_training:
             optimizer.zero_grad(set_to_none=True)
             if grad_scaler is not None and grad_scaler.is_enabled():
                 grad_scaler.scale(loss).backward()
+                grad_scaler.unscale_(optimizer)
+                # clip_grad_norm_ with max_norm=inf only measures, never clips
+                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float("inf"),
+                ).item())
                 grad_scaler.step(optimizer)
                 grad_scaler.update()
             else:
                 loss.backward()
+                # clip_grad_norm_ with max_norm=inf only measures, never clips
+                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float("inf"),
+                ).item())
                 optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
@@ -425,6 +445,11 @@ def run_epoch(
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(monitor_embeddings)
         totals["masked_fraction"] += float(masked_fraction)
+        totals["mask_loss"] += batch_mask_loss
+        totals["roll_mask_loss"] += batch_roll_mask_loss
+        totals["unmask_loss"] += batch_unmask_loss
+        totals["cosine_similarity"] += batch_cosine_sim
+        totals["gradient_norm"] += batch_grad_norm
         processed_batches += 1
 
         if is_main_process() and isinstance(progress_bar, tqdm):
@@ -451,6 +476,11 @@ def run_epoch(
                 f"{phase}_prototype_entropy_running": global_totals["prototype_entropy"] / max(1, global_batches),
                 f"{phase}_embedding_norm_running": global_totals["embedding_norm"] / max(1, global_batches),
                 f"{phase}_masked_fraction_running": global_totals["masked_fraction"] / max(1, global_batches),
+                f"{phase}_mask_loss_running": global_totals["mask_loss"] / max(1, global_batches),
+                f"{phase}_roll_mask_loss_running": global_totals["roll_mask_loss"] / max(1, global_batches),
+                f"{phase}_unmask_loss_running": global_totals["unmask_loss"] / max(1, global_batches),
+                f"{phase}_cosine_similarity_running": global_totals["cosine_similarity"] / max(1, global_batches),
+                f"{phase}_gradient_norm_running": global_totals["gradient_norm"] / max(1, global_batches),
                 "learning_rate": learning_rate(optimizer),
                 "epoch": epoch_index,
                 "mask_size": float(getattr(base_model, "mask_size", 0.0)),
