@@ -354,6 +354,7 @@ def run_epoch(
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch, rank-safe under DDP."""
 
+    world_size = ray.train.get_context().get_world_size()
     is_training = optimizer is not None
     autocast_enabled = mixed_precision_dtype is not None and device.type == "cuda"
     base_model = unwrap_model(model)
@@ -496,7 +497,6 @@ def run_epoch(
         raise ValueError(f"No {phase} batches were processed.")
 
     # Reduce epoch metrics across ranks
-    world_size = ray.train.get_context().get_world_size()
     if world_size > 1:
         for key in totals:
             totals[key] = reduce_scalar(totals[key], device) / world_size
