@@ -13,7 +13,8 @@
 source slurm/load_env.sh
 
 PREFIX="${1:-}"
-RUN_NAME="${PREFIX:+${PREFIX}_}sonata_full"
+SUFFIX="$(date +%Y%m%d_%H%M%S_%6N)"
+RUN_NAME="${PREFIX:+${PREFIX}_}sonata_full_${SUFFIX}"
 
 nvidia-smi
 
