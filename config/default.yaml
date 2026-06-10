@@ -100,7 +100,7 @@ model:
       enable_flash: true
 
 training:
-  run_dir:
+  experiment_dir:
   run_name:
   resume: false
   overwrite: false

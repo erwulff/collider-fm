@@ -35,7 +35,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  uv run python scripts/train.py\n"
             "  uv run python scripts/train.py training.batch_size=16 training.num_epochs=10\n"
             "  uv run python scripts/train.py training.num_gpus=4 data.local_files_only=true\n"
-            "  uv run python scripts/train.py training.run_name=my_run training.log_backend=jsonl"
+            "  uv run python scripts/train.py training.experiment_dir=/tmp/collider-runs training.run_name=my_run training.log_backend=jsonl"
         ),
         config_sections=(
             "data",
@@ -60,7 +60,7 @@ def main() -> None:
     resolved_run_dir, resolved_run_name = resolve_run_lifecycle(
         PROJECT_ROOT,
         ray_storage_path=storage_path,
-        run_dir=training_config.get("run_dir"),
+        experiment_dir=training_config.get("experiment_dir"),
         run_name=training_config.get("run_name"),
         resume=resume,
         overwrite=overwrite,
@@ -69,7 +69,9 @@ def main() -> None:
     # Serialize the full config so each Ray worker gets a copy
     config_dict = to_plain_container(config)
     config_dict["_project_root"] = str(PROJECT_ROOT)
+    config_dict["training"]["experiment_dir"] = str(resolved_run_dir.parent)
     config_dict["training"]["run_dir"] = str(resolved_run_dir)
+    config_dict["training"]["run_name"] = resolved_run_name
     config_dict["training"]["resume"] = resume
     config_dict["training"]["overwrite"] = overwrite
 

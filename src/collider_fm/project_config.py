@@ -107,23 +107,15 @@ def to_plain_container(config: Any) -> Any:
 
 
 def resolve_run_identity(
-    project_root: Path, run_dir: str | None = None, run_name: str | None = None
+    project_root: Path,
+    experiment_dir: str | None = None,
+    run_name: str | None = None,
 ) -> tuple[Path, str]:
-    if run_dir is not None:
-        resolved_run_dir = Path(run_dir)
-        if run_name is None:
-            resolved_run_name = resolved_run_dir.name
-        else:
-            resolved_run_name = str(run_name)
-            if resolved_run_dir.name != resolved_run_name:
-                raise ValueError(
-                    "training.run_dir and training.run_name must refer to the same run identity. "
-                    f"Got run_dir name {resolved_run_dir.name} and run_name {resolved_run_name}."
-                )
-        return resolved_run_dir, resolved_run_name
-
     resolved_run_name = str(run_name) if run_name else f"run_{timestamp_suffix()}"
-    resolved_run_dir = project_root / "runs" / resolved_run_name
+    resolved_experiment_dir = (
+        Path(experiment_dir) if experiment_dir is not None else project_root / "runs"
+    )
+    resolved_run_dir = resolved_experiment_dir / resolved_run_name
     return resolved_run_dir, resolved_run_name
 
 
@@ -131,13 +123,13 @@ def resolve_run_lifecycle(
     project_root: Path,
     *,
     ray_storage_path: str | Path,
-    run_dir: str | None = None,
+    experiment_dir: str | None = None,
     run_name: str | None = None,
     resume: bool = False,
     overwrite: bool = False,
 ) -> tuple[Path, str]:
     resolved_run_dir, resolved_run_name = resolve_run_identity(
-        project_root, run_dir=run_dir, run_name=run_name
+        project_root, experiment_dir=experiment_dir, run_name=run_name
     )
     ray_run_dir = Path(ray_storage_path) / resolved_run_name
 
