@@ -365,11 +365,6 @@ def run_epoch(
         "prototype_entropy": 0.0,
         "embedding_norm": 0.0,
         "masked_fraction": 0.0,
-        "mask_loss": 0.0,
-        "roll_mask_loss": 0.0,
-        "unmask_loss": 0.0,
-        "cosine_similarity": 0.0,
-        "gradient_norm": 0.0,
     }
     processed_batches = 0
     last_logged_step = global_step_offset
@@ -445,11 +440,6 @@ def run_epoch(
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(monitor_embeddings)
         totals["masked_fraction"] += float(masked_fraction)
-        totals["mask_loss"] += batch_mask_loss
-        totals["roll_mask_loss"] += batch_roll_mask_loss
-        totals["unmask_loss"] += batch_unmask_loss
-        totals["cosine_similarity"] += batch_cosine_sim
-        totals["gradient_norm"] += batch_grad_norm
         processed_batches += 1
 
         if is_main_process() and isinstance(progress_bar, tqdm):
@@ -457,7 +447,6 @@ def run_epoch(
 
         current_absolute_step = global_step_offset + processed_batches
 
-        # Periodic logging — reduce across ranks so running metrics are global averages
         if (
             is_training
             and logger is not None
@@ -465,22 +454,16 @@ def run_epoch(
             and log_every_n_steps > 0
             and current_absolute_step - last_logged_step >= log_every_n_steps
         ):
-            global_totals = dict(totals)
-            global_batches = processed_batches
-            if world_size > 1:
-                for key in global_totals:
-                    global_totals[key] = reduce_scalar(global_totals[key], device) / world_size
-                global_batches = int(reduce_scalar(float(processed_batches), device) / world_size)
-            running = {
-                f"{phase}_loss_running": global_totals["loss"] / max(1, global_batches),
-                f"{phase}_prototype_entropy_running": global_totals["prototype_entropy"] / max(1, global_batches),
-                f"{phase}_embedding_norm_running": global_totals["embedding_norm"] / max(1, global_batches),
-                f"{phase}_masked_fraction_running": global_totals["masked_fraction"] / max(1, global_batches),
-                f"{phase}_mask_loss_running": global_totals["mask_loss"] / max(1, global_batches),
-                f"{phase}_roll_mask_loss_running": global_totals["roll_mask_loss"] / max(1, global_batches),
-                f"{phase}_unmask_loss_running": global_totals["unmask_loss"] / max(1, global_batches),
-                f"{phase}_cosine_similarity_running": global_totals["cosine_similarity"] / max(1, global_batches),
-                f"{phase}_gradient_norm_running": global_totals["gradient_norm"] / max(1, global_batches),
+            step_metrics = {
+                "train_loss": float(loss.item()),
+                "train_prototype_entropy": prototype_entropy(usage),
+                "train_embedding_norm": embedding_norm(monitor_embeddings),
+                "train_masked_fraction": masked_fraction,
+                "train_mask_loss": batch_mask_loss,
+                "train_roll_mask_loss": batch_roll_mask_loss,
+                "train_unmask_loss": batch_unmask_loss,
+                "train_cosine_similarity": batch_cosine_sim,
+                "train_gradient_norm": batch_grad_norm,
                 "learning_rate": learning_rate(optimizer),
                 "epoch": epoch_index,
                 "mask_size": float(getattr(base_model, "mask_size", 0.0)),
@@ -488,7 +471,7 @@ def run_epoch(
                 "teacher_temperature": float(getattr(base_model, "teacher_temp", 0.07)),
                 "teacher_momentum": float(getattr(base_model, "momentum", 0.994)),
             }
-            logger.log_metrics(running, step=current_absolute_step)
+            logger.log_metrics(step_metrics, step=current_absolute_step)
             last_logged_step = current_absolute_step
 
         # Periodic visualization (rank 0 only)
