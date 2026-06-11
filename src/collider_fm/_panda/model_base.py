@@ -248,6 +248,8 @@ class SerializedAttention(PointModule):
             attn = self.softmax(attn)
             attn = self.attn_drop(attn).to(qkv.dtype)
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
+        elif max_seqlen == 0 or qkv.shape[0] == 0:
+            feat = qkv.new_zeros(qkv.shape[0], C)
         else:
             feat = flash_attn.flash_attn_varlen_qkvpacked_func(
                 qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
