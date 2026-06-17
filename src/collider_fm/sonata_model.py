@@ -220,7 +220,7 @@ class SonataSelfDistillation(nn.Module):
             "enc_depths": (1, 1, 2, 2, 1),
             "enc_channels": (16, 32, 64, 96, 128),
             "enc_num_head": (1, 2, 4, 4, 8),
-            "enc_patch_size": (8, 8, 8, 8, 8),
+            "enc_patch_size": (48, 48, 48, 48, 48),
             "shuffle_orders": False,
             "enable_flash": False,
             "flash_backend": "flash_attn",
