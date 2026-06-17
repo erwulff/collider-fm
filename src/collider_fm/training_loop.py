@@ -455,6 +455,7 @@ def run_epoch(
             and current_absolute_step - last_logged_step >= log_every_n_steps
         ):
             step_metrics = {
+                "record_type": "step_metrics",
                 "train_loss": float(loss.item()),
                 "train_prototype_entropy": prototype_entropy(usage),
                 "train_embedding_norm": embedding_norm(monitor_embeddings),
@@ -702,6 +703,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             current_momentum = float(getattr(base_model, "momentum", 0.994))
             current_temperature = float(getattr(base_model, "teacher_temp", 0.07))
             epoch_metrics = {
+                "record_type": "epoch_metrics",
                 "epoch": epoch,
                 "global_step": global_step,
                 "train_loss": train_metrics["loss"],

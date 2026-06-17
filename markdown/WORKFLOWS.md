@@ -141,7 +141,8 @@ Training runs write two kinds of artifacts:
 
 **Local run directory** (`runs/<run_name>/` by default):
 - `config.json`
-- `metrics.jsonl`
+- `metrics_step.jsonl`
+- `metrics_epoch.jsonl`
 - `viz/` (diagnostic PNGs)
 - `checkpoint_path.txt` (points to the Ray checkpoint directory)
 

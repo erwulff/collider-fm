@@ -37,7 +37,8 @@ class JsonlLogger:
     """Local run logger that writes metrics JSONL and PNG visualizations."""
 
     def __init__(self, run_dir: Path) -> None:
-        self.metrics_path = run_dir / "metrics.jsonl"
+        self.step_metrics_path = run_dir / "metrics_step.jsonl"
+        self.epoch_metrics_path = run_dir / "metrics_epoch.jsonl"
         self.viz_dir = run_dir / "viz"
 
     def log_params(self, params: Mapping[str, Any]) -> None:
@@ -54,7 +55,9 @@ class JsonlLogger:
             record.setdefault("step", step)
         if epoch is not None:
             record.setdefault("epoch", epoch)
-        with self.metrics_path.open("a", encoding="utf-8") as handle:
+        record_type = str(record.get("record_type", "metrics"))
+        metrics_path = self.epoch_metrics_path if record_type == "epoch_metrics" else self.step_metrics_path
+        with metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def log_image(
