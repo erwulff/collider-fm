@@ -63,6 +63,8 @@ model:
       enc_patch_size: [48, 48, 48, 48, 48]
       shuffle_orders: false
       enable_flash: true
+      drop_path: 0.3
+      layer_scale: 0.00001
   diagnostics:
     in_channels: 4
     grid_size: 0.002
