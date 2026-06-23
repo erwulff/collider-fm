@@ -18,7 +18,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -35,6 +35,7 @@ from .project_config import (
     sonata_batch_kwargs,
     to_plain_container,
 )
+from .sonata_model import CosineScheduler
 from .views import build_sonata_batch
 
 
@@ -98,6 +99,45 @@ def resolve_epoch_batch_limit(
             f"{phase} max_batches must be positive or None, got {requested_max_batches}."
         )
     return min(total_batches, requested_max_batches)
+
+
+def build_optimizer_param_groups(
+    model: torch.nn.Module, weight_decay: float
+) -> list[dict[str, Any]]:
+    """Build optimizer param groups with WD exclusion for bias/norm/1D params.
+
+    Matches pimm's WeightDecayExclusion: bias, norm, gamma, token, and 1D
+    parameters are excluded from weight decay.
+    """
+    base = unwrap_model(model)
+    decay_params: list[torch.Tensor] = []
+    no_decay_params: list[torch.Tensor] = []
+    for name, param in base.named_parameters():
+        if not param.requires_grad:
+            continue
+        if (
+            name.endswith(".bias")
+            or "norm" in name.lower()
+            or "gamma" in name.lower()
+            or "token" in name.lower()
+            or param.ndim == 1
+        ):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+    return [
+        {"params": decay_params, "weight_decay": weight_decay, "apply_wd": True},
+        {"params": no_decay_params, "weight_decay": 0.0, "apply_wd": False},
+    ]
+
+
+def step_weight_decay(optimizer: AdamW, wd_scheduler: CosineScheduler) -> float:
+    """Advance the WD scheduler and update applicable param groups."""
+    wd = wd_scheduler.step()
+    for group in optimizer.param_groups:
+        if group.get("apply_wd", False):
+            group["weight_decay"] = wd
+    return wd
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +256,12 @@ def save_checkpoint_to_dir(
     directory: Path,
     model: torch.nn.Module,
     optimizer: AdamW,
-    lr_scheduler: CosineAnnealingLR,
+    lr_scheduler: OneCycleLR,
     grad_scaler: torch.amp.GradScaler | None,
     epoch: int,
     global_step: int,
     best_val_loss: float,
+    wd_scheduler_iter: int | None = None,
 ) -> None:
     """Write the canonical checkpoint payload into *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -241,13 +282,16 @@ def save_checkpoint_to_dir(
         sched = getattr(base_model, sched_name, None)
         if sched is not None:
             sonata_state[f"{sched_name}_iter"] = sched.iter
+    training_state: dict[str, Any] = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+        "sonata_state": sonata_state,
+    }
+    if wd_scheduler_iter is not None:
+        training_state["wd_scheduler_iter"] = wd_scheduler_iter
     torch.save(
-        {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": best_val_loss,
-            "sonata_state": sonata_state,
-        },
+        training_state,
         directory / CHECKPOINT_FILES["training_state"],
     )
 
@@ -256,12 +300,12 @@ def load_checkpoint_from_dir(
     directory: Path,
     model: torch.nn.Module,
     optimizer: AdamW,
-    lr_scheduler: CosineAnnealingLR,
+    lr_scheduler: OneCycleLR,
     grad_scaler: torch.amp.GradScaler | None,
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, int | None]:
     """Restore model/optimizer/scheduler/scaler from *directory*.
 
-    Returns (epoch, global_step, best_val_loss).
+    Returns (epoch, global_step, best_val_loss, wd_scheduler_iter).
     """
     base_model = unwrap_model(model)
     base_model.load_state_dict(
@@ -298,6 +342,7 @@ def load_checkpoint_from_dir(
         training_state["epoch"],
         training_state["global_step"],
         training_state["best_val_loss"],
+        training_state.get("wd_scheduler_iter"),
     )
 
 
@@ -340,7 +385,7 @@ def run_epoch(
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
-    lr_scheduler: CosineAnnealingLR | None,
+    lr_scheduler: OneCycleLR | None,
     grad_scaler: Any,
     mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
@@ -351,6 +396,8 @@ def run_epoch(
     viz_every_n_steps: int | None = None,
     epoch_index: int = 0,
     global_step_offset: int = 0,
+    clip_grad: float = float("inf"),
+    wd_scheduler: CosineScheduler | None = None,
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch, rank-safe under DDP."""
 
@@ -412,24 +459,27 @@ def run_epoch(
         batch_grad_norm = 0.0
         if is_training:
             optimizer.zero_grad(set_to_none=True)
+            if wd_scheduler is not None:
+                step_weight_decay(optimizer, wd_scheduler)
             if grad_scaler is not None and grad_scaler.is_enabled():
                 grad_scaler.scale(loss).backward()
                 grad_scaler.unscale_(optimizer)
-                # clip_grad_norm_ with max_norm=inf only measures, never clips
                 batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), float("inf"),
+                    model.parameters(), clip_grad,
                 ).item())
                 grad_scaler.step(optimizer)
+                old_scale = grad_scaler.get_scale()
                 grad_scaler.update()
+                if old_scale <= grad_scaler.get_scale() and lr_scheduler is not None:
+                    lr_scheduler.step()
             else:
                 loss.backward()
-                # clip_grad_norm_ with max_norm=inf only measures, never clips
                 batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), float("inf"),
+                    model.parameters(), clip_grad,
                 ).item())
                 optimizer.step()
-            if lr_scheduler is not None:
-                lr_scheduler.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
             base_model.update_teacher(momentum=None)
 
         num_prototypes = int(getattr(base_model, "num_prototypes",
@@ -472,6 +522,7 @@ def run_epoch(
                 "train_cosine_similarity": batch_cosine_sim,
                 "train_gradient_norm": batch_grad_norm,
                 "learning_rate": learning_rate(optimizer),
+                "weight_decay": float(optimizer.param_groups[0].get("weight_decay", 0.0)),
                 "epoch": epoch_index,
                 "mask_size": float(getattr(base_model, "mask_size", 0.0)),
                 "mask_ratio": float(getattr(base_model, "mask_ratio", 0.0)),
@@ -613,33 +664,47 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
         print(f"World size: {world_size}")
 
     # Optimizer & LR scheduler
+    param_groups = build_optimizer_param_groups(model, float(training_config.weight_decay))
     optimizer = AdamW(
-        model.parameters(),
-        lr=training_config.learning_rate,
-        weight_decay=training_config.weight_decay,
+        param_groups,
+        lr=float(training_config.learning_rate),
     )
-    lr_scheduler = CosineAnnealingLR(
+    total_steps = max(1, int(training_config.num_epochs) * max_train_batches)
+    lr_scheduler = OneCycleLR(
         optimizer,
-        T_max=max(1, training_config.num_epochs * max_train_batches),
-        eta_min=training_config.min_learning_rate,
+        max_lr=float(training_config.learning_rate),
+        total_steps=total_steps,
+        pct_start=0.05,
+        anneal_strategy="cos",
+        div_factor=10.0,
+        final_div_factor=1000.0,
     )
+    clip_grad = float(training_config.get("clip_grad", float("inf")))
 
     # Resume from Ray checkpoint if available
     start_epoch = 0
     global_step = 0
     best_val_loss = float("inf")
+    wd_scheduler_iter = 0
     checkpoint = ray.train.get_checkpoint()
     if checkpoint is not None:
         with checkpoint.as_directory() as checkpoint_dir:
-            start_epoch, global_step, best_val_loss = load_checkpoint_from_dir(
+            start_epoch, global_step, best_val_loss, wd_scheduler_iter = load_checkpoint_from_dir(
                 Path(checkpoint_dir), model, optimizer, lr_scheduler, grad_scaler,
             )
         if is_rank0:
             print(f"Resumed from checkpoint: epoch={start_epoch}, step={global_step}")
 
     # Setup Sonata schedulers (always from scratch with correct total_steps)
-    total_steps = max(1, training_config.num_epochs * max_train_batches)
     base_model.setup_schedulers(total_steps=total_steps, current_step=global_step)
+
+    # Weight decay scheduler (cosine ramp 0.04 -> 0.2 over full training)
+    wd_scheduler = CosineScheduler(
+        base_value=float(training_config.weight_decay),
+        final_value=float(training_config.final_weight_decay),
+        total_iters=total_steps,
+    )
+    wd_scheduler.iter = wd_scheduler_iter or 0
 
     # Re-apply sonata state from checkpoint on top of the fresh schedulers
     if checkpoint is not None:
@@ -690,6 +755,8 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 viz_every_n_steps=viz_every_n_steps,
                 epoch_index=epoch,
                 global_step_offset=global_step,
+                clip_grad=clip_grad,
+                wd_scheduler=wd_scheduler,
             )
             global_step += train_batches
 
@@ -742,6 +809,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                         epoch=epoch + 1,  # + 1 because training_state.epoch is the next epoch to run
                         global_step=global_step,
                         best_val_loss=best_val_loss,
+                        wd_scheduler_iter=wd_scheduler.iter,
                     )
                     ray_checkpoint = ray.train.Checkpoint.from_directory(tmpdir)
 

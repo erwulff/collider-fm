@@ -113,9 +113,10 @@ training:
   val_split: val
   batch_size: 8
   num_epochs: 2
-  learning_rate: 0.0002
-  min_learning_rate: 0.00001
-  weight_decay: 0.05
+  learning_rate: 0.0005
+  weight_decay: 0.04
+  final_weight_decay: 0.2
+  clip_grad: 3.0
   max_train_batches:
   max_val_batches:
   num_workers: 8
