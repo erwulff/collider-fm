@@ -234,6 +234,11 @@ class SonataSelfDistillation(nn.Module):
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
         teacher_backbone_kwargs = dict(resolved_backbone_kwargs)
         teacher_backbone_kwargs.update(dict(teacher_custom))
+        # Teacher must be deterministic: always disable stochastic depth and
+        # dropout regardless of student or teacher_custom settings.
+        teacher_backbone_kwargs["drop_path"] = 0.0
+        teacher_backbone_kwargs["attn_drop"] = 0.0
+        teacher_backbone_kwargs["proj_drop"] = 0.0
 
         if head_in_channels is None:
             enc_channels = tuple(
