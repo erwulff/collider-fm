@@ -400,6 +400,9 @@ def run_epoch(
                 monitor_logits = monitor_state.get("student_logits")
                 monitor_embeddings = monitor_state.get("point_features")
                 masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
+                mask_match_fraction = float(monitor_state.get("mask_match_fraction", 0.0))
+                roll_match_fraction = float(monitor_state.get("roll_match_fraction", 0.0))
+                unmask_match_fraction = float(monitor_state.get("unmask_match_fraction", 0.0))
                 batch_mask_loss = float(result_dict.get("mask_loss", 0.0))
                 batch_roll_mask_loss = float(result_dict.get("roll_mask_loss", 0.0))
                 batch_unmask_loss = float(result_dict.get("unmask_loss", 0.0))
@@ -460,6 +463,9 @@ def run_epoch(
                 "train_prototype_entropy": prototype_entropy(usage),
                 "train_embedding_norm": embedding_norm(monitor_embeddings),
                 "train_masked_fraction": masked_fraction,
+                "train_mask_match_fraction": mask_match_fraction,
+                "train_roll_match_fraction": roll_match_fraction,
+                "train_unmask_match_fraction": unmask_match_fraction,
                 "train_mask_loss": batch_mask_loss,
                 "train_roll_mask_loss": batch_roll_mask_loss,
                 "train_unmask_loss": batch_unmask_loss,
