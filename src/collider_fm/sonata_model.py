@@ -875,6 +875,13 @@ class SonataSelfDistillation(nn.Module):
             result_dict["unmask_loss"] = unmask_loss
             result_dict["loss"].append(unmask_loss * self.unmask_loss_weight)
 
+        # Keep all student head params connected to the loss graph even when
+        # match_index is empty, so DDP static_graph sees consistent param usage.
+        if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
+            result_dict["loss"].append(mask_pred_sim.sum() * 0.0)
+        if self.unmask_loss_weight > 0:
+            result_dict["loss"].append(unmask_pred_sim.sum() * 0.0)
+
         total_loss = (
             sum(result_dict["loss"])
             if result_dict["loss"]

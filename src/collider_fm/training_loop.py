@@ -651,7 +651,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     model = ray.train.torch.prepare_model(
         model,
         parallel_strategy="ddp",
-        parallel_strategy_kwargs={"find_unused_parameters": True},
+        parallel_strategy_kwargs={"find_unused_parameters": False, "static_graph": True},
     )
     base_model = unwrap_model(model)
 
