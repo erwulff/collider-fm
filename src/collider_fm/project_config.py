@@ -249,6 +249,7 @@ def sonata_batch_kwargs(
         {
             "coord_noise_scale": view_config.coord_noise_scale,
             "feat_noise_scale": view_config.energy_jitter_scale,
+            "phi_rotation_max": float(view_config.phi_rotation_max),
             "point_dropout": view_config.point_dropout,
             "num_global_views": view_config.num_global_views,
             "num_local_views": view_config.num_local_views,

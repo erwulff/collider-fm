@@ -12,6 +12,7 @@ class ProjectConfigTests(unittest.TestCase):
                 "views": {
                     "coord_noise_scale": 0.001,
                     "energy_jitter_scale": 0.01,
+                    "phi_rotation_max": 3.141592653589793,
                     "point_dropout": 0.05,
                     "num_global_views": 2,
                     "num_local_views": 4,
@@ -60,6 +61,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(kwargs["grid_size"], 0.002)
         self.assertEqual(kwargs["coord_noise_scale"], 0.001)
         self.assertEqual(kwargs["feat_noise_scale"], 0.01)
+        self.assertEqual(kwargs["phi_rotation_max"], 3.141592653589793)
         self.assertEqual(kwargs["point_dropout"], 0.05)
         self.assertEqual(kwargs["num_global_views"], 2)
         self.assertEqual(kwargs["num_local_views"], 4)
