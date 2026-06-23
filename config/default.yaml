@@ -11,7 +11,8 @@ data:
 views:
   max_calo_hits:
   coord_noise_scale: 0.001
-  energy_jitter_scale: 0.01
+  energy_jitter_scale: 0.05
+  phi_rotation_max: 3.141592653589793
   point_dropout: 0.05
   num_global_views: 2
   num_local_views: 4
@@ -43,7 +44,7 @@ model:
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 0.01
+    mask_jitter_base: 0.001
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -60,9 +61,11 @@ model:
       enc_depths: [1, 1, 2, 2, 1]
       enc_channels: [16, 32, 64, 96, 128]
       enc_num_head: [1, 2, 4, 4, 8]
-      enc_patch_size: [8, 8, 8, 8, 8]
+      enc_patch_size: [48, 48, 48, 48, 48]
       shuffle_orders: false
       enable_flash: true
+      drop_path: 0.3
+      layer_scale: 0.00001
   diagnostics:
     in_channels: 4
     grid_size: 0.002
@@ -78,7 +81,7 @@ model:
     mask_ratio_warmup_ratio: 0.05
     mask_jitter:
     mask_jitter_start: 0.0
-    mask_jitter_base: 0.01
+    mask_jitter_base: 0.001
     mask_jitter_warmup_ratio: 0.05
     teacher_temp_start: 0.04
     teacher_temp_base: 0.07
@@ -100,7 +103,7 @@ model:
       enable_flash: true
 
 training:
-  run_dir:
+  experiment_dir:
   run_name:
   resume: false
   overwrite: false
@@ -111,9 +114,10 @@ training:
   val_split: val
   batch_size: 8
   num_epochs: 2
-  learning_rate: 0.0002
-  min_learning_rate: 0.00001
-  weight_decay: 0.05
+  learning_rate: 0.0005
+  weight_decay: 0.04
+  final_weight_decay: 0.2
+  clip_grad: 3.0
   max_train_batches:
   max_val_batches:
   num_workers: 8

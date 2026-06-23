@@ -220,7 +220,7 @@ class SonataSelfDistillation(nn.Module):
             "enc_depths": (1, 1, 2, 2, 1),
             "enc_channels": (16, 32, 64, 96, 128),
             "enc_num_head": (1, 2, 4, 4, 8),
-            "enc_patch_size": (8, 8, 8, 8, 8),
+            "enc_patch_size": (48, 48, 48, 48, 48),
             "shuffle_orders": False,
             "enable_flash": False,
             "flash_backend": "flash_attn",
@@ -234,6 +234,11 @@ class SonataSelfDistillation(nn.Module):
         resolved_backbone_kwargs.update(dict(backbone_kwargs))
         teacher_backbone_kwargs = dict(resolved_backbone_kwargs)
         teacher_backbone_kwargs.update(dict(teacher_custom))
+        # Teacher must be deterministic: always disable stochastic depth and
+        # dropout regardless of student or teacher_custom settings.
+        teacher_backbone_kwargs["drop_path"] = 0.0
+        teacher_backbone_kwargs["attn_drop"] = 0.0
+        teacher_backbone_kwargs["proj_drop"] = 0.0
 
         if head_in_channels is None:
             enc_channels = tuple(
@@ -283,6 +288,9 @@ class SonataSelfDistillation(nn.Module):
             "student_logits": None,
             "point_features": None,
             "masked_fraction": 0.0,
+            "mask_match_fraction": 0.0,
+            "roll_match_fraction": 0.0,
+            "unmask_match_fraction": 0.0,
         }
 
         assert (
@@ -722,6 +730,9 @@ class SonataSelfDistillation(nn.Module):
         )
         monitor_global_mask = global_mask.detach()
         monitor_cosine_similarities: torch.Tensor | None = None
+        monitor_mask_match_fraction = 0.0
+        monitor_roll_match_fraction = 0.0
+        monitor_unmask_match_fraction = 0.0
 
         # Match pimm v1m2: the teacher reuses one head for both branches when
         # any mask-based loss is active, while the student keeps separate heads.
@@ -748,6 +759,9 @@ class SonataSelfDistillation(nn.Module):
                         global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
+                    monitor_mask_match_fraction = float(
+                        match_index.shape[0] / max(1, mask_global_point_.feat.shape[0])
+                    )
                     monitor_cosine_similarities = F.cosine_similarity(
                         mask_global_point_.feat[match_index[:, 0]],
                         global_feat[match_index[:, 1]],
@@ -785,6 +799,9 @@ class SonataSelfDistillation(nn.Module):
                         roll_global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
+                    monitor_roll_match_fraction = float(
+                        match_index.shape[0] / max(1, mask_global_point_.feat.shape[0])
+                    )
                     with torch.no_grad():
                         roll_mask_target_sim = self.sinkhorn_knopp(
                             roll_global_point_.feat[match_index[:, 1]],
@@ -833,6 +850,9 @@ class SonataSelfDistillation(nn.Module):
                     batch2offset(principal_view_batch),
                 )
             if match_index.shape[0] > 0:
+                monitor_unmask_match_fraction = float(
+                    match_index.shape[0] / max(1, local_point_.feat.shape[0])
+                )
                 with torch.no_grad():
                     unmask_target_sim = self.sinkhorn_knopp(
                         global_point_.feat[principal_view_mask][match_index[:, 1]],
@@ -855,6 +875,13 @@ class SonataSelfDistillation(nn.Module):
             result_dict["unmask_loss"] = unmask_loss
             result_dict["loss"].append(unmask_loss * self.unmask_loss_weight)
 
+        # Keep all student head params connected to the loss graph even when
+        # match_index is empty, so DDP static_graph sees consistent param usage.
+        if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
+            result_dict["loss"].append(mask_pred_sim.sum() * 0.0)
+        if self.unmask_loss_weight > 0:
+            result_dict["loss"].append(unmask_pred_sim.sum() * 0.0)
+
         total_loss = (
             sum(result_dict["loss"])
             if result_dict["loss"]
@@ -876,6 +903,9 @@ class SonataSelfDistillation(nn.Module):
             "student_logits": monitor_logits,
             "point_features": monitor_features,
             "masked_fraction": monitor_masked_fraction,
+            "mask_match_fraction": monitor_mask_match_fraction,
+            "roll_match_fraction": monitor_roll_match_fraction,
+            "unmask_match_fraction": monitor_unmask_match_fraction,
             "global_mask": monitor_global_mask,
             "cosine_similarities": monitor_cosine_similarities,
         }

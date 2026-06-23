@@ -36,9 +36,15 @@ Use OmegaConf dotlist overrides such as:
 uv run python scripts/train.py training.batch_size=8 training.num_epochs=10 training.run_name=my_run
 ```
 
+To place the run under a custom experiment directory:
+
+```bash
+uv run python scripts/train.py training.experiment_dir=/tmp/collider-runs training.run_name=my_run
+```
+
 Common overrides:
 
-- `training.run_dir` and `training.run_name`
+- `training.experiment_dir` and `training.run_name` (local run directory resolves to `<experiment_dir>/<run_name>`)
 - `training.resume=true|false`
 - `training.num_gpus` (per-GPU batch size; global batch scales with GPU count)
 - `training.batch_size`, `training.num_epochs`, `training.max_train_batches`, `training.max_val_batches`
@@ -135,7 +141,8 @@ Training runs write two kinds of artifacts:
 
 **Local run directory** (`runs/<run_name>/` by default):
 - `config.json`
-- `metrics.jsonl`
+- `metrics_step.jsonl`
+- `metrics_epoch.jsonl`
 - `viz/` (diagnostic PNGs)
 - `checkpoint_path.txt` (points to the Ray checkpoint directory)
 
@@ -145,8 +152,10 @@ Training runs write two kinds of artifacts:
 
 Fresh runs are explicit:
 
-- If `training.run_name` is set, that value is used verbatim for both the local run directory and the Ray storage folder.
+- If `training.experiment_dir` is unset, the local experiment directory defaults to `runs/` under the project root.
+- If `training.run_name` is set, that value is used verbatim for both the local run directory name and the Ray storage folder name.
 - If `training.run_name` is unset, a unique `run_<timestamp>` ID is generated for a fresh run.
+- The local run directory is always resolved as `<experiment_dir>/<run_name>`.
 - A fresh run fails if the target local run directory or Ray storage directory already exists.
 
 Resume is also explicit:
@@ -154,10 +163,18 @@ Resume is also explicit:
 - `training.resume=true` requires an explicit `training.run_name`.
 - Resume fails unless the local run directory already exists and a valid checkpoint is present under `/mnt/ceph/users/ewulff/raytrain_results/<run_name>/`.
 
+If you used a non-default `training.experiment_dir` for the original run, pass the same `training.experiment_dir` again when resuming.
+
 To resume a run, re-run with the same `training.run_name` and set `training.resume=true`:
 
 ```bash
 uv run python scripts/train.py training.run_name=my_run training.resume=true training.num_gpus=4 data.local_files_only=true
+```
+
+Resume from a custom experiment directory:
+
+```bash
+uv run python scripts/train.py training.experiment_dir=/tmp/collider-runs training.run_name=my_run training.resume=true training.num_gpus=4 data.local_files_only=true
 ```
 
 Generate checkpoint-backed diagnostics by pointing at a Ray checkpoint directory:

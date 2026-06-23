@@ -37,8 +37,12 @@ except ImportError:
     flash_attn = None
 
 from .structure import Point
+from .logging import get_logger
 from .module import PointSequential, PointModule
 from .utils import offset2bincount
+
+
+logger = get_logger(__name__)
 
 
 class LayerScale(nn.Module):
@@ -249,14 +253,48 @@ class SerializedAttention(PointModule):
             attn = self.attn_drop(attn).to(qkv.dtype)
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
         else:
-            feat = flash_attn.flash_attn_varlen_qkvpacked_func(
-                qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
-                cu_seqlens,
-                max_seqlen=max_seqlen,
-                dropout_p=self.attn_drop if self.training else 0,
-                softmax_scale=self.scale,
-            ).reshape(-1, C)
-            feat = feat.to(qkv.dtype)
+            try:
+                feat = flash_attn.flash_attn_varlen_qkvpacked_func(
+                    qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
+                    cu_seqlens,
+                    max_seqlen=max_seqlen,
+                    dropout_p=self.attn_drop if self.training else 0,
+                    softmax_scale=self.scale,
+                ).reshape(-1, C)
+                feat = feat.to(qkv.dtype)
+            except Exception:
+                seqlens = torch.diff(cu_seqlens)
+                bad_seqlens = seqlens[seqlens <= 0]
+                point_counts = offset2bincount(point.offset)
+                logger.exception(
+                    "flash_attn varlen call failed: "
+                    "training=%s patch_size=%s order_index=%s channels=%s heads=%s "
+                    "point_feat_shape=%s qkv_shape=%s qkv_dtype=%s cu_seqlens_len=%s "
+                    "cu_seqlens_last=%s max_seqlen=%s num_sequences=%s seqlen_min=%s "
+                    "seqlen_max=%s zero_or_negative_seqlens=%s first_bad_seqlens=%s "
+                    "point_count_min=%s point_count_max=%s num_events=%s offset_last=%s",
+                    self.training,
+                    self.patch_size,
+                    self.order_index,
+                    C,
+                    H,
+                    tuple(point.feat.shape),
+                    tuple(qkv.shape),
+                    qkv.dtype,
+                    int(cu_seqlens.numel()),
+                    int(cu_seqlens[-1].item()) if cu_seqlens.numel() > 0 else -1,
+                    int(max_seqlen),
+                    int(seqlens.numel()),
+                    int(seqlens.min().item()) if seqlens.numel() > 0 else -1,
+                    int(seqlens.max().item()) if seqlens.numel() > 0 else -1,
+                    int(bad_seqlens.numel()),
+                    bad_seqlens[:8].detach().cpu().tolist(),
+                    int(point_counts.min().item()) if point_counts.numel() > 0 else -1,
+                    int(point_counts.max().item()) if point_counts.numel() > 0 else -1,
+                    int(point.offset.numel()),
+                    int(point.offset[-1].item()) if point.offset.numel() > 0 else -1,
+                )
+                raise
 
         if pad is not None:
             feat = feat[inverse]

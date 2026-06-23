@@ -39,7 +39,7 @@ For a fresh cluster environment:
 ```bash
 sbatch slurm/create_uv_venv.slurm
 sbatch slurm/test_model.slurm
-sbatch slurm/train_sonata_debug.slurm
+sbatch slurm/train_gpu1_debug.slurm
 ```
 
 If you want to prewarm the dataset cache first, either edit `slurm/download.slurm` for `calo_hits` or use `scripts/download_data.py` directly with the desired object types.
@@ -52,46 +52,43 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 - 1 GPU on `a100-80gb`
 - uses the shared `slurm/load_env.sh` bootstrap
 
-### `slurm/train_sonata_debug.slurm`
+### `slurm/train_gpu1_debug.slurm`
 
 - short Sonata debug run
 - 1 GPU on `a100`
 - 4 epochs, batch_size=4, 200 train / 40 val events
 - useful for validating the Sonata pipeline end-to-end before a longer run
-- optional positional prefix: `sbatch slurm/train_sonata_debug.slurm test_x` -> `test_x_sonata_debug`
+- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_sonata_debug_20260610_043244_123456`
+- optional positional prefix: `sbatch slurm/train_gpu1_debug.slurm test_x` -> `test_x_sonata_debug_<timestamp>`
 
-### `slurm/train_sonata.slurm`
+### `slurm/train_gpu1.slurm`
 
 - longer Sonata training run
 - 1 GPU on `a100-80gb`
-- 20 epochs, batch_size=8, 5k train / 200 val events
-- uses `data.local_files_only=true` and logs to Comet
-- optional positional prefix: `sbatch slurm/train_sonata.slurm test_x` -> `test_x_sonata`
-
-### `slurm/train_sonata_full.slurm`
-
-- full-dataset Sonata run
-- 1 GPU on `a100-80gb`
 - 5 epochs, batch_size=8, full train and val splits
 - uses `data.local_files_only=true` and logs to Comet
-- optional positional prefix: `sbatch slurm/train_sonata_full.slurm test_x` -> `test_x_sonata_full`
+- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_sonata_full_20260610_043244_123456`
+- optional positional prefix: `sbatch slurm/train_gpu1.slurm test_x` -> `test_x_sonata_full_<timestamp>`
 
-### `slurm/train_sonata_ray_debug.slurm`
+### `slurm/train_multigpu_debug.slurm`
 
 - 2-GPU Ray Train debug run
 - 2 GPUs on `a100-80gb`, 16 CPUs
-- 1 epoch, batch_size=4 per GPU, 20 train / 5 val batches
+- 5 epochs, batch_size=4 per GPU, 20 train / 5 val batches
 - uses `training.num_gpus=2`, `training.num_workers=4`
-- optional positional prefix: `sbatch slurm/train_sonata_ray_debug.slurm test_x` -> `test_x_sonata_ray_debug`
+- uses `training.log_backend=comet`
+- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_train_multigpu_debug_20260610_043244_123456`
+- optional positional prefix: `sbatch slurm/train_multigpu_debug.slurm test_x` -> `test_x_train_multigpu_debug_<timestamp>`
 
-### `slurm/train_sonata_ray.slurm`
+### `slurm/train_multigpu.slurm`
 
 - 8-GPU Ray Train full run
 - 8 GPUs on `h100`, 64 CPUs
-- 5 epochs, batch_size=8 per GPU (global batch=64), full splits
+- 5 epochs, batch_size=12 per GPU (global batch=96), full splits
 - uses `training.num_gpus=8`, `training.num_workers=4`, `data.local_files_only=true`
 - checkpoints persisted to `/mnt/ceph/users/ewulff/raytrain_results/`
-- optional positional prefix: `sbatch slurm/train_sonata_ray.slurm test_x` -> `test_x_sonata_ray_full`
+- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_train_multigpu_20260610_043244_123456`
+- optional positional prefix: `sbatch slurm/train_multigpu.slurm test_x` -> `test_x_train_multigpu_<timestamp>`
 
 ## Reproducibility and cache usage
 

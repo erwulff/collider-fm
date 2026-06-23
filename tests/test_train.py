@@ -17,29 +17,31 @@ class TrainLifecycleTests(unittest.TestCase):
             self.assertEqual(run_name, "run_20260326_123456")
             self.assertEqual(run_dir, root / "runs" / "run_20260326_123456")
 
-    def test_resolve_run_identity_uses_run_dir_name_when_run_name_omitted(self):
+    def test_resolve_run_identity_places_run_in_explicit_experiment_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            explicit = root / "custom-location"
+            experiment_dir = root / "custom-location"
 
             run_dir, run_name = resolve_run_identity(
-                root, run_dir=str(explicit)
+                root, experiment_dir=str(experiment_dir), run_name="demo"
             )
 
-            self.assertEqual(run_dir, explicit)
-            self.assertEqual(run_name, "custom-location")
+            self.assertEqual(run_dir, experiment_dir / "demo")
+            self.assertEqual(run_name, "demo")
 
-    def test_resolve_run_identity_rejects_run_dir_run_name_mismatch(self):
+    def test_resolve_run_identity_uses_default_name_inside_explicit_experiment_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            explicit = root / "custom-location"
+            experiment_dir = root / "custom-location"
 
-            with self.assertRaisesRegex(ValueError, "must refer to the same run identity"):
-                resolve_run_identity(
+            with patch("collider_fm.project_config.timestamp_suffix", return_value="20260326_123456"):
+                run_dir, run_name = resolve_run_identity(
                     root,
-                    run_dir=str(explicit),
-                    run_name="different-name",
+                    experiment_dir=str(experiment_dir),
                 )
+
+            self.assertEqual(run_name, "run_20260326_123456")
+            self.assertEqual(run_dir, experiment_dir / "run_20260326_123456")
 
     def test_resolve_run_lifecycle_fails_for_existing_fresh_run(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -50,6 +52,7 @@ class TrainLifecycleTests(unittest.TestCase):
                 resolve_run_lifecycle(
                     root,
                     ray_storage_path=root / "ray",
+                    experiment_dir=root / "runs",
                     run_name="demo",
                     resume=False,
                 )
@@ -62,6 +65,7 @@ class TrainLifecycleTests(unittest.TestCase):
                 resolve_run_lifecycle(
                     root,
                     ray_storage_path=root / "ray",
+                    experiment_dir=root / "runs",
                     run_name="demo",
                     resume=True,
                     overwrite=True,
@@ -87,6 +91,7 @@ class TrainLifecycleTests(unittest.TestCase):
                 resolve_run_lifecycle(
                     root,
                     ray_storage_path=root / "ray",
+                    experiment_dir=root / "runs",
                     run_name="demo",
                     resume=True,
                 )
@@ -102,6 +107,7 @@ class TrainLifecycleTests(unittest.TestCase):
             resolved_run_dir, resolved_run_name = resolve_run_lifecycle(
                 root,
                 ray_storage_path=root / "ray",
+                experiment_dir=root / "runs",
                 run_name="demo",
                 resume=True,
             )
@@ -124,6 +130,7 @@ class TrainLifecycleTests(unittest.TestCase):
                 resolved_run_dir, resolved_run_name = resolve_run_lifecycle(
                     root,
                     ray_storage_path=root / "ray",
+                    experiment_dir=root / "runs",
                     run_name="demo",
                     overwrite=True,
                 )

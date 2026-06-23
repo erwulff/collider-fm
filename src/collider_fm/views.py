@@ -421,9 +421,9 @@ def augment_point_view(
     if coord_noise_scale > 0.0:
         coord = coord + torch.randn_like(coord) * coord_noise_scale
     if feat_noise_scale > 0.0:
-        total_energy = (
-            total_energy * (1.0 + torch.randn_like(total_energy) * feat_noise_scale)
-        ).clamp_min(0.0)
+        jitter = torch.randn_like(total_energy) * feat_noise_scale
+        jitter = jitter.clamp(-feat_noise_scale, feat_noise_scale)
+        total_energy = (total_energy * (1.0 + jitter)).clamp_min(0.0)
 
     if point_dropout > 0.0 and coord.shape[0] > 1:
         keep_mask = torch.rand(coord.shape[0], device=coord.device) >= point_dropout
@@ -529,6 +529,7 @@ def build_sonata_batch(
     grid_size: float = DEFAULT_POINT_GRID_SIZE,
     coord_noise_scale: float = 0.5,
     feat_noise_scale: float = 0.01,
+    phi_rotation_max: float = 0.25,
     point_dropout: float = 0.05,
     num_global_views: int = 2,
     num_local_views: int = 4,
@@ -572,6 +573,7 @@ def build_sonata_batch(
                     base_view,
                     coord_noise_scale=coord_noise_scale,
                     feat_noise_scale=feat_noise_scale,
+                    phi_rotation_max=phi_rotation_max,
                     crop_keep_ratio=keep_ratio,
                     point_dropout=point_dropout,
                     view_kind=f"sonata_global_{view_index}",
@@ -587,6 +589,7 @@ def build_sonata_batch(
                     base_view,
                     coord_noise_scale=coord_noise_scale,
                     feat_noise_scale=feat_noise_scale,
+                    phi_rotation_max=phi_rotation_max,
                     crop_keep_ratio=keep_ratio,
                     point_dropout=point_dropout,
                     view_kind=f"sonata_local_{view_index}",

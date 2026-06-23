@@ -10,11 +10,11 @@
 #SBATCH -o logs_slurm/log_%x_%j.out
 #SBATCH -e logs_slurm/log_%x_%j.err
 
-
 source slurm/load_env.sh
 
 PREFIX="${1:-}"
-RUN_NAME="${PREFIX:+${PREFIX}_}sonata_debug"
+SUFFIX="$(date +%Y%m%d_%H%M%S_%6N)"
+RUN_NAME="${PREFIX:+${PREFIX}_}sonata_debug_${SUFFIX}"
 
 nvidia-smi
 

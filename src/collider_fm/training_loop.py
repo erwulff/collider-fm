@@ -18,7 +18,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -35,6 +35,7 @@ from .project_config import (
     sonata_batch_kwargs,
     to_plain_container,
 )
+from .sonata_model import CosineScheduler
 from .views import build_sonata_batch
 
 
@@ -98,6 +99,45 @@ def resolve_epoch_batch_limit(
             f"{phase} max_batches must be positive or None, got {requested_max_batches}."
         )
     return min(total_batches, requested_max_batches)
+
+
+def build_optimizer_param_groups(
+    model: torch.nn.Module, weight_decay: float
+) -> list[dict[str, Any]]:
+    """Build optimizer param groups with WD exclusion for bias/norm/1D params.
+
+    Matches pimm's WeightDecayExclusion: bias, norm, gamma, token, and 1D
+    parameters are excluded from weight decay.
+    """
+    base = unwrap_model(model)
+    decay_params: list[torch.Tensor] = []
+    no_decay_params: list[torch.Tensor] = []
+    for name, param in base.named_parameters():
+        if not param.requires_grad:
+            continue
+        if (
+            name.endswith(".bias")
+            or "norm" in name.lower()
+            or "gamma" in name.lower()
+            or "token" in name.lower()
+            or param.ndim == 1
+        ):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+    return [
+        {"params": decay_params, "weight_decay": weight_decay, "apply_wd": True},
+        {"params": no_decay_params, "weight_decay": 0.0, "apply_wd": False},
+    ]
+
+
+def step_weight_decay(optimizer: AdamW, wd_scheduler: CosineScheduler) -> float:
+    """Advance the WD scheduler and update applicable param groups."""
+    wd = wd_scheduler.step()
+    for group in optimizer.param_groups:
+        if group.get("apply_wd", False):
+            group["weight_decay"] = wd
+    return wd
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +256,12 @@ def save_checkpoint_to_dir(
     directory: Path,
     model: torch.nn.Module,
     optimizer: AdamW,
-    lr_scheduler: CosineAnnealingLR,
+    lr_scheduler: OneCycleLR,
     grad_scaler: torch.amp.GradScaler | None,
     epoch: int,
     global_step: int,
     best_val_loss: float,
+    wd_scheduler_iter: int | None = None,
 ) -> None:
     """Write the canonical checkpoint payload into *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -241,13 +282,16 @@ def save_checkpoint_to_dir(
         sched = getattr(base_model, sched_name, None)
         if sched is not None:
             sonata_state[f"{sched_name}_iter"] = sched.iter
+    training_state: dict[str, Any] = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+        "sonata_state": sonata_state,
+    }
+    if wd_scheduler_iter is not None:
+        training_state["wd_scheduler_iter"] = wd_scheduler_iter
     torch.save(
-        {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": best_val_loss,
-            "sonata_state": sonata_state,
-        },
+        training_state,
         directory / CHECKPOINT_FILES["training_state"],
     )
 
@@ -256,12 +300,12 @@ def load_checkpoint_from_dir(
     directory: Path,
     model: torch.nn.Module,
     optimizer: AdamW,
-    lr_scheduler: CosineAnnealingLR,
+    lr_scheduler: OneCycleLR,
     grad_scaler: torch.amp.GradScaler | None,
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, int | None]:
     """Restore model/optimizer/scheduler/scaler from *directory*.
 
-    Returns (epoch, global_step, best_val_loss).
+    Returns (epoch, global_step, best_val_loss, wd_scheduler_iter).
     """
     base_model = unwrap_model(model)
     base_model.load_state_dict(
@@ -298,6 +342,7 @@ def load_checkpoint_from_dir(
         training_state["epoch"],
         training_state["global_step"],
         training_state["best_val_loss"],
+        training_state.get("wd_scheduler_iter"),
     )
 
 
@@ -340,7 +385,7 @@ def run_epoch(
     dataloader: DataLoader,
     device: torch.device,
     optimizer: AdamW | None,
-    lr_scheduler: CosineAnnealingLR | None,
+    lr_scheduler: OneCycleLR | None,
     grad_scaler: Any,
     mixed_precision_dtype: torch.dtype | None,
     max_batches: int,
@@ -351,9 +396,12 @@ def run_epoch(
     viz_every_n_steps: int | None = None,
     epoch_index: int = 0,
     global_step_offset: int = 0,
+    clip_grad: float = float("inf"),
+    wd_scheduler: CosineScheduler | None = None,
 ) -> tuple[dict[str, float], int]:
     """Run one train or validation epoch, rank-safe under DDP."""
 
+    world_size = ray.train.get_context().get_world_size()
     is_training = optimizer is not None
     autocast_enabled = mixed_precision_dtype is not None and device.type == "cuda"
     base_model = unwrap_model(model)
@@ -399,18 +447,39 @@ def run_epoch(
                 monitor_logits = monitor_state.get("student_logits")
                 monitor_embeddings = monitor_state.get("point_features")
                 masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
+                mask_match_fraction = float(monitor_state.get("mask_match_fraction", 0.0))
+                roll_match_fraction = float(monitor_state.get("roll_match_fraction", 0.0))
+                unmask_match_fraction = float(monitor_state.get("unmask_match_fraction", 0.0))
+                batch_mask_loss = float(result_dict.get("mask_loss", 0.0))
+                batch_roll_mask_loss = float(result_dict.get("roll_mask_loss", 0.0))
+                batch_unmask_loss = float(result_dict.get("unmask_loss", 0.0))
+                cos_sims = monitor_state.get("cosine_similarities")
+                batch_cosine_sim = float(cos_sims.mean().item()) if cos_sims is not None and cos_sims.numel() > 0 else 0.0
 
+        batch_grad_norm = 0.0
         if is_training:
             optimizer.zero_grad(set_to_none=True)
+            if wd_scheduler is not None:
+                step_weight_decay(optimizer, wd_scheduler)
             if grad_scaler is not None and grad_scaler.is_enabled():
                 grad_scaler.scale(loss).backward()
+                grad_scaler.unscale_(optimizer)
+                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), clip_grad,
+                ).item())
                 grad_scaler.step(optimizer)
+                old_scale = grad_scaler.get_scale()
                 grad_scaler.update()
+                if old_scale <= grad_scaler.get_scale() and lr_scheduler is not None:
+                    lr_scheduler.step()
             else:
                 loss.backward()
+                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), clip_grad,
+                ).item())
                 optimizer.step()
-            if lr_scheduler is not None:
-                lr_scheduler.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
             base_model.update_teacher(momentum=None)
 
         num_prototypes = int(getattr(base_model, "num_prototypes",
@@ -431,7 +500,6 @@ def run_epoch(
 
         current_absolute_step = global_step_offset + processed_batches
 
-        # Periodic logging (rank 0 only)
         if (
             is_training
             and logger is not None
@@ -439,19 +507,29 @@ def run_epoch(
             and log_every_n_steps > 0
             and current_absolute_step - last_logged_step >= log_every_n_steps
         ):
-            running = {
-                f"{phase}_loss_running": totals["loss"] / processed_batches,
-                f"{phase}_prototype_entropy_running": totals["prototype_entropy"] / processed_batches,
-                f"{phase}_embedding_norm_running": totals["embedding_norm"] / processed_batches,
-                f"{phase}_masked_fraction_running": totals["masked_fraction"] / processed_batches,
+            step_metrics = {
+                "record_type": "step_metrics",
+                "train_loss": float(loss.item()),
+                "train_prototype_entropy": prototype_entropy(usage),
+                "train_embedding_norm": embedding_norm(monitor_embeddings),
+                "train_masked_fraction": masked_fraction,
+                "train_mask_match_fraction": mask_match_fraction,
+                "train_roll_match_fraction": roll_match_fraction,
+                "train_unmask_match_fraction": unmask_match_fraction,
+                "train_mask_loss": batch_mask_loss,
+                "train_roll_mask_loss": batch_roll_mask_loss,
+                "train_unmask_loss": batch_unmask_loss,
+                "train_cosine_similarity": batch_cosine_sim,
+                "train_gradient_norm": batch_grad_norm,
                 "learning_rate": learning_rate(optimizer),
-                "epoch": epoch_index + 1,
+                "weight_decay": float(optimizer.param_groups[0].get("weight_decay", 0.0)),
+                "epoch": epoch_index,
                 "mask_size": float(getattr(base_model, "mask_size", 0.0)),
                 "mask_ratio": float(getattr(base_model, "mask_ratio", 0.0)),
                 "teacher_temperature": float(getattr(base_model, "teacher_temp", 0.07)),
                 "teacher_momentum": float(getattr(base_model, "momentum", 0.994)),
             }
-            logger.log_metrics(running, step=current_absolute_step)
+            logger.log_metrics(step_metrics, step=current_absolute_step)
             last_logged_step = current_absolute_step
 
         # Periodic visualization (rank 0 only)
@@ -490,7 +568,6 @@ def run_epoch(
         raise ValueError(f"No {phase} batches were processed.")
 
     # Reduce epoch metrics across ranks
-    world_size = ray.train.get_context().get_world_size()
     if world_size > 1:
         for key in totals:
             totals[key] = reduce_scalar(totals[key], device) / world_size
@@ -574,7 +651,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     model = ray.train.torch.prepare_model(
         model,
         parallel_strategy="ddp",
-        parallel_strategy_kwargs={"find_unused_parameters": True},
+        parallel_strategy_kwargs={"find_unused_parameters": False, "static_graph": True},
     )
     base_model = unwrap_model(model)
 
@@ -587,33 +664,47 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
         print(f"World size: {world_size}")
 
     # Optimizer & LR scheduler
+    param_groups = build_optimizer_param_groups(model, float(training_config.weight_decay))
     optimizer = AdamW(
-        model.parameters(),
-        lr=training_config.learning_rate,
-        weight_decay=training_config.weight_decay,
+        param_groups,
+        lr=float(training_config.learning_rate),
     )
-    lr_scheduler = CosineAnnealingLR(
+    total_steps = max(1, int(training_config.num_epochs) * max_train_batches)
+    lr_scheduler = OneCycleLR(
         optimizer,
-        T_max=max(1, training_config.num_epochs * max_train_batches),
-        eta_min=training_config.min_learning_rate,
+        max_lr=float(training_config.learning_rate),
+        total_steps=total_steps,
+        pct_start=0.05,
+        anneal_strategy="cos",
+        div_factor=10.0,
+        final_div_factor=1000.0,
     )
+    clip_grad = float(training_config.get("clip_grad", float("inf")))
 
     # Resume from Ray checkpoint if available
     start_epoch = 0
     global_step = 0
     best_val_loss = float("inf")
+    wd_scheduler_iter = 0
     checkpoint = ray.train.get_checkpoint()
     if checkpoint is not None:
         with checkpoint.as_directory() as checkpoint_dir:
-            start_epoch, global_step, best_val_loss = load_checkpoint_from_dir(
+            start_epoch, global_step, best_val_loss, wd_scheduler_iter = load_checkpoint_from_dir(
                 Path(checkpoint_dir), model, optimizer, lr_scheduler, grad_scaler,
             )
         if is_rank0:
             print(f"Resumed from checkpoint: epoch={start_epoch}, step={global_step}")
 
     # Setup Sonata schedulers (always from scratch with correct total_steps)
-    total_steps = max(1, training_config.num_epochs * max_train_batches)
     base_model.setup_schedulers(total_steps=total_steps, current_step=global_step)
+
+    # Weight decay scheduler (cosine ramp 0.04 -> 0.2 over full training)
+    wd_scheduler = CosineScheduler(
+        base_value=float(training_config.weight_decay),
+        final_value=float(training_config.final_weight_decay),
+        total_iters=total_steps,
+    )
+    wd_scheduler.iter = wd_scheduler_iter or 0
 
     # Re-apply sonata state from checkpoint on top of the fresh schedulers
     if checkpoint is not None:
@@ -642,7 +733,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     try:
         for epoch in range(start_epoch, training_config.num_epochs):
             if is_rank0:
-                print(f"Epoch {epoch + 1}/{training_config.num_epochs}")
+                print(f"Epoch {epoch}/{max(0, training_config.num_epochs - 1)}")
 
             # Set epoch on the DistributedSampler so shuffling differs per epoch
             if world_size > 1 and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
@@ -664,6 +755,8 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 viz_every_n_steps=viz_every_n_steps,
                 epoch_index=epoch,
                 global_step_offset=global_step,
+                clip_grad=clip_grad,
+                wd_scheduler=wd_scheduler,
             )
             global_step += train_batches
 
@@ -683,7 +776,8 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             current_momentum = float(getattr(base_model, "momentum", 0.994))
             current_temperature = float(getattr(base_model, "teacher_temp", 0.07))
             epoch_metrics = {
-                "epoch": epoch + 1,
+                "record_type": "epoch_metrics",
+                "epoch": epoch,
                 "global_step": global_step,
                 "train_loss": train_metrics["loss"],
                 "val_loss": val_metrics["loss"],
@@ -699,7 +793,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
             }
 
             if is_rank0:
-                logger.log_metrics(epoch_metrics, step=global_step)
+                logger.log_metrics(epoch_metrics, step=global_step, epoch=epoch)
                 print("epoch summary: " + json.dumps(epoch_metrics, sort_keys=True))
 
             # Checkpoint: rank 0 writes, all workers report
@@ -712,9 +806,10 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 if is_rank0:
                     save_checkpoint_to_dir(
                         Path(tmpdir), model, optimizer, lr_scheduler, grad_scaler,
-                        epoch=epoch + 1,
+                        epoch=epoch + 1,  # + 1 because training_state.epoch is the next epoch to run
                         global_step=global_step,
                         best_val_loss=best_val_loss,
+                        wd_scheduler_iter=wd_scheduler.iter,
                     )
                     ray_checkpoint = ray.train.Checkpoint.from_directory(tmpdir)
 
