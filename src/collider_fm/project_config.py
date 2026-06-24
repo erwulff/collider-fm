@@ -257,6 +257,9 @@ def sonata_batch_kwargs(
             "global_crop_max_ratio": view_config.global_crop_max_ratio,
             "local_crop_min_ratio": view_config.local_crop_min_ratio,
             "local_crop_max_ratio": view_config.local_crop_max_ratio,
+            "constrain_to_principal": bool(
+                view_config.get("constrain_to_principal", True)
+            ),
         }
     )
     return batch_kwargs

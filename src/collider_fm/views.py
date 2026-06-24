@@ -352,18 +352,35 @@ def rotate_around_beam_axis(coord: torch.Tensor, angle: float) -> torch.Tensor:
     return rotated
 
 
-def crop_point_view(view: Mapping[str, Any], keep_ratio: float) -> PointView:
-    """Keep the nearest points to a random center to create a contiguous crop."""
+def crop_point_view(
+    view: Mapping[str, Any],
+    keep_ratio: float,
+    center_coord: torch.Tensor | None = None,
+) -> PointView:
+    """Keep the nearest points to a center to create a contiguous crop.
+
+    When *center_coord* is ``None`` the crop center is drawn uniformly at random
+    from the view's own points (Sonata default). When provided, the crop is
+    centered on that coordinate instead, e.g. to constrain a secondary view to
+    lie within the footprint of a principal view.
+    """
     base_view = validate_point_view(view)
     num_points = base_view["coord"].shape[0]
     keep_count = max(1, min(num_points, int(round(num_points * keep_ratio))))
     if keep_count >= num_points:
         return base_view
 
-    center_index = int(
-        torch.randint(0, num_points, (1,), device=base_view["coord"].device).item()
-    )
-    center = base_view["coord"][center_index]
+    if center_coord is None:
+        center_index = int(
+            torch.randint(0, num_points, (1,), device=base_view["coord"].device).item()
+        )
+        center = base_view["coord"][center_index]
+    else:
+        center = torch.as_tensor(
+            center_coord,
+            dtype=base_view["coord"].dtype,
+            device=base_view["coord"].device,
+        )
     distances = torch.sum((base_view["coord"] - center) ** 2, dim=1)
     keep_indices = torch.argsort(distances)[:keep_count]
     keep_indices, _ = torch.sort(keep_indices)
@@ -394,6 +411,7 @@ def augment_point_view(
     point_dropout: float = 0.0,
     crop_keep_ratio: float = 1.0,
     view_kind: str = "augmented",
+    center_coord: torch.Tensor | None = None,
 ) -> PointView:
     """Create a simple collider-safe augmentation of one point view.
 
@@ -404,9 +422,13 @@ def augment_point_view(
     - multiplicative energy jitter
     - random point dropout
 
-    Masking is handled by the Sonata model during forward(), not here.
+    Masking is handled by the Sonata model during forward(), not here. When
+    *center_coord* is provided it is forwarded to :func:`crop_point_view` to
+    constrain the crop center.
     """
-    working_view = crop_point_view(view, keep_ratio=crop_keep_ratio)
+    working_view = crop_point_view(
+        view, keep_ratio=crop_keep_ratio, center_coord=center_coord
+    )
     coord = working_view["coord"].clone()
     origin_coord = working_view["origin_coord"].clone()
     total_energy = working_view["total_energy"].clone()
@@ -521,6 +543,13 @@ def _sample_crop_keep_ratio(
     return float(torch.empty(1, device=device).uniform_(min_ratio, max_ratio).item())
 
 
+def _sample_center_from_view(view: PointView) -> torch.Tensor:
+    """Draw a random point coordinate from a view's pre-augmentation origin."""
+    origin = view["origin_coord"]
+    index = torch.randint(0, origin.shape[0], (1,), device=origin.device)
+    return origin[index[0]]
+
+
 def build_sonata_batch(
     events: Sequence[Mapping[str, Any]],
     device: torch.device,
@@ -544,8 +573,16 @@ def build_sonata_batch(
     energy_max: float = 20.0,
     grid_sample_enabled: bool = True,
     grid_sample_size: float = 0.002,
+    constrain_to_principal: bool = True,
 ) -> SonataBatch:
-    """Build the packed global/local multiview batch expected by Sonata."""
+    """Build the packed global/local multiview batch expected by Sonata.
+
+    When *constrain_to_principal* is true (Sonata default, App. A.1) the crop
+    center of every non-principal global view and every local view is drawn from
+    the principal (first) global view's pre-augmentation coordinates, so those
+    crops are centered within the principal footprint while still sampling from
+    the full event. The first global view keeps an unconstrained random center.
+    """
 
     global_views: list[PointView] = []
     local_views: list[PointView] = []
@@ -564,26 +601,35 @@ def build_sonata_batch(
             grid_sample_size=grid_sample_size,
         )
 
+        principal: PointView | None = None
         for view_index in range(num_global_views):
             keep_ratio = _sample_crop_keep_ratio(
                 global_crop_min_ratio, global_crop_max_ratio, base_view["coord"].device
             )
-            global_views.append(
-                augment_point_view(
-                    base_view,
-                    coord_noise_scale=coord_noise_scale,
-                    feat_noise_scale=feat_noise_scale,
-                    phi_rotation_max=phi_rotation_max,
-                    crop_keep_ratio=keep_ratio,
-                    point_dropout=point_dropout,
-                    view_kind=f"sonata_global_{view_index}",
-                )
+            center_coord = None
+            if constrain_to_principal and view_index > 0 and principal is not None:
+                center_coord = _sample_center_from_view(principal)
+            view = augment_point_view(
+                base_view,
+                coord_noise_scale=coord_noise_scale,
+                feat_noise_scale=feat_noise_scale,
+                phi_rotation_max=phi_rotation_max,
+                crop_keep_ratio=keep_ratio,
+                point_dropout=point_dropout,
+                view_kind=f"sonata_global_{view_index}",
+                center_coord=center_coord,
             )
+            if constrain_to_principal and view_index == 0:
+                principal = view
+            global_views.append(view)
 
         for view_index in range(num_local_views):
             keep_ratio = _sample_crop_keep_ratio(
                 local_crop_min_ratio, local_crop_max_ratio, base_view["coord"].device
             )
+            center_coord = None
+            if constrain_to_principal and principal is not None:
+                center_coord = _sample_center_from_view(principal)
             local_views.append(
                 augment_point_view(
                     base_view,
@@ -593,6 +639,7 @@ def build_sonata_batch(
                     crop_keep_ratio=keep_ratio,
                     point_dropout=point_dropout,
                     view_kind=f"sonata_local_{view_index}",
+                    center_coord=center_coord,
                 )
             )
 
