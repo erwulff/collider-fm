@@ -69,6 +69,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(kwargs["global_crop_max_ratio"], 1.0)
         self.assertEqual(kwargs["local_crop_min_ratio"], 0.1)
         self.assertEqual(kwargs["local_crop_max_ratio"], 0.4)
+        self.assertTrue(kwargs["constrain_to_principal"])
 
 
 if __name__ == "__main__":

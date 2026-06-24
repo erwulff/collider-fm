@@ -194,6 +194,87 @@ class ViewTests(unittest.TestCase):
         )
         self.assertLessEqual(view_gs["coord"].shape[0], view_no_gs["coord"].shape[0])
 
+    def test_crop_point_view_uses_provided_center(self):
+        xs = torch.arange(10, dtype=torch.float32)
+        event = {
+            "calo_hits": {
+                "x": xs,
+                "y": torch.zeros(10),
+                "z": torch.zeros(10),
+                "total_energy": torch.ones(10),
+            }
+        }
+        view = build_point_view_from_event(
+            event, device=torch.device("cpu"), grid_sample_enabled=False
+        )
+
+        cropped = crop_point_view(
+            view, keep_ratio=0.3, center_coord=torch.tensor([8.5, 0.0, 0.0])
+        )
+
+        kept_x = torch.sort(cropped["coord"][:, 0]).values
+        self.assertTrue(torch.allclose(kept_x, torch.tensor([7.0, 8.0, 9.0])))
+
+    def test_build_sonata_batch_constrains_views_to_principal(self):
+        cluster_a = torch.arange(10, dtype=torch.float32) * 0.1
+        cluster_b = 1000.0 + torch.arange(10, dtype=torch.float32) * 0.1
+        xs = torch.cat([cluster_a, cluster_b])
+        event = {
+            "calo_hits": {
+                "x": xs,
+                "y": torch.zeros(20),
+                "z": torch.zeros(20),
+                "total_energy": torch.ones(20),
+            }
+        }
+        batch = build_sonata_batch(
+            [event],
+            device=torch.device("cpu"),
+            coord_noise_scale=0.0,
+            feat_noise_scale=0.0,
+            point_dropout=0.0,
+            num_global_views=2,
+            num_local_views=2,
+            global_crop_min_ratio=0.4,
+            global_crop_max_ratio=0.4,
+            local_crop_min_ratio=0.2,
+            local_crop_max_ratio=0.2,
+            grid_sample_enabled=False,
+            constrain_to_principal=True,
+        )
+
+        principal_x = batch["global_origin_coord"][0:8, 0]
+        secondary_x = batch["global_origin_coord"][8:16, 0]
+        self.assertLess(
+            abs(float(principal_x.mean()) - float(secondary_x.mean())), 10.0
+        )
+
+        local_x = batch["local_origin_coord"][:, 0]
+        self.assertLess(
+            abs(float(principal_x.mean()) - float(local_x.mean())), 10.0
+        )
+
+    def test_build_sonata_batch_unconstrained_preserves_shapes(self):
+        batch = build_sonata_batch(
+            [self.make_event(), self.make_event()],
+            device=torch.device("cpu"),
+            coord_noise_scale=0.0,
+            feat_noise_scale=0.0,
+            point_dropout=0.0,
+            num_global_views=2,
+            num_local_views=3,
+            global_crop_min_ratio=1.0,
+            global_crop_max_ratio=1.0,
+            local_crop_min_ratio=1.0,
+            local_crop_max_ratio=1.0,
+            constrain_to_principal=False,
+        )
+        self.assertEqual(tuple(batch["global_coord"].shape), (16, 3))
+        self.assertEqual(tuple(batch["local_coord"].shape), (24, 3))
+        self.assertTrue(
+            torch.equal(batch["global_offset"], torch.tensor([4, 8, 12, 16]))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
