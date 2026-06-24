@@ -161,6 +161,12 @@ def embedding_norm(embeddings: torch.Tensor | None) -> float:
     return float(embeddings.norm(dim=-1).mean().item())
 
 
+def feature_std(features: torch.Tensor | None) -> float:
+    if features is None or features.numel() == 0:
+        return 0.0
+    return float(features.std(dim=0).mean().item())
+
+
 def reduce_scalar(value: float, device: torch.device) -> float:
     """All-reduce a scalar across ranks and return the sum."""
     if dist.is_available() and dist.is_initialized():
@@ -411,6 +417,8 @@ def run_epoch(
         "loss": 0.0,
         "prototype_entropy": 0.0,
         "embedding_norm": 0.0,
+        "student_feature_std": 0.0,
+        "teacher_feature_std": 0.0,
         "masked_fraction": 0.0,
     }
     processed_batches = 0
@@ -446,6 +454,7 @@ def run_epoch(
                 monitor_state = getattr(base_model, "last_monitoring_state", {})
                 monitor_logits = monitor_state.get("student_logits")
                 monitor_embeddings = monitor_state.get("point_features")
+                monitor_teacher_features = monitor_state.get("teacher_features")
                 masked_fraction = float(monitor_state.get("masked_fraction", 0.0))
                 mask_match_fraction = float(monitor_state.get("mask_match_fraction", 0.0))
                 roll_match_fraction = float(monitor_state.get("roll_match_fraction", 0.0))
@@ -492,6 +501,8 @@ def run_epoch(
         totals["loss"] += float(loss.item())
         totals["prototype_entropy"] += prototype_entropy(usage)
         totals["embedding_norm"] += embedding_norm(monitor_embeddings)
+        totals["student_feature_std"] += feature_std(monitor_embeddings)
+        totals["teacher_feature_std"] += feature_std(monitor_teacher_features)
         totals["masked_fraction"] += float(masked_fraction)
         processed_batches += 1
 
@@ -512,6 +523,8 @@ def run_epoch(
                 "train_loss": float(loss.item()),
                 "train_prototype_entropy": prototype_entropy(usage),
                 "train_embedding_norm": embedding_norm(monitor_embeddings),
+                "train_student_feature_std": feature_std(monitor_embeddings),
+                "train_teacher_feature_std": feature_std(monitor_teacher_features),
                 "train_masked_fraction": masked_fraction,
                 "train_mask_match_fraction": mask_match_fraction,
                 "train_roll_match_fraction": roll_match_fraction,
@@ -785,6 +798,10 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 "val_prototype_entropy": val_metrics["prototype_entropy"],
                 "train_embedding_norm": train_metrics["embedding_norm"],
                 "val_embedding_norm": val_metrics["embedding_norm"],
+                "train_student_feature_std": train_metrics["student_feature_std"],
+                "val_student_feature_std": val_metrics["student_feature_std"],
+                "train_teacher_feature_std": train_metrics["teacher_feature_std"],
+                "val_teacher_feature_std": val_metrics["teacher_feature_std"],
                 "train_masked_fraction": train_metrics["masked_fraction"],
                 "val_masked_fraction": val_metrics["masked_fraction"],
                 "learning_rate": learning_rate(optimizer),

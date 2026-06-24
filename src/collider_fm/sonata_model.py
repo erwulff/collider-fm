@@ -725,6 +725,7 @@ class SonataSelfDistillation(nn.Module):
 
         monitor_logits: torch.Tensor | None = None
         monitor_features: torch.Tensor | None = None
+        monitor_teacher_features = global_feat.detach()
         monitor_masked_fraction = (
             float(global_mask.float().mean().item()) if global_mask.numel() > 0 else 0.0
         )
@@ -902,6 +903,7 @@ class SonataSelfDistillation(nn.Module):
         self.last_monitoring_state = {
             "student_logits": monitor_logits,
             "point_features": monitor_features,
+            "teacher_features": monitor_teacher_features,
             "masked_fraction": monitor_masked_fraction,
             "mask_match_fraction": monitor_mask_match_fraction,
             "roll_match_fraction": monitor_roll_match_fraction,
