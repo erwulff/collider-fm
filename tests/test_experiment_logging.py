@@ -53,7 +53,7 @@ class ExperimentLoggingTests(unittest.TestCase):
 
             records = [
                 json.loads(line)
-                for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()
+                for line in (Path(tmpdir) / "metrics_step.jsonl").read_text().splitlines()
             ]
             self.assertEqual(records, [{"epoch": 1, "step": 4, "train_loss": 1.23}])
 
@@ -65,7 +65,7 @@ class ExperimentLoggingTests(unittest.TestCase):
 
             records = [
                 json.loads(line)
-                for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()
+                for line in (Path(tmpdir) / "metrics_step.jsonl").read_text().splitlines()
             ]
             self.assertEqual(records, [{"epoch": 3, "step": 4, "train_loss": 1.23}])
 
@@ -101,7 +101,7 @@ class ExperimentLoggingTests(unittest.TestCase):
 
             records = [
                 json.loads(line)
-                for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+                for line in (run_dir / "metrics_step.jsonl").read_text().splitlines()
             ]
             self.assertEqual(records, [{"epoch": 1, "step": 2, "val_loss": 0.5}])
             self.assertEqual(fake_experiment.params, {"batch_size": 1})
