@@ -48,7 +48,7 @@ from collider_fm.views import (
     augment_point_view,
     batch_point_views,
     build_point_view_from_event,
-    validate_point_view,
+    normalize_point_view,
 )
 
 
@@ -115,7 +115,7 @@ def save_figure(fig: Figure, path: Path) -> None:
 
 
 def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
-    normalized = validate_point_view(view)
+    normalized = normalize_point_view(view)
     return {
         "coord": normalized["coord"],
         "feat": normalized["feat"],
