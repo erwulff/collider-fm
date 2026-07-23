@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import torch
 from datasets import DownloadConfig, load_dataset
 from torch.utils.data import DataLoader, Dataset
+
+from .views import build_sonata_batch
 
 DEFAULT_OBJECT_TYPES = ("calo_hits",)
 CALO_DATASET_ENERGY_KEY = "total_energy"
@@ -176,4 +179,27 @@ def collate_fn(
     separate until the view-building stage.
     """
     return batch
+
+
+class ViewBuildingCollate:
+    """Collate that builds the packed Sonata multiview batch in worker processes.
+
+    By default the heavy per-event view construction (voxel grid sampling + 6
+    augmented views per event) runs serially in the main training process right
+    before the forward pass, which starves the GPUs on the small-model steps.
+    Moving it into the DataLoader worker pool via this collate is what finally
+    makes ``num_workers`` effective: the work parallelizes across workers and
+    overlaps with GPU compute through the loader's prefetch buffer. Views are
+    built on CPU here; the main process transfers the packed batch to the GPU
+    (non-blocking, from pinned memory).
+    """
+
+    def __init__(self, batch_kwargs: dict[str, Any]) -> None:
+        # Keep a plain dict so the callable stays picklable for worker processes.
+        self.batch_kwargs = dict(batch_kwargs)
+
+    def __call__(self, batch: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:
+        return build_sonata_batch(
+            batch, device=torch.device("cpu"), **self.batch_kwargs
+        )
 

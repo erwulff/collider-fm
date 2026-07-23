@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .data import ColliderMLDataset, collate_fn
+from .data import ColliderMLDataset, ViewBuildingCollate, collate_fn
 from .experiment_logging import (
     NullLogger,
     create_experiment_logger,
@@ -36,7 +37,7 @@ from .project_config import (
     to_plain_container,
 )
 from .sonata_model import CosineScheduler
-from .views import build_sonata_batch
+from .views import build_sonata_batch, move_sonata_batch_to_device
 
 
 # ---------------------------------------------------------------------------
@@ -369,12 +370,27 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
         dataset_revision=data_config.dataset_revision,
         local_files_only=data_config.local_files_only,
     )
+    pin_memory = bool(training_config.pin_memory and torch.cuda.is_available())
+    # When enabled, the per-event view construction (grid sampling + 6 augmented
+    # views) runs inside the worker pool on CPU instead of serially on the main
+    # process, so num_workers finally parallelizes/overlaps it with GPU compute.
+    build_views_in_workers = bool(
+        training_config.get("build_views_in_workers", False)
+    )
+    if build_views_in_workers:
+        collate = ViewBuildingCollate(
+            sonata_batch_kwargs(
+                config, "training", max_calo_hits=config.views.max_calo_hits
+            )
+        )
+    else:
+        collate = collate_fn
     dataloader_kwargs: dict[str, Any] = {
         "batch_size": training_config.batch_size,
         "shuffle": shuffle,
-        "collate_fn": collate_fn,
+        "collate_fn": collate,
         "num_workers": training_config.num_workers,
-        "pin_memory": bool(training_config.pin_memory and torch.cuda.is_available()),
+        "pin_memory": pin_memory,
     }
     if training_config.num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
@@ -439,7 +455,13 @@ def run_epoch(
         except StopIteration:
             break
 
-        model_inputs = build_sonata_batch(events, device=device, **batch_kwargs)
+        # When view construction runs in the DataLoader workers, the loader hands
+        # us an already-packed SonataBatch (CPU/pinned); otherwise it hands us the
+        # raw event list and we build the batch here on the main process.
+        if isinstance(events, Mapping) and "global_coord" in events:
+            model_inputs = move_sonata_batch_to_device(events, device)
+        else:
+            model_inputs = build_sonata_batch(events, device=device, **batch_kwargs)
 
         with torch.set_grad_enabled(is_training):
             with torch.autocast(

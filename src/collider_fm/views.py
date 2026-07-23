@@ -659,3 +659,18 @@ def build_sonata_batch(
         "local_offset": local_batch["offset"],
         "grid_size": torch.tensor([grid_size], dtype=torch.float32, device=device),
     }
+
+
+def move_sonata_batch_to_device(
+    batch: SonataBatch, device: torch.device, *, non_blocking: bool = True
+) -> SonataBatch:
+    """Move a worker-built SonataBatch onto the compute device.
+
+    Used when view construction ran inside the DataLoader workers (on CPU, in
+    pinned memory): the transfer is issued non-blocking so it can overlap with
+    the previous step's GPU compute.
+    """
+    return {
+        key: tensor.to(device=device, non_blocking=non_blocking)
+        for key, tensor in batch.items()
+    }
