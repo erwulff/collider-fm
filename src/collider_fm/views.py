@@ -10,7 +10,6 @@ make masking, batching, and teacher/student alignment easy to follow.
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict, cast
 
-import numpy as np
 import torch
 
 DEFAULT_POINT_GRID_SIZE = 10.0
@@ -58,43 +57,47 @@ def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Ten
     return grid_coord[:, 0] * stride_x + grid_coord[:, 1] * stride_y + grid_coord[:, 2]
 
 
-def _fnv_hash_vec(arr: np.ndarray) -> np.ndarray:
-    arr = arr.astype(np.uint64, copy=True)
-    hashed = np.full(arr.shape[0], np.uint64(14695981039346656037))
-    for j in range(arr.shape[1]):
-        hashed *= np.uint64(1099511628211)
-        hashed = np.bitwise_xor(hashed, arr[:, j])
-    return hashed
-
-
 def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
     """Return indices of one representative point per voxel (train-mode random pick).
 
     Points are quantized onto a regular grid with spacing *grid_size*.  When
     multiple points fall into the same voxel, one is selected at random.  The
     returned index tensor can be used to index into coord and any per-point
-    tensors (energy, source_index, etc.).  This uses a small NumPy/CPU path to
-    match the reference-style voxel hashing code and only returns the chosen
-    indices to the original device.
+    tensors (energy, source_index, etc.).
+
+    This is a pure-torch implementation that runs entirely on *coord*'s device,
+    so it works on CPU (e.g. inside DataLoader workers) and on GPU without any
+    host round-trip or device synchronization.  A random priority is assigned to
+    every point and the lowest-priority point wins each voxel, which is a
+    uniform random pick per voxel (statistically equivalent to the previous
+    reference-style voxel-hashing code).
     """
     if coord.numel() == 0:
         return torch.arange(0, device=coord.device, dtype=torch.long)
 
-    scaled = coord.cpu().numpy() / np.array(grid_size)
-    grid_coord = np.floor(scaled).astype(np.int64)
-    grid_coord -= grid_coord.min(axis=0)
-
-    key = _fnv_hash_vec(grid_coord)
-    idx_sort = np.argsort(key)
-    key_sort = key[idx_sort]
-    _, _, count = np.unique(key_sort, return_inverse=True, return_counts=True)
-
-    idx_select = (
-        np.cumsum(np.insert(count, 0, 0)[:-1])
-        + np.random.randint(0, int(count.max()), count.size) % count
+    grid_size_tensor = torch.as_tensor(
+        grid_size, dtype=coord.dtype, device=coord.device
     )
-    idx_unique = idx_sort[idx_select]
-    return torch.from_numpy(idx_unique).to(device=coord.device, dtype=torch.long)
+    scaled = coord / grid_size_tensor
+    grid_coord = torch.floor(scaled).long()
+    grid_coord = grid_coord - grid_coord.min(dim=0).values
+
+    # `inverse` maps every point to its (0-based) voxel id; no host sync needed.
+    unique_grid, inverse = torch.unique(grid_coord, dim=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    num_voxels = unique_grid.shape[0]
+
+    priority = torch.rand(coord.shape[0], device=coord.device)
+    best_priority = torch.full(
+        (num_voxels,), float("inf"), device=coord.device
+    )
+    best_priority.scatter_reduce_(
+        0, inverse, priority, reduce="amin", include_self=True
+    )
+    # The point whose priority equals the voxel minimum is the winner.  Ties are
+    # astronomically unlikely for float32 random draws.
+    is_min = priority == best_priority[inverse]
+    return torch.where(is_min)[0].to(dtype=torch.long)
 
 
 def assemble_point_features(
@@ -340,10 +343,11 @@ def build_point_view_from_event(
     )
 
 
-def rotate_around_beam_axis(coord: torch.Tensor, angle: float) -> torch.Tensor:
+def rotate_around_beam_axis(coord: torch.Tensor, angle: float | torch.Tensor) -> torch.Tensor:
     """Rotate x/y coordinates while leaving z unchanged."""
-    cosine = torch.cos(torch.tensor(angle, dtype=coord.dtype, device=coord.device))
-    sine = torch.sin(torch.tensor(angle, dtype=coord.dtype, device=coord.device))
+    angle_tensor = torch.as_tensor(angle, dtype=coord.dtype, device=coord.device)
+    cosine = torch.cos(angle_tensor)
+    sine = torch.sin(angle_tensor)
     rotated = coord.clone()
     x = coord[:, 0]
     y = coord[:, 1]
@@ -371,9 +375,7 @@ def crop_point_view(
         return base_view
 
     if center_coord is None:
-        center_index = int(
-            torch.randint(0, num_points, (1,), device=base_view["coord"].device).item()
-        )
+        center_index = torch.randint(0, num_points, (1,), device=base_view["coord"].device)
         center = base_view["coord"][center_index]
     else:
         center = torch.as_tensor(
@@ -436,9 +438,7 @@ def augment_point_view(
     patch_id = working_view["patch_id"].clone()
 
     if phi_rotation_max > 0.0:
-        angle = (
-            torch.rand(1, device=coord.device).item() * 2.0 - 1.0
-        ) * phi_rotation_max
+        angle = (torch.rand(1, device=coord.device) * 2.0 - 1.0) * phi_rotation_max
         coord = rotate_around_beam_axis(coord, angle)
     if coord_noise_scale > 0.0:
         coord = coord + torch.randn_like(coord) * coord_noise_scale
@@ -502,14 +502,17 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     patch_id_parts = []
     mask = torch.cat([view["mask"] for view in normalized_views], dim=0)
     counts = []
-    source_offset = 0
-    patch_offset = 0
+    # Keep the per-event source/patch offsets as scalar tensors so we never have
+    # to pull a `.max()` back to the host (which would force a device sync) while
+    # assembling the batch.
+    source_offset = coord.new_zeros((), dtype=torch.long)
+    patch_offset = coord.new_zeros((), dtype=torch.long)
     for view in normalized_views:
         counts.append(view["coord"].shape[0])
         source_index_parts.append(view["source_index"] + source_offset)
         patch_id_parts.append(view["patch_id"] + patch_offset)
-        source_offset += int(view["source_index"].max().item()) + 1
-        patch_offset += int(view["patch_id"].max().item()) + 1
+        source_offset = source_offset + view["source_index"].max() + 1
+        patch_offset = patch_offset + view["patch_id"].max() + 1
 
     source_index = torch.cat(source_index_parts, dim=0)
     patch_id = torch.cat(patch_id_parts, dim=0)
