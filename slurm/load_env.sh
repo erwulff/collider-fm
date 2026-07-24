@@ -11,10 +11,8 @@ fi
 source .venv/bin/activate
 export UV_NO_PYTHON_DOWNLOADS=1
 
-# The ColliderML dataset is already staged in the HF cache on Ceph
-# (data.local_files_only=true), so workers must never reach out to huggingface.co.
-# Without these, every Ray worker still issues HTTPS HEAD/GET requests for dataset
-# metadata at startup, adding latency and a network dependency.
+# The dataset is staged in the HF cache on Ceph (data.local_files_only=true);
+# keep workers from reaching out to huggingface.co at startup.
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
