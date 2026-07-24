@@ -65,10 +65,8 @@ def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
     returned index tensor can be used to index into coord and any per-point
     tensors (energy, source_index, etc.).
 
-    Pure-torch, so it runs on CPU and GPU with no host round-trip or sync.  A
-    random priority is assigned to every point and the lowest wins each voxel,
-    which is a uniform random pick per voxel (equivalent to the previous
-    reference-style voxel-hashing code).
+    A random priority is assigned to every point and the lowest wins each voxel,
+    which is a uniform random pick per voxel.
     """
     if coord.numel() == 0:
         return torch.arange(0, device=coord.device, dtype=torch.long)
