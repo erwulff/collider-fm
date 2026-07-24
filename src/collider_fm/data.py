@@ -182,20 +182,14 @@ def collate_fn(
 
 
 class ViewBuildingCollate:
-    """Collate that builds the packed Sonata multiview batch in worker processes.
+    """Build the packed Sonata multiview batch in DataLoader worker processes.
 
-    By default the heavy per-event view construction (voxel grid sampling + 6
-    augmented views per event) runs serially in the main training process right
-    before the forward pass, which starves the GPUs on the small-model steps.
-    Moving it into the DataLoader worker pool via this collate is what finally
-    makes ``num_workers`` effective: the work parallelizes across workers and
-    overlaps with GPU compute through the loader's prefetch buffer. Views are
-    built on CPU here; the main process transfers the packed batch to the GPU
-    (non-blocking, from pinned memory).
+    Moves the per-event view construction off the main process so ``num_workers``
+    parallelizes it and overlaps it with GPU compute via the prefetch buffer.
+    Views are built on CPU; the main process transfers the batch to the GPU.
     """
 
     def __init__(self, batch_kwargs: dict[str, Any]) -> None:
-        # Keep a plain dict so the callable stays picklable for worker processes.
         self.batch_kwargs = dict(batch_kwargs)
 
     def __call__(self, batch: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:

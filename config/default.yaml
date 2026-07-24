@@ -124,7 +124,6 @@ training:
   num_workers: 8
   prefetch_factor: 2
   pin_memory: true
-  build_views_in_workers: false
   mixed_precision: bf16
   train_shuffle: true
   checkpoint_every_epochs: 1
