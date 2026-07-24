@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import torch
 from datasets import DownloadConfig, load_dataset
 from torch.utils.data import DataLoader, Dataset
+
+from .views import build_sonata_batch
 
 DEFAULT_OBJECT_TYPES = ("calo_hits",)
 CALO_DATASET_ENERGY_KEY = "total_energy"
@@ -176,4 +179,21 @@ def collate_fn(
     separate until the view-building stage.
     """
     return batch
+
+
+class ViewBuildingCollate:
+    """Build the packed Sonata multiview batch in DataLoader worker processes.
+
+    Moves the per-event view construction off the main process so ``num_workers``
+    parallelizes it and overlaps it with GPU compute via the prefetch buffer.
+    Views are built on CPU; the main process transfers the batch to the GPU.
+    """
+
+    def __init__(self, batch_kwargs: dict[str, Any]) -> None:
+        self.batch_kwargs = dict(batch_kwargs)
+
+    def __call__(self, batch: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:
+        return build_sonata_batch(
+            batch, device=torch.device("cpu"), **self.batch_kwargs
+        )
 

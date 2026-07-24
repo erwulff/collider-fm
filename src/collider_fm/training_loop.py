@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .data import ColliderMLDataset, collate_fn
+from .data import ColliderMLDataset, ViewBuildingCollate, collate_fn
 from .experiment_logging import (
     NullLogger,
     create_experiment_logger,
@@ -36,7 +37,7 @@ from .project_config import (
     to_plain_container,
 )
 from .sonata_model import CosineScheduler
-from .views import build_sonata_batch
+from .views import build_sonata_batch, move_sonata_batch_to_device
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +357,23 @@ def load_checkpoint_from_dir(
 # Dataloader factory
 # ---------------------------------------------------------------------------
 
+def _make_worker_init_fn(base_seed: int):
+    """Return a DataLoader worker_init_fn that seeds each worker distinctly.
+
+    Workers fork from the parent and would otherwise share RNG state, producing
+    correlated augmentations. Seed torch/cpu/random from ``base_seed + worker_id``.
+    """
+    import random
+
+    def init_fn(worker_id: int) -> None:
+        seed = base_seed + worker_id
+        random.seed(seed)
+        np.random.seed(seed % (2**32))
+        torch.manual_seed(seed)
+
+    return init_fn
+
+
 def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoader:
     data_config = config.data
     training_config = config.training
@@ -369,16 +387,35 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
         dataset_revision=data_config.dataset_revision,
         local_files_only=data_config.local_files_only,
     )
+    pin_memory = bool(training_config.pin_memory and torch.cuda.is_available())
+    num_workers = int(training_config.num_workers)
+    # With workers, build views in the worker pool on CPU so the work overlaps
+    # with GPU compute (and the Ceph reads) instead of serializing on the main
+    # process.
+    if num_workers > 0:
+        collate = ViewBuildingCollate(
+            sonata_batch_kwargs(
+                config, "training", max_calo_hits=config.views.max_calo_hits
+            )
+        )
+    else:
+        collate = collate_fn
     dataloader_kwargs: dict[str, Any] = {
         "batch_size": training_config.batch_size,
         "shuffle": shuffle,
-        "collate_fn": collate_fn,
-        "num_workers": training_config.num_workers,
-        "pin_memory": bool(training_config.pin_memory and torch.cuda.is_available()),
+        "collate_fn": collate,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
     }
-    if training_config.num_workers > 0:
+    if num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
         dataloader_kwargs["prefetch_factor"] = training_config.prefetch_factor
+        # Seed each worker distinctly so the torch.rand/randint calls in view
+        # construction diverge across workers and epochs.
+        base_seed = int(training_config.get("seed", 42)) + int(
+            ray.train.get_context().get_world_rank()
+        )
+        dataloader_kwargs["worker_init_fn"] = _make_worker_init_fn(base_seed)
     return DataLoader(dataset, **dataloader_kwargs)
 
 
@@ -439,7 +476,11 @@ def run_epoch(
         except StopIteration:
             break
 
-        model_inputs = build_sonata_batch(events, device=device, **batch_kwargs)
+        # Worker-built batches arrive already packed; raw event lists are built here.
+        if isinstance(events, Mapping) and "global_coord" in events:
+            model_inputs = move_sonata_batch_to_device(events, device)
+        else:
+            model_inputs = build_sonata_batch(events, device=device, **batch_kwargs)
 
         with torch.set_grad_enabled(is_training):
             with torch.autocast(

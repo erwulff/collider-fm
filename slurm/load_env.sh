@@ -11,6 +11,11 @@ fi
 source .venv/bin/activate
 export UV_NO_PYTHON_DOWNLOADS=1
 
+# The dataset is staged in the HF cache on Ceph (data.local_files_only=true);
+# keep workers from reaching out to huggingface.co at startup.
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
 echo "Using Python: $(which python)"
 python --version
 
