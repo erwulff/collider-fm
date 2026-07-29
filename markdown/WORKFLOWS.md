@@ -14,7 +14,7 @@ This document collects the detailed runtime contract, configuration notes, and c
 - current training recipe: Sonata self-distillation
   - two global views (teacher + masked student) and four local views (student only)
   - Sinkhorn-Knopp prototype assignment
-  - separate student mask/unmask heads with a unified teacher mask head during training
+  - separate student mask/unmask heads with matching teacher mask/unmask heads (`_head_for_diagnostics` prefers `unmask_head`)
   - cosine schedulers for mask size, mask ratio, temperature, and EMA momentum
   - `match_neighbour` alignment via `origin_coord`
 - current training defaults:
@@ -51,6 +51,7 @@ Common overrides:
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
+- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`)
 
 To start a single-GPU training run:
 
@@ -125,6 +126,21 @@ Plot the saved metrics from a completed run:
 uv run python scripts/plot_training_run.py runs/<run_name>
 ```
 
+Evaluate pretraining quality with the label-free collapse-detection harness. It encodes held-out events through the deterministic teacher backbone and reports per-point stable rank + singular-value spectrum, per-point prototype usage / entropy / effective count + dead-prototype count, and per-event NN view-retrieval R@1/R@5 + alignment / uniformity. Metrics go to `runs/eval_<run_name>/metrics_step.jsonl` and `summary.json`.
+
+```bash
+# trained checkpoint: a single model.pt, a runs/<run> dir, or a Ray storage dir all resolve
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> data.local_files_only=true
+
+# random-init baseline (omit evaluation.checkpoint) for the trained-vs-random sanity comparison
+uv run python scripts/evaluate.py data.local_files_only=true
+
+# smaller / faster eval
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> evaluation.max_events=500 evaluation.val_split=val[:500]
+```
+
+The `evaluation.checkpoint` argument accepts a direct `model.pt` path, a local `runs/<run_name>` directory (resolved via `checkpoint_path.txt` to the latest `checkpoint_*/model.pt`), or a Ray storage directory containing `checkpoint_*` subdirs. The teacher backbone is used because it is deterministic (drop_path / attn_drop / proj_drop forced off) and is the deployment-target network.
+
 Open the walkthrough notebooks:
 
 ```bash
@@ -145,6 +161,11 @@ Training runs write two kinds of artifacts:
 - `metrics_epoch.jsonl`
 - `viz/` (diagnostic PNGs)
 - `checkpoint_path.txt` (points to the Ray checkpoint directory)
+
+**Evaluation run directory** (`runs/eval_<run_name>/` from `scripts/evaluate.py`):
+- `config.json`
+- `metrics_step.jsonl` (one `record_type: "eval"` record with all v1 metrics)
+- `summary.json` (the same metrics, pretty-printed for quick inspection)
 
 **Ray checkpoint storage** (`/mnt/ceph/users/ewulff/raytrain_results/<run_name>/`):
 - `checkpoint_000000/`, `checkpoint_000001/`, ... (each contains `model.pt`, `optimizer.pt`, `scheduler.pt`, `scaler.pt`, `training_state.pt`)

@@ -78,7 +78,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 |---|---|
 | Model | `SonataSelfDistillation` (`sonata_model.py`) |
 | Views | `build_sonata_batch` (`views.py`) |
-| Heads | Dual `OnlineCluster` student heads (mask/unmask) + Sinkhorn-Knopp; teacher uses unified mask_head for both branches |
+| Heads | Dual `OnlineCluster` heads (mask/unmask) on **both** student and teacher (`sonata_model.py:316-320`) + Sinkhorn-Knopp; diagnostics prefer `unmask_head` (`_head_for_diagnostics`, `:587`) |
 | Scheduling | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
 | Monitoring | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
 | Multi-GPU | Ray Train (`training_loop.py`) with PyTorch DDP; future Ray Tune HPO compatible |
@@ -87,7 +87,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 **Data flow**: `ColliderMLDataset` → `collate_fn` → `build_sonata_batch` → `SonataBatch` → `SonataSelfDistillation.forward()`
 
-**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`.
+**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`, `evaluation`.
 
 **Training loop**: `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint I/O. `scripts/train.py` is a thin CLI driver that launches a `TorchTrainer`.
 
@@ -104,7 +104,9 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 - `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint save/load
 - `src/collider_fm/experiment_logging.py` — Null/Jsonl/Comet loggers + `log_image`
 - `src/collider_fm/project_config.py` — OmegaConf config loading
+- `src/collider_fm/evaluation.py` — Label-free collapse metrics (stable rank, prototype usage, NN view-retrieval, alignment/uniformity) + bounded embedding collection
 - `scripts/train.py` — Ray Train CLI driver
+- `scripts/evaluate.py` — Evaluation CLI: load checkpoint (or random-init), encode held-out events through teacher backbone, log v1 metrics
 - `config/default.yaml` — All defaults
 
 ### Operating principles
