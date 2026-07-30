@@ -10,8 +10,8 @@ events through the deterministic EMA teacher backbone, and reports:
 Metrics are written to ``runs/eval_<run_name>/metrics_step.jsonl``.
 
 Examples:
-  uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun/model.pt
-  uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun   # resolves latest checkpoint_*/model.pt
+  uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun   # resolves latest checkpoint + matches the run's backbone
+  uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun/model.pt   # raw .pt (no auto backbone match)
   uv run python scripts/evaluate.py                                   # random-init baseline
   uv run python scripts/evaluate.py evaluation.max_events=500 evaluation.val_split=val[:500]
 """
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from omegaconf import OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -71,20 +72,39 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def resolve_checkpoint(spec: Any) -> Path | None:
-    """Resolve a checkpoint spec to a single ``model.pt`` path.
+def _config_alongside(path: Path) -> Path | None:
+    """Return ``config.json`` next to a training run dir (marked by checkpoint_path.txt)."""
+    for cand in (path, *path.parents):
+        if (cand / "checkpoint_path.txt").is_file() and (cand / "config.json").is_file():
+            return cand / "config.json"
+    return None
 
-    Accepts ``None``/empty (random-init baseline), a ``model.pt`` file, a run
-    directory (``runs/<run>`` -> reads ``checkpoint_path.txt`` -> latest
-    ``checkpoint_*/model.pt``), or a Ray storage directory containing
-    ``checkpoint_*`` subdirs.
+
+def _config_by_run_name(ray_dir: Path) -> Path | None:
+    """Recover ``runs/<run_name>/config.json`` from a Ray storage directory name."""
+    cfg = PROJECT_ROOT / "runs" / ray_dir.name / "config.json"
+    return cfg if cfg.is_file() else None
+
+
+def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
+    """Resolve a checkpoint spec to ``(model.pt path, run config.json path or None)``.
+
+    Accepts ``None``/empty (random-init baseline -> ``(None, None)``), a ``model.pt``
+    file, a run directory (``runs/<run>`` -> reads ``checkpoint_path.txt`` -> latest
+    ``checkpoint_*/model.pt``), or a Ray storage directory containing ``checkpoint_*``
+    subdirs. The run ``config.json`` is recovered when the spec is a training run dir
+    (``runs/<run>``) or a Ray storage dir whose name matches a run dir, so the model can
+    be built to match the checkpoint's architecture exactly.
     """
     if spec is None or str(spec).strip() == "":
-        return None
+        return None, None
     path = Path(str(spec))
+
     if path.is_file():
-        return path
+        return path, _config_alongside(path)
+
     if path.is_dir():
+        run_config = _config_alongside(path)
         pointer = path / "checkpoint_path.txt"
         search_roots = []
         if pointer.exists():
@@ -98,9 +118,11 @@ def resolve_checkpoint(spec: Any) -> Path | None:
             if ckpts:
                 model_pt = ckpts[-1] / "model.pt"
                 if model_pt.is_file():
-                    return model_pt
+                    if run_config is None:
+                        run_config = _config_alongside(root) or _config_by_run_name(root)
+                    return model_pt, run_config
     # Fall through; let load_checkpoint surface a clear error.
-    return path
+    return path, None
 
 
 def main() -> None:
@@ -113,15 +135,32 @@ def main() -> None:
     device = resolve_device(str(eval_config.device))
     print(f"Using device: {device}")
 
-    checkpoint = resolve_checkpoint(eval_config.get("checkpoint"))
+    checkpoint, run_config_path = resolve_checkpoint(eval_config.get("checkpoint"))
     weights_source = (
         f"checkpoint: {checkpoint}" if checkpoint is not None else "random initialization"
     )
     print(f"Weights: {weights_source}")
 
+    # Build the model to match the checkpoint's architecture. When a run config.json is
+    # available (e.g. evaluation.checkpoint=runs/<run>), use its model.training block so a
+    # different backbone (e.g. enc_channels) loads cleanly. Otherwise fall back to the
+    # default config -- but warn, since a mismatch leaves checkpoint weights partly random.
+    if run_config_path is not None:
+        run_cfg = OmegaConf.create(json.loads(run_config_path.read_text()))
+        model_config = select_model_config(run_cfg, "training")
+        print(f"Model config from run: {run_config_path}")
+    else:
+        model_config = select_model_config(config, "training")
+        if checkpoint is not None:
+            print(
+                "WARNING: no run config.json found for this checkpoint; building the model "
+                "from the default config. If the checkpoint's backbone differs, weights will "
+                "be partly random. Pass a runs/<run> directory to auto-match its architecture."
+            )
+
     model = create_training_model(
         device=device,
-        **model_factory_kwargs(select_model_config(config, "training")),
+        **model_factory_kwargs(model_config),
     )
     checkpoint_report = None
     if checkpoint is not None:
