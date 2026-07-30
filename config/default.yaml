@@ -60,8 +60,8 @@ model:
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 2, 2, 1]
-      enc_channels: [16, 32, 64, 96, 128]
-      enc_num_head: [1, 2, 4, 4, 8]
+      enc_channels: [32, 64, 128, 192, 256]
+      enc_num_head: [2, 4, 8, 12, 16]
       enc_patch_size: [48, 48, 48, 48, 48]
       shuffle_orders: false
       enable_flash: true

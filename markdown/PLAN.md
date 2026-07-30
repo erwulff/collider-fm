@@ -15,7 +15,7 @@ This document tracks the near-term roadmap for the current calo-only training pi
 ## Current limitations
 
 - the evaluation harness is label-free and collapse-focused (stable rank, prototype usage, NN view-retrieval, alignment/uniformity); usefulness probes requiring labels are not yet implemented
-- the Sonata recipe uses a much smaller backbone and head than the reference pimm implementation (enc_channels=[16..128] vs [48..512], 4096 vs 4096 prototypes but much smaller head_embed_channels)
+- the Sonata recipe uses a smaller backbone and head than the reference pimm implementation (enc_channels=[32..256] vs [48..512], 4096 vs 4096 prototypes but much smaller head_embed_channels)
 
 ## Next priorities
 
