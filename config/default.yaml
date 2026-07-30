@@ -6,7 +6,7 @@ data:
     - calo_hits
   cache_dir: /mnt/ceph/users/ewulff/data/hf
   dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
-  local_files_only: false
+  local_files_only: true
 
 views:
   max_calo_hits:
@@ -148,7 +148,7 @@ download:
     - calo_hits
   pu_config: pu0
   cache_dir: /mnt/ceph/users/ewulff/data/hf
-  dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+  dataset_revision: 64c3d2f112df3d5d20979d22da7cfdff13e10c4b
   num_proc: 4
 
 smoke_test:
