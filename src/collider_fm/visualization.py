@@ -1,27 +1,18 @@
 """Panda-style per-point t-SNE visualization of the pretrained backbone.
 
-Reproduces the construction of the Panda paper (arXiv 2512.01324, Figure 2): embed the
-backbone's **full up-cast** per-point features (walk *all* pooling levels, not the
-2-level ``up_cast`` the Sonata pretraining loss uses) -- one dot per grid-sampled
-calorimeter hit, unit-normalized -- and scatter the 2D t-SNE colored by particle type
-and by label-free spatial channels (z / transverse radius). Particle type collapses the
-raw ``pdg_id`` (of the dominant contributing particle) to 7 coarse calorimetry-role
-buckets (e± / γ / μ± / charged hadron / neutral hadron / nucleus / other) so the legend
-stays readable; see :func:`collider_fm.evaluation_labels.pdg_bucket`.
+Reproduces the Panda paper (arXiv 2512.01324, Figure 2): embed the backbone's per-point
+features -- one dot per grid-sampled calorimeter hit, unit-normalized -- and scatter the
+2D t-SNE colored by particle type and by event id. Particle type collapses the raw
+``pdg_id`` (of the dominant contributing particle) to 7 coarse calorimetry-role buckets
+(e± / γ / μ± / charged hadron / neutral hadron / nucleus / other) so the legend stays
+readable; see :func:`collider_fm.evaluation_labels.pdg_bucket`.
 
-Why the full up-cast: ``up_cast(level=2)`` stops at stage-2 (downsampled) resolution,
-which has no retained mapping back to raw hits. The full up-cast recovers
-input-resolution features with a clean 1:1 coord bijection to the input points
-(verified), so each plotted point can be colored by its raw-hit truth label. This is a
-*visualization*, so a few mis-colored shared calorimeter cells (``contrib_*`` are
-multi-contributor for ~15% of hits) sit between clusters rather than corrupting a
-metric -- the noise is itself informative.
-
-Each dot is a single grid-sampled hit (the voxel representatives the backbone consumes
-after ``grid_sample``), not a raw detector hit and not an event. Augmentation is off
-(one clean base view per event, matching the paper's ``model(data)`` on raw data), so
-the output points are exactly the input points (reordered by serialization) and
-label lookup is by coord match -> the base view's ``source_index`` (raw hit index).
+Two feature spaces: the **full up-cast** (all pooling levels → input resolution, an
+exact 1:1 coord bijection to raw hits) and **up_cast(2)** (the pretraining space, where
+each point is a downsampled voxel inheriting its cluster's energy-dominant pdg). The
+full up-cast is needed because ``up_cast(level=2)`` stops at downsampled stage-2, which
+has no mapping back to raw hits. Augmentation is off (one clean base view per event),
+matching the paper's ``model(data)`` on raw data.
 """
 
 from __future__ import annotations
@@ -49,10 +40,8 @@ __all__ = [
     "make_tsne_plots",
 ]
 
-# Display colors for the coarse calorimetry-role buckets, keyed by the names in
-# evaluation_labels.PDG_BUCKET_NAMES. A missing name raises at plot time, keeping the
-# two lists from drifting. Map: e± red, γ orange, μ± purple, charged hadron blue,
-# neutral hadron pink, nucleus olive, other gray.
+# Display colors for the 7 calorimetry-role buckets, keyed by PDG_BUCKET_NAMES. A
+# missing name raises at plot time, keeping the two lists from drifting.
 PDG_BUCKET_COLORS: dict[str, str] = {
     "e±": "tab:red",
     "γ": "tab:orange",
@@ -63,8 +52,7 @@ PDG_BUCKET_COLORS: dict[str, str] = {
     "other": "tab:gray",
 }
 
-# Distinct colors for the event_id coloring (cycles for >10 events). tab10 keeps the
-# first few events strongly separable; the rest wrap, which is fine for a floor-check.
+# Per-event colors (cycles for >10 events); fine for the event-separation floor-check.
 _EVENT_COLORS: list[str] = [
     "tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
     "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan",
@@ -74,13 +62,12 @@ _EVENT_COLORS: list[str] = [
 def full_up_cast(point: Point) -> Point:
     """Rebuild per-point features at input resolution by walking the full pooling chain.
 
-    Mirrors ``Panda_repo/panda/model_base.py`` ``forward(upcast=True)`` (and the
-    panoptic head's ``up_cast``): repeatedly pop ``pooling_parent`` /
-    ``pooling_inverse`` and concatenate each parent's feature with its children's
-    features broadcast back via ``point.feat[inverse]``, until no parent remains.
-    Unlike :meth:`SonataModel.up_cast` (which stops after ``up_cast_level=2``), this
-    walks *all* levels and so returns one feature per input point. Mutates/consumes the
-    pooling breadcrumb keys on ``point`` (run on a fresh enc output each call).
+    Mirrors ``Panda_repo/panda/model_base.py`` ``forward(upcast=True)``: repeatedly pop
+    ``pooling_parent`` / ``pooling_inverse`` and concatenate each parent's feature with
+    its children's features broadcast back via ``point.feat[inverse]``, until no parent
+    remains. Unlike :meth:`SonataModel.up_cast` (which stops after ``up_cast_level``),
+    this walks *all* levels and returns one feature per input point. Consumes the
+    breadcrumb keys (run on a fresh enc output each call).
     """
     while "pooling_parent" in point.keys():
         if "pooling_inverse" not in point.keys():
@@ -118,37 +105,32 @@ def upcast2_input_map(point: Point, up_cast_level: int = 2) -> tuple[Point, torc
 
     Runs :func:`_up_cast_levels` (consuming ``up_cast_level`` breadcrumbs), then inverts
     the *remaining* pooling chain to recover, for every stage-0 (input) point, which
-    up-cast point it pooled into. The up-cast point is the cluster representative of its
-    input points, so this lets each up-cast point inherit a label from its cluster
-    (e.g. the energy-dominant particle's pdg). Verified exact: inverting the surviving
-    ``pooling_inverse`` maps reconstructs the clusters, and the coord-mean invariant of
-    ``GridPooling`` (each cluster's coord = mean of its members' coords) holds to float
-    noise (~1e-3).
+    up-cast point it pooled into. This lets each up-cast point (a downsampled voxel)
+    inherit a label from its cluster of input points. Verified exact: the coord-mean
+    invariant of ``GridPooling`` (each cluster's coord = mean of its members' coords)
+    holds to float noise (~1e-3).
 
     Args:
         point: the backbone output (deepest stage, full pooling chain intact).
         up_cast_level: levels to walk up (the pretraining ``up_cast_level``, default 2).
 
     Returns:
-        ``(upcast_point, input_to_cluster)`` where ``upcast_point`` is the
-        ``up_cast_level``-up-cast :class:`Point` (``[N_up, D]`` features) and
-        ``input_to_cluster`` is a ``[N0]`` long tensor mapping each stage-0 input point
-        to its up-cast cluster id in ``[0, N_up)``.
+        ``(upcast_point, input_to_cluster)``: the up-cast :class:`Point`
+        (``[N_up, D]`` features) and a ``[N0]`` long tensor mapping each input point to
+        its up-cast cluster id in ``[0, N_up)``.
     """
     upcast_point = _up_cast_levels(point, up_cast_level)
     n_up = upcast_point.feat.shape[0]
 
-    # Invert the remaining chain: start with each up-cast point as its own cluster, then
-    # expand membership one level at a time (coarse -> finer) until stage-0 is reached.
+    # Invert the remaining chain: each up-cast point starts as its own cluster, then
+    # expand membership one level at a time (coarse -> finer) until stage-0.
     membership = torch.arange(n_up, device=upcast_point.feat.device)
     cur = upcast_point
     while "pooling_parent" in cur.keys():
-        parent = cur["pooling_parent"]  # finer level
         inverse = cur["pooling_inverse"]  # [N_finer] -> coarse cluster id in `cur`
         membership = membership[inverse]  # broadcast coarse membership to finer points
-        cur = parent
+        cur = cur["pooling_parent"]
     return upcast_point, membership
-
 
 
 def match_to_input_coords(
@@ -156,11 +138,10 @@ def match_to_input_coords(
 ) -> torch.Tensor:
     """For each output point, the index of its nearest input point by Euclidean distance.
 
-    Used to recover the input row (and thus ``source_index`` / raw hit index) for each
-    full-up-cast output point, which is at the same resolution but reordered by the
-    space-filling serialization. Returns ``[num_out]`` long indices into ``in_coord``.
-    On the happy path (verified) this is a bijection: every output matches a distinct
-    input within float noise.
+    Recovers the input row (-> ``source_index`` / raw hit index) for each full-up-cast
+    output point, which is at the same resolution but reordered by serialization.
+    Returns ``[num_out]`` long indices into ``in_coord``; on the happy path (verified)
+    this is a bijection within float noise.
 
     Uses ``scipy.spatial.cKDTree`` on CPU (O(N log N), bounded memory) rather than an
     O(N^2) ``cdist`` -- the per-event point count (~10^4) makes the dense distance
@@ -179,12 +160,9 @@ class TsnePointCollection:
 
     All arrays are ``[M]`` (or ``[M, D]`` for features) over ``M <= max_points``
     subsampled points across ``num_events`` events. ``pdg_id`` uses ``-1`` for unknown;
-    ``event_id`` is a per-event index in ``[0, num_events)``.
-
-    Note: prototype coloring is intentionally absent. The diagnostics head is
-    dimensionally bound to the 288-d ``up_cast(2)`` features (the pretraining feature
-    space), not the 672-d full-up-cast features embedded here, so a prototype assignment
-    is not defined on these points without a separate stage-2->input mapping.
+    ``event_id`` is a per-event index in ``[0, num_events)``. Prototype coloring is
+    absent: the diagnostics head is dimensionally bound to the ``up_cast(2)`` features,
+    not the full-up-cast features embedded here.
     """
 
     features: torch.Tensor  # [M, D] unit-normalized features
@@ -215,17 +193,14 @@ def collect_tsne_points(
 
     - ``"full"`` (default): :func:`full_up_cast` to input resolution (one feature per
       grid-sampled hit). Each output point is coord-matched back to its input row ->
-      ``source_index`` (raw hit index) -> the dominant particle's ``pdg_id``. z /
-      radius are the point's own coord.
+      ``source_index`` (raw hit index) -> the dominant particle's ``pdg_id``.
     - ``"upcast2"``: up-cast only ``up_cast_level`` levels (the pretraining feature
-      space, e.g. 288-d). These points are *downsampled* vs input; each is a cluster of
-      input points (recovered exactly via :func:`upcast2_input_map`). A cluster inherits
-      the **energy-dominant** pdg across its raw hits (the particle type carrying the
-      most cell energy in the voxel); z / radius are the cluster-mean coord.
+      space). These points are downsampled vs input; each is a cluster of input points
+      (recovered exactly via :func:`upcast2_input_map`) and inherits the
+      **energy-dominant** pdg across its raw hits.
 
-    ``event_id`` (per-event index) is assigned in both spaces -- the "is the grouping
-    just events separating?" diagnostic. Points are subsampled proportionally across
-    events to bound total memory at ``max_points`` (v1 ``collect_embeddings`` pattern).
+    ``event_id`` (per-event index) is assigned in both spaces. Points are subsampled
+    proportionally across events to bound total memory at ``max_points``.
     """
     from .evaluation_labels import event_dominant_particles
 
@@ -252,10 +227,9 @@ def collect_tsne_points(
         if events_done >= max_events:
             break
 
-        # The raw calo_truth dataset yields flat events (plain arrays, no torch format,
-        # no "calo_hits" wrapper); build_point_view_from_event expects the wrapped
-        # form with on-device feature tensors. Tensorize the 4 feature columns it reads
-        # and keep the flat event's contrib_* for the label lookup below.
+        # Raw calo_truth yields flat events; build_point_view_from_event expects the
+        # wrapped form with on-device tensors. Keep the flat event's contrib_* for the
+        # label lookup below.
         wrapped = {
             "calo_hits": {
                 "x": torch.as_tensor(event["x"], dtype=torch.float32, device=device),
@@ -272,7 +246,6 @@ def collect_tsne_points(
         if n_in == 0:
             continue
 
-        # Per-raw-hit dominant pdg + total energy (used by both feature spaces).
         _, pdg_per_hit, _, _ = event_dominant_particles(event, pid_to_pdg)
         hit_energy = np.asarray(event["total_energy"], dtype=np.float64)
 
@@ -294,7 +267,6 @@ def collect_tsne_points(
             )
         n_out = feats.shape[0]
 
-        # Proportional subsample so the total stays bounded at max_points.
         remaining_budget = max_points - total
         remaining_events = max(1, max_events - event_index)
         quota = max(1, int(round(remaining_budget / remaining_events)))
@@ -338,12 +310,11 @@ def _full_space_labels(point, view, pdg_per_hit):
 
 
 def _upcast2_space_labels(point, view, pdg_per_hit, hit_energy, up_cast_level):
-    """up_cast(2): downsampled features, cluster-dominant pdg.
+    """up_cast(2): downsampled features, energy-dominant pdg per cluster.
 
     Each up-cast point is a cluster of input points (recovered exactly by
-    :func:`upcast2_input_map`); it inherits the energy-dominant pdg across its raw hits
-    (argmax of per-pdg summed cell energy) -- the "what particle type does this voxel
-    represent" label.
+    :func:`upcast2_input_map`) and inherits the energy-dominant pdg across its raw hits
+    via :func:`_cluster_dominant_pdg`.
     """
     upcast_point, input_to_cluster = upcast2_input_map(point, up_cast_level)
     feats = upcast_point.feat  # [n_up, D]
@@ -365,12 +336,11 @@ def _cluster_dominant_pdg(
     hit_energy: np.ndarray,
     n_clusters: int,
 ) -> np.ndarray:
-    """Energy-dominant pdg per cluster.
+    """Energy-dominant pdg per cluster (the particle type of the voxel).
 
-    For each up-cast cluster, sum each contributing particle's cell energy across the
-    raw hits in the cluster and take the argmax pdg (``-1`` if none known). This is the
-    "what particle type does this voxel represent" label -- physically the dominant
-    depositor, not just the plurality of hits.
+    For each cluster, sum each contributing particle's cell energy across its raw hits
+    and take the argmax pdg (``-1`` if none known) -- the dominant depositor, not the
+    plurality of hits.
     """
     cluster_of = input_to_cluster  # [n_in] -> [0, n_clusters)
     hit_pdg = pdg_per_hit[raw_hit]  # [n_in] dominant pdg per input point's raw hit
@@ -385,7 +355,7 @@ def _cluster_dominant_pdg(
     e = hit_eng[known]
     out = np.full(n_clusters, -1, dtype=np.int64)
     if p.size == 0:
-        return out  # no known pdg in any cluster
+        return out
 
     # Weighted energy per (cluster, pdg): scatter-add e into [n_clusters, n_pdg_ids].
     pdg_ids = np.unique(p)
@@ -493,13 +463,10 @@ def make_tsne_plots(
 ) -> list[str]:
     """Write the pdg_id / event_id t-SNE PNGs to ``tsne_dir``.
 
-    Returns the list of written paths. Skips a plot silently if its channel is empty.
-    The pdg_id plot collapses the raw pdg to the 7 coarse calorimetry-role buckets
-    (:func:`collider_fm.evaluation_labels.pdg_bucket`) with a discrete legend, so the
-    colormap stays readable; event_id is a discrete per-event colormap (one color per
-    event -- the "is the grouping just event separation?" diagnostic). ``subdir`` writes
-    to ``tsne_dir/subdir`` (used to keep the up_cast(2) space's plots separate from the
-    full-up-cast ones).
+    Returns the list of written paths; skips a plot silently if its channel is empty.
+    pdg_id collapses to the 7 calorimetry-role buckets (:func:`pdg_bucket`) with a
+    discrete legend; event_id is a discrete per-event colormap. ``subdir`` writes to
+    ``tsne_dir/subdir`` (keeps the up_cast(2) plots separate from the full-up-cast ones).
     """
     out_dir = Path(tsne_dir) if subdir is None else Path(tsne_dir) / subdir
     out_dir.mkdir(parents=True, exist_ok=True)

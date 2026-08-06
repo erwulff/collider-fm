@@ -270,9 +270,9 @@ def main() -> None:
         print(f"  wrote {run_dir / 'dominance_report.txt'}")
 
     # t-SNE: Panda-style per-point visualization of the backbone features, colored by
-    # dominant-particle type + spatial z/radius + event id. Needs the particle_id->pdg_id
-    # join from the sibling particles config. Two feature spaces are supported:
-    # full-up-cast (always) and up_cast(2) (the pretraining space, when enabled).
+    # dominant-particle type + event id. Needs the particle_id->pdg_id join from the
+    # sibling particles config. Two feature spaces are supported: full-up-cast (always)
+    # and up_cast(2) (the pretraining space, when enabled).
     if enable_tsne:
         from collider_fm.evaluation_labels import load_particle_pdg
         from collider_fm.visualization import collect_tsne_points, make_tsne_plots
