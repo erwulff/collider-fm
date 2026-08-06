@@ -51,7 +51,7 @@ Common overrides:
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
-- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`
+- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_upcast2`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`
 
 To start a single-GPU training run:
 
@@ -153,11 +153,19 @@ uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
 
 ### Per-point t-SNE (Panda-style)
 
-`evaluation.enable_tsne=true` produces a Panda-paper-style (arXiv 2512.01324) t-SNE of the pretrained backbone's per-point features: the **full up-cast** features (all pooling levels → one feature per grid-sampled hit, 672-d — *not* the 2-level `up_cast` the pretraining loss uses), unit-normalized, PCA→50-d then 2-D t-SNE. Each dot is one calorimeter hit. PNGs go to `runs/eval_<run_name>/viz/`, colored three ways: by dominant-particle type (the physics channel — needs the `particle_id→pdg_id` join from the sibling `particles` config) and by spatial z / transverse radius (label-free). Particle type collapses the raw `pdg_id` to 7 coarse calorimetry-role buckets — e± / γ / μ± / charged hadron / neutral hadron / nucleus / other — so the legend stays readable (`collider_fm.evaluation_labels.pdg_bucket`; raw `pdg_id` has ~44 values, too many for a distinct colormap). (Prototype coloring is omitted: the diagnostics head is dimensionally bound to the 288-d `up_cast(2)` pretraining features, not the 672-d full-up-cast features embedded here.) The full up-cast gives an exact 1:1 coord bijection back to input hits, so each dot is colored by its raw-hit truth label; the ~15% shared cells are colored by their dominant particle and sit between clusters (informative, not a defect). Run once with the checkpoint and once without (random init) to see the gain from pretraining.
+`evaluation.enable_tsne=true` produces a Panda-paper-style (arXiv 2512.01324) t-SNE of the pretrained backbone's per-point features, unit-normalized, PCA→50-d then 2-D t-SNE. Each dot is one calorimeter hit (full up-cast) or one up-cast voxel (`up_cast(2)`). PNGs go to `runs/eval_<run_name>/viz/`, colored two ways: by dominant-particle type (the physics channel — needs the `particle_id→pdg_id` join from the sibling `particles` config) and by event id (the "is the grouping just events separating?" floor-check). Particle type collapses the raw `pdg_id` to 7 coarse calorimetry-role buckets — e± / γ / μ± / charged hadron / neutral hadron / nucleus / other — so the legend stays readable (`collider_fm.evaluation_labels.pdg_bucket`; raw `pdg_id` has ~44 values, too many for a distinct colormap).
+
+Two feature spaces are supported:
+
+- **Full up-cast** (always on): all pooling levels → one feature per grid-sampled hit (672-d for the default backbone — *not* the 2-level `up_cast` the pretraining loss uses). An exact 1:1 coord bijection back to input hits lets each dot take its raw-hit truth label; shared cells are colored by their dominant particle and sit between clusters (informative, not a defect). Plots: `viz/tsne_{pdg_id,event_id}.png`.
+- **`up_cast(2)`** (`evaluation.tsne_upcast2=true`): the 2-level up-cast, i.e. the pretraining feature space the prototype loss directly shapes (288-d). These points are downsampled vs input; each is a cluster of input points (recovered exactly by inverting the surviving pooling chain), and inherits the **energy-dominant** pdg across its raw hits (the particle type carrying the most cell energy in the voxel). A second forward pass, so only run when requested. Plots: `viz/upcast2/tsne_{pdg_id,event_id}.png`.
+
+Comparing the two spaces shows what the pretraining loss does (tight grouping in `up_cast(2)`) vs. what the full feature does; the event-id coloring in each reveals how much of the grouping is trivial event separation. Run once with the checkpoint and once without (random init) to see the gain from pretraining.
 
 ```bash
 uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
-    evaluation.enable_tsne=true evaluation.tsne_max_events=50 evaluation.tsne_max_points=10000 \
+    evaluation.enable_tsne=true evaluation.tsne_upcast2=true \
+    evaluation.tsne_max_events=50 evaluation.tsne_max_points=10000 \
     data.local_files_only=true
 ```
 

@@ -265,15 +265,18 @@ def main() -> None:
         dominance["num_events_scanned"] = n_scanned
         metrics["dominance"] = dominance
 
-    # t-SNE: Panda-style per-point visualization of the full-up-cast backbone features,
-    # colored by dominant-particle pdg_id + prototype + spatial z/radius. Needs the
-    # particle_id->pdg_id join from the sibling particles config.
+    # t-SNE: Panda-style per-point visualization of the backbone features, colored by
+    # dominant-particle type + spatial z/radius + event id. Needs the particle_id->pdg_id
+    # join from the sibling particles config. Two feature spaces are supported:
+    # full-up-cast (always) and up_cast(2) (the pretraining space, when enabled).
     if enable_tsne:
         from collider_fm.evaluation_labels import load_particle_pdg
         from collider_fm.visualization import collect_tsne_points, make_tsne_plots
 
         tsne_max_events = int(eval_config.get("tsne_max_events", 100))
         tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
+        enable_upcast2 = bool(eval_config.get("tsne_upcast2", False))
+        up_cast_level = int(config.model.training.get("up_cast_level", 2))
         print(
             f"\nt-SNE: collecting up to {tsne_max_points} points over "
             f"{tsne_max_events} events from {eval_config.val_split}..."
@@ -289,27 +292,59 @@ def main() -> None:
             else None,
             local_files_only=bool(data_config.get("local_files_only", False)),
         )
-        tsne_collection = collect_tsne_points(
+        tsne_view_kwargs = point_view_kwargs(
+            config, "training",
+            max_calo_hits=int(eval_config.get("tsne_max_calo_hits", 8000)),
+        )
+        tsne_dir = run_dir / "viz"
+        tsne_metrics: dict[str, Any] = {}
+
+        # Full up-cast (Panda-style): input-resolution features, exact per-hit labels.
+        full_collection = collect_tsne_points(
             model,
             calo_truth,
             pid_to_pdg,
             device,
-            view_kwargs=point_view_kwargs(
-                config, "training",
-                max_calo_hits=int(eval_config.get("tsne_max_calo_hits", 8000)),
-            ),
+            view_kwargs=tsne_view_kwargs,
             max_events=tsne_max_events,
             max_points=tsne_max_points,
             seed=int(eval_config.seed),
+            feature_space="full",
         )
-        tsne_dir = run_dir / "viz"
-        tsne_paths = make_tsne_plots(tsne_collection, tsne_dir, seed=int(eval_config.seed))
-        metrics["tsne"] = {
-            "num_events": tsne_collection.num_events,
-            "num_points": int(tsne_collection.features.shape[0]),
-            "feature_dim": int(tsne_collection.features.shape[1]) if tsne_collection.features.ndim == 2 else 0,
-            "plots": tsne_paths,
+        tsne_metrics["full"] = {
+            "num_events": full_collection.num_events,
+            "num_points": int(full_collection.features.shape[0]),
+            "feature_dim": int(full_collection.features.shape[1]) if full_collection.features.ndim == 2 else 0,
+            "plots": make_tsne_plots(
+                full_collection, tsne_dir, seed=int(eval_config.seed)
+            ),
         }
+
+        # up_cast(2): the pretraining feature space (the one the prototype loss shapes).
+        # Downsampled vs input; labels are energy-dominant per cluster. A second forward
+        # pass, so only run when requested.
+        if enable_upcast2:
+            upcast2_collection = collect_tsne_points(
+                model,
+                calo_truth,
+                pid_to_pdg,
+                device,
+                view_kwargs=tsne_view_kwargs,
+                max_events=tsne_max_events,
+                max_points=tsne_max_points,
+                seed=int(eval_config.seed),
+                feature_space="upcast2",
+                up_cast_level=up_cast_level,
+            )
+            tsne_metrics["upcast2"] = {
+                "num_events": upcast2_collection.num_events,
+                "num_points": int(upcast2_collection.features.shape[0]),
+                "feature_dim": int(upcast2_collection.features.shape[1]) if upcast2_collection.features.ndim == 2 else 0,
+                "plots": make_tsne_plots(
+                    upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2"
+                ),
+            }
+        metrics["tsne"] = tsne_metrics
 
     write_run_config(run_dir, to_plain_container(config))
     logger = JsonlLogger(run_dir)
@@ -374,14 +409,15 @@ def main() -> None:
             )
 
     if "tsne" in metrics:
-        tsne = metrics["tsne"]
         print("\n--- t-SNE ---")
-        print(
-            f"  num_events: {tsne.get('num_events')}  num_points: {tsne.get('num_points')}  "
-            f"feature_dim: {tsne.get('feature_dim')}"
-        )
-        for plot in tsne.get("plots", []):
-            print(f"  plot: {plot}")
+        for space, tsne in metrics["tsne"].items():
+            print(
+                f"  [{space}] num_events: {tsne.get('num_events')}  "
+                f"num_points: {tsne.get('num_points')}  "
+                f"feature_dim: {tsne.get('feature_dim')}"
+            )
+            for plot in tsne.get("plots", []):
+                print(f"    plot: {plot}")
 
 
 if __name__ == "__main__":

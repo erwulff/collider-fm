@@ -63,6 +63,13 @@ PDG_BUCKET_COLORS: dict[str, str] = {
     "other": "tab:gray",
 }
 
+# Distinct colors for the event_id coloring (cycles for >10 events). tab10 keeps the
+# first few events strongly separable; the rest wrap, which is fine for a floor-check.
+_EVENT_COLORS: list[str] = [
+    "tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
+    "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan",
+]
+
 
 def full_up_cast(point: Point) -> Point:
     """Rebuild per-point features at input resolution by walking the full pooling chain.
@@ -83,6 +90,65 @@ def full_up_cast(point: Point) -> Point:
         parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
         point = parent
     return point
+
+
+def _up_cast_levels(point: Point, n_levels: int) -> Point:
+    """Walk ``n_levels`` pooling levels up (coarse -> finer), mirroring SonataModel.up_cast.
+
+    Consumes ``n_levels`` of the ``pooling_parent`` / ``pooling_inverse`` breadcrumbs.
+    After ``n_levels`` steps the point sits ``n_levels`` resolutions finer than the
+    deepest encoder stage, with features = ``cat`` of the levels walked. The remaining
+    ``depth - n_levels`` breadcrumbs stay on the point for :func:`upcast2_input_map`.
+    """
+    for _ in range(n_levels):
+        if (
+            "pooling_parent" not in point.keys()
+            or "pooling_inverse" not in point.keys()
+        ):
+            raise KeyError("Up-cast requires traceable PTv3 pooling features.")
+        parent = point.pop("pooling_parent")
+        inverse = point.pop("pooling_inverse")
+        parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+        point = parent
+    return point
+
+
+def upcast2_input_map(point: Point, up_cast_level: int = 2) -> tuple[Point, torch.Tensor]:
+    """Up-cast ``up_cast_level`` levels and map each input point to its up-cast cluster.
+
+    Runs :func:`_up_cast_levels` (consuming ``up_cast_level`` breadcrumbs), then inverts
+    the *remaining* pooling chain to recover, for every stage-0 (input) point, which
+    up-cast point it pooled into. The up-cast point is the cluster representative of its
+    input points, so this lets each up-cast point inherit a label from its cluster
+    (e.g. the energy-dominant particle's pdg). Verified exact: inverting the surviving
+    ``pooling_inverse`` maps reconstructs the clusters, and the coord-mean invariant of
+    ``GridPooling`` (each cluster's coord = mean of its members' coords) holds to float
+    noise (~1e-3).
+
+    Args:
+        point: the backbone output (deepest stage, full pooling chain intact).
+        up_cast_level: levels to walk up (the pretraining ``up_cast_level``, default 2).
+
+    Returns:
+        ``(upcast_point, input_to_cluster)`` where ``upcast_point`` is the
+        ``up_cast_level``-up-cast :class:`Point` (``[N_up, D]`` features) and
+        ``input_to_cluster`` is a ``[N0]`` long tensor mapping each stage-0 input point
+        to its up-cast cluster id in ``[0, N_up)``.
+    """
+    upcast_point = _up_cast_levels(point, up_cast_level)
+    n_up = upcast_point.feat.shape[0]
+
+    # Invert the remaining chain: start with each up-cast point as its own cluster, then
+    # expand membership one level at a time (coarse -> finer) until stage-0 is reached.
+    membership = torch.arange(n_up, device=upcast_point.feat.device)
+    cur = upcast_point
+    while "pooling_parent" in cur.keys():
+        parent = cur["pooling_parent"]  # finer level
+        inverse = cur["pooling_inverse"]  # [N_finer] -> coarse cluster id in `cur`
+        membership = membership[inverse]  # broadcast coarse membership to finer points
+        cur = parent
+    return upcast_point, membership
+
 
 
 def match_to_input_coords(
@@ -112,7 +178,8 @@ class TsnePointCollection:
     """Bounded per-point features + coloring channels for the t-SNE plots.
 
     All arrays are ``[M]`` (or ``[M, D]`` for features) over ``M <= max_points``
-    subsampled hits across ``num_events`` events. ``pdg_id`` uses ``-1`` for unknown.
+    subsampled points across ``num_events`` events. ``pdg_id`` uses ``-1`` for unknown;
+    ``event_id`` is a per-event index in ``[0, num_events)``.
 
     Note: prototype coloring is intentionally absent. The diagnostics head is
     dimensionally bound to the 288-d ``up_cast(2)`` features (the pretraining feature
@@ -120,10 +187,9 @@ class TsnePointCollection:
     is not defined on these points without a separate stage-2->input mapping.
     """
 
-    features: torch.Tensor  # [M, D] unit-normalized full-up-cast features
+    features: torch.Tensor  # [M, D] unit-normalized features
     pdg_id: torch.Tensor  # [M] dominant particle's pdg_id (-1 if unknown)
-    z: torch.Tensor  # [M] normalized z coordinate
-    radius: torch.Tensor  # [M] normalized transverse radius sqrt(x^2+y^2)
+    event_id: torch.Tensor  # [M] per-event index in [0, num_events) (-1 if none)
     num_events: int
 
 
@@ -138,18 +204,33 @@ def collect_tsne_points(
     max_events: int,
     max_points: int = 20000,
     seed: int = 0,
+    feature_space: str = "full",
+    up_cast_level: int = 2,
 ) -> TsnePointCollection:
     """Collect bounded per-point features + coloring channels for the t-SNE plots.
 
     For each event: build one augmentation-free base view
-    (:func:`build_point_view_from_event`), run the deterministic teacher backbone, full
-    up-cast to input resolution, then coord-match each output point back to its input
-    row -> the base view's ``source_index`` (raw hit index) -> the dominant particle's
-    ``pdg_id``. Prototype assignment comes from the diagnostics head; z / radius from
-    the output coord. Points are subsampled proportionally across events to bound total
-    memory at ``max_points`` (v1 ``collect_embeddings`` pattern).
+    (:func:`build_point_view_from_event`), run the deterministic teacher backbone, then
+    extract features in one of two spaces:
+
+    - ``"full"`` (default): :func:`full_up_cast` to input resolution (one feature per
+      grid-sampled hit). Each output point is coord-matched back to its input row ->
+      ``source_index`` (raw hit index) -> the dominant particle's ``pdg_id``. z /
+      radius are the point's own coord.
+    - ``"upcast2"``: up-cast only ``up_cast_level`` levels (the pretraining feature
+      space, e.g. 288-d). These points are *downsampled* vs input; each is a cluster of
+      input points (recovered exactly via :func:`upcast2_input_map`). A cluster inherits
+      the **energy-dominant** pdg across its raw hits (the particle type carrying the
+      most cell energy in the voxel); z / radius are the cluster-mean coord.
+
+    ``event_id`` (per-event index) is assigned in both spaces -- the "is the grouping
+    just events separating?" diagnostic. Points are subsampled proportionally across
+    events to bound total memory at ``max_points`` (v1 ``collect_embeddings`` pattern).
     """
     from .evaluation_labels import event_dominant_particles
+
+    if feature_space not in {"full", "upcast2"}:
+        raise ValueError(f"feature_space must be 'full' or 'upcast2', got {feature_space!r}")
 
     model.eval()
     generator = torch.Generator(device="cpu")
@@ -157,8 +238,7 @@ def collect_tsne_points(
 
     feat_parts: list[torch.Tensor] = []
     pdg_parts: list[torch.Tensor] = []
-    z_parts: list[torch.Tensor] = []
-    r_parts: list[torch.Tensor] = []
+    eid_parts: list[torch.Tensor] = []
     total = 0
     events_done = 0
 
@@ -186,6 +266,10 @@ def collect_tsne_points(
         if n_in == 0:
             continue
 
+        # Per-raw-hit dominant pdg + total energy (used by both feature spaces).
+        _, pdg_per_hit, _, _ = event_dominant_particles(event, pid_to_pdg)
+        hit_energy = np.asarray(event["total_energy"], dtype=np.float64)
+
         point = Point(
             feat=view["feat"].float(),
             coord=in_coord.float(),
@@ -195,38 +279,29 @@ def collect_tsne_points(
             mask=torch.zeros(n_in, dtype=torch.bool, device=device),
         )
         point = model.teacher["backbone"](point)
-        point = full_up_cast(point)
-        feats = point.feat  # [n_in, D] at input resolution
-        out_coord = point.coord  # [n_in, 3], reordered vs input
 
-        # Recover the input row (-> raw hit index) for each output point.
-        in_idx = match_to_input_coords(out_coord, in_coord)
-        raw_hit = view["source_index"][in_idx]  # [n_in] raw event-local hit index
-
-        # Dominant-particle pdg_id per hit, looked up by raw hit index.
-        _, pdg_per_hit, _, _ = event_dominant_particles(event, pid_to_pdg)
-        raw_hit_cpu = raw_hit.cpu().numpy().astype(np.int64)
-        pdg_lab = torch.from_numpy(pdg_per_hit[raw_hit_cpu])
-
-        # Spatial channels from the (normalized) output coord.
-        z_lab = out_coord[:, 2].float().cpu()
-        r_lab = torch.sqrt(out_coord[:, 0].float() ** 2 + out_coord[:, 1].float() ** 2).cpu()
+        if feature_space == "full":
+            feats, pdg_lab = _full_space_labels(point, view, pdg_per_hit)
+        else:
+            feats, pdg_lab = _upcast2_space_labels(
+                point, view, pdg_per_hit, hit_energy, up_cast_level
+            )
+        n_out = feats.shape[0]
 
         # Proportional subsample so the total stays bounded at max_points.
         remaining_budget = max_points - total
         remaining_events = max(1, max_events - event_index)
         quota = max(1, int(round(remaining_budget / remaining_events)))
-        k = min(n_in, quota, remaining_budget)
-        if k < n_in:
-            idx = torch.randperm(n_in, generator=generator)[:k]
+        k = min(n_out, quota, remaining_budget)
+        if k < n_out:
+            idx = torch.randperm(n_out, generator=generator)[:k]
         else:
-            idx = torch.arange(n_in)
+            idx = torch.arange(n_out)
         feats = F.normalize(feats[idx].float().cpu(), dim=-1)
 
         feat_parts.append(feats)
         pdg_parts.append(pdg_lab[idx])
-        z_parts.append(z_lab[idx])
-        r_parts.append(r_lab[idx])
+        eid_parts.append(torch.full((k,), events_done, dtype=torch.long))
         total += k
         events_done += 1
 
@@ -236,10 +311,83 @@ def collect_tsne_points(
     return TsnePointCollection(
         features=torch.cat(feat_parts) if feat_parts else torch.empty(0, 0),
         pdg_id=torch.cat(pdg_parts) if pdg_parts else torch.empty(0, dtype=torch.long),
-        z=torch.cat(z_parts) if z_parts else torch.empty(0),
-        radius=torch.cat(r_parts) if r_parts else torch.empty(0),
+        event_id=torch.cat(eid_parts) if eid_parts else torch.empty(0, dtype=torch.long),
         num_events=events_done,
     )
+
+
+def _full_space_labels(point, view, pdg_per_hit):
+    """Full-up-cast: input-resolution features, per-hit pdg via coord bijection."""
+    point = full_up_cast(point)
+    feats = point.feat  # [n_in, D] at input resolution
+    out_coord = point.coord  # [n_in, 3], reordered vs input
+
+    in_idx = match_to_input_coords(out_coord, view["coord"])
+    raw_hit = view["source_index"][in_idx].cpu().numpy().astype(np.int64)
+    pdg_lab = torch.from_numpy(pdg_per_hit[raw_hit])
+    return feats, pdg_lab
+
+
+def _upcast2_space_labels(point, view, pdg_per_hit, hit_energy, up_cast_level):
+    """up_cast(2): downsampled features, cluster-dominant pdg.
+
+    Each up-cast point is a cluster of input points (recovered exactly by
+    :func:`upcast2_input_map`); it inherits the energy-dominant pdg across its raw hits
+    (argmax of per-pdg summed cell energy) -- the "what particle type does this voxel
+    represent" label.
+    """
+    upcast_point, input_to_cluster = upcast2_input_map(point, up_cast_level)
+    feats = upcast_point.feat  # [n_up, D]
+
+    # Map each input point -> raw hit, then each cluster -> energy-dominant pdg.
+    raw_hit = view["source_index"].cpu().numpy().astype(np.int64)
+    n_up = feats.shape[0]
+    pdg_lab = _cluster_dominant_pdg(
+        input_to_cluster.cpu().numpy(), raw_hit, pdg_per_hit, hit_energy, n_up
+    )
+    pdg_lab = torch.from_numpy(pdg_lab)
+    return feats, pdg_lab
+
+
+def _cluster_dominant_pdg(
+    input_to_cluster: np.ndarray,
+    raw_hit: np.ndarray,
+    pdg_per_hit: np.ndarray,
+    hit_energy: np.ndarray,
+    n_clusters: int,
+) -> np.ndarray:
+    """Energy-dominant pdg per cluster.
+
+    For each up-cast cluster, sum each contributing particle's cell energy across the
+    raw hits in the cluster and take the argmax pdg (``-1`` if none known). This is the
+    "what particle type does this voxel represent" label -- physically the dominant
+    depositor, not just the plurality of hits.
+    """
+    cluster_of = input_to_cluster  # [n_in] -> [0, n_clusters)
+    hit_pdg = pdg_per_hit[raw_hit]  # [n_in] dominant pdg per input point's raw hit
+    hit_eng = hit_energy[raw_hit]  # [n_in] that raw hit's total cell energy
+
+    # "known" = has a pdg at all. The sentinel is -1 (dominant particle missing from
+    # the pid->pdg map); antiparticles are valid negative pdgs (-11 e+, -211 pi-, ...),
+    # so the filter is `!= -1`, NOT `>= 0` (which would wrongly drop antiparticles).
+    known = hit_pdg != -1
+    c = cluster_of[known]
+    p = hit_pdg[known]
+    e = hit_eng[known]
+    out = np.full(n_clusters, -1, dtype=np.int64)
+    if p.size == 0:
+        return out  # no known pdg in any cluster
+
+    # Weighted energy per (cluster, pdg): scatter-add e into [n_clusters, n_pdg_ids].
+    pdg_ids = np.unique(p)
+    pdg_to_col = {v: i for i, v in enumerate(pdg_ids.tolist())}
+    accum = np.zeros((n_clusters, len(pdg_ids)), dtype=np.float64)
+    cols = np.array([pdg_to_col[v] for v in p.tolist()], dtype=np.int64)
+    np.add.at(accum, (c, cols), e)
+
+    has_energy = accum.sum(axis=1) > 0
+    out[has_energy] = pdg_ids[accum[has_energy].argmax(axis=1)]
+    return out
 
 
 def tsne_plot(
@@ -328,30 +476,40 @@ def tsne_plot(
 
 
 def make_tsne_plots(
-    collection: TsnePointCollection, tsne_dir: str | Path, *, seed: int = 0
+    collection: TsnePointCollection,
+    tsne_dir: str | Path,
+    *,
+    seed: int = 0,
+    subdir: str | None = None,
 ) -> list[str]:
-    """Write the pdg_id / z / radius t-SNE PNGs to ``tsne_dir``.
+    """Write the pdg_id / event_id t-SNE PNGs to ``tsne_dir``.
 
     Returns the list of written paths. Skips a plot silently if its channel is empty.
     The pdg_id plot collapses the raw pdg to the 7 coarse calorimetry-role buckets
     (:func:`collider_fm.evaluation_labels.pdg_bucket`) with a discrete legend, so the
-    colormap stays readable; z / radius stay continuous.
+    colormap stays readable; event_id is a discrete per-event colormap (one color per
+    event -- the "is the grouping just event separation?" diagnostic). ``subdir`` writes
+    to ``tsne_dir/subdir`` (used to keep the up_cast(2) space's plots separate from the
+    full-up-cast ones).
     """
-    tsne_dir = Path(tsne_dir)
-    tsne_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(tsne_dir) if subdir is None else Path(tsne_dir) / subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
     if collection.features.shape[0] == 0:
         return paths
 
     bucket = torch.as_tensor(pdg_bucket(collection.pdg_id.cpu().numpy()))
     pdg_categories = [(name, PDG_BUCKET_COLORS[name]) for name in PDG_BUCKET_NAMES]
+    n_events = max(int(collection.event_id.max().item()) + 1, 1) if collection.num_events else 1
+    event_categories = [
+        (f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)
+    ]
     specs = [
         (bucket, "tsne_pdg_id.png", "t-SNE colored by particle type", "particle type", pdg_categories),
-        (collection.z, "tsne_z.png", "t-SNE colored by spatial z", "z (normalized)", None),
-        (collection.radius, "tsne_radius.png", "t-SNE colored by transverse radius", "radius (normalized)", None),
+        (collection.event_id, "tsne_event_id.png", "t-SNE colored by event id", "event id", event_categories),
     ]
     for color, name, title, label, categories in specs:
-        path = tsne_dir / name
+        path = out_dir / name
         tsne_plot(
             collection.features,
             color,

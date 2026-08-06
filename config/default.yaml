@@ -173,3 +173,4 @@ evaluation:
   tsne_max_events: 100            # events collected for the t-SNE (one clean base view per event)
   tsne_max_points: 20000          # cap on points subsampled across events for the t-SNE fit
   tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
+  tsne_upcast2: false             # also embed the up_cast(2) pretraining feature space (extra forward)
