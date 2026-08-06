@@ -19,7 +19,7 @@ particle ``contrib_particle_ids[i][j]`` for cell ``i``).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -224,6 +224,54 @@ def dominance_report(
         report["shared_pct_dominant_ge_0.9"] = float((f_shared >= 0.9).mean() * 100.0)
         report["shared_pct_dominant_ge_0.5"] = float((f_shared >= 0.5).mean() * 100.0)
     return report
+
+
+def format_dominance_report(report: Mapping[str, Any]) -> str:
+    """Render a dominance report dict as human-readable plain text.
+
+    Mirrors the console block printed by ``scripts/evaluate.py``: a header, the
+    contributor-count summary, the single/shared split, the dominant-fraction
+    distribution, and (when present) the shared-only sub-stats. Written to
+    ``runs/eval_<run>/dominance_report.txt`` alongside the JSON summary.
+    """
+    def _pct(v: Any) -> str:
+        return f"{float(v):.1f}%" if v is not None else "n/a"
+
+    def _f(v: Any, p: int = 3) -> str:
+        return f"{float(v):.{p}f}" if v is not None else "n/a"
+
+    lines = [
+        "Dominance report (label-noise floor)",
+        "=" * 40,
+        f"events scanned : {report.get('num_events_scanned')}",
+        f"hits           : {report.get('num_hits')}",
+        "",
+        "contributor count",
+        f"  mean   : {_f(report.get('contributor_count_mean'), 2)}",
+        f"  median : {report.get('contributor_count_median')}",
+        f"  p99    : {_f(report.get('contributor_count_p99'), 0)}",
+        f"  max    : {report.get('contributor_count_max')}",
+        "",
+        "single vs shared cells",
+        f"  single contributor : {_pct(report.get('pct_single_contributor'))}",
+        f"  shared (>=2)        : {_pct(report.get('pct_shared'))}",
+        "",
+        "dominant energy fraction",
+        f"  mean   : {_f(report.get('dominant_frac_mean'))}",
+        f"  median : {_f(report.get('dominant_frac_median'))}",
+        f"  >=0.9  : {_pct(report.get('pct_dominant_ge_0.9'))}",
+        f"  >=0.5  : {_pct(report.get('pct_dominant_ge_0.5'))}",
+    ]
+    if "shared_num_hits" in report:
+        lines += [
+            "",
+            f"shared-only ({report.get('shared_num_hits')} hits)",
+            f"  frac median : {_f(report.get('shared_dominant_frac_median'))}",
+            f"  frac mean   : {_f(report.get('shared_dominant_frac_mean'))}",
+            f"  >=0.9       : {_pct(report.get('shared_pct_dominant_ge_0.9'))}",
+            f"  >=0.5       : {_pct(report.get('shared_pct_dominant_ge_0.5'))}",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def compute_dominance_report(

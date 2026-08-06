@@ -252,7 +252,7 @@ def main() -> None:
     # Dominance report: pure-data characterization of the held-out subset's label-noise
     # floor (shared calorimeter cells have many contributors). Independent of the checkpoint.
     if enable_dominance:
-        from collider_fm.evaluation_labels import compute_dominance_report
+        from collider_fm.evaluation_labels import compute_dominance_report, format_dominance_report
 
         dominance_max_events = int(eval_config.get("dominance_max_events", 200))
         print(
@@ -264,6 +264,10 @@ def main() -> None:
         )
         dominance["num_events_scanned"] = n_scanned
         metrics["dominance"] = dominance
+        (run_dir / "dominance_report.txt").write_text(
+            format_dominance_report(dominance)
+        )
+        print(f"  wrote {run_dir / 'dominance_report.txt'}")
 
     # t-SNE: Panda-style per-point visualization of the backbone features, colored by
     # dominant-particle type + spatial z/radius + event id. Needs the particle_id->pdg_id
@@ -300,6 +304,7 @@ def main() -> None:
         tsne_metrics: dict[str, Any] = {}
 
         # Full up-cast (Panda-style): input-resolution features, exact per-hit labels.
+        print(f"\nt-SNE [full]: collecting full-up-cast features...")
         full_collection = collect_tsne_points(
             model,
             calo_truth,
@@ -324,6 +329,7 @@ def main() -> None:
         # Downsampled vs input; labels are energy-dominant per cluster. A second forward
         # pass, so only run when requested.
         if enable_upcast2:
+            print(f"\nt-SNE [upcast2]: collecting up_cast(2) features...")
             upcast2_collection = collect_tsne_points(
                 model,
                 calo_truth,

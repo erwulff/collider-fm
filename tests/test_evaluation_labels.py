@@ -8,6 +8,7 @@ from collider_fm.evaluation_labels import (
     dominant_particle,
     dominance_report,
     event_dominant_particles,
+    format_dominance_report,
     pdg_bucket,
 )
 
@@ -99,6 +100,46 @@ class DominanceReportTests(unittest.TestCase):
         self.assertEqual(report["contributor_count_max"], 10)
         self.assertAlmostEqual(report["contributor_count_mean"], 3.4)
         self.assertEqual(report["contributor_count_median"], 2.0)
+
+
+class FormatDominanceReportTests(unittest.TestCase):
+    def test_renders_all_sections(self):
+        # A report with the shared-only block -> text has header + all sections.
+        report = {
+            "num_events_scanned": 5,
+            "num_hits": 100,
+            "contributor_count_mean": 1.5,
+            "contributor_count_median": 1.0,
+            "contributor_count_p99": 4.0,
+            "contributor_count_max": 5,
+            "pct_single_contributor": 80.0,
+            "pct_shared": 20.0,
+            "dominant_frac_mean": 0.9,
+            "dominant_frac_median": 1.0,
+            "pct_dominant_ge_0.9": 80.0,
+            "pct_dominant_ge_0.5": 100.0,
+            "shared_num_hits": 20,
+            "shared_dominant_frac_median": 0.6,
+            "shared_dominant_frac_mean": 0.55,
+            "shared_pct_dominant_ge_0.9": 50.0,
+            "shared_pct_dominant_ge_0.5": 100.0,
+        }
+        text = format_dominance_report(report)
+        self.assertIn("Dominance report", text)
+        self.assertIn("events scanned : 5", text)
+        self.assertIn("single contributor : 80.0%", text)
+        self.assertIn(">=0.9  : 80.0%", text)
+        self.assertIn("shared-only (20 hits)", text)
+        self.assertTrue(text.endswith("\n"))
+
+    def test_omits_shared_block_when_absent(self):
+        # No shared_* keys -> no shared-only section.
+        report = {
+            "num_events_scanned": 1, "num_hits": 3,
+            "pct_single_contributor": 100.0, "pct_shared": 0.0,
+        }
+        text = format_dominance_report(report)
+        self.assertNotIn("shared-only", text)
 
 
 class ComputeDominanceReportTests(unittest.TestCase):

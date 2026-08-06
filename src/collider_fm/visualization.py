@@ -242,7 +242,13 @@ def collect_tsne_points(
     total = 0
     events_done = 0
 
-    for event_index, event in enumerate(calo_truth_dataset):
+    from tqdm import tqdm
+
+    pbar = tqdm(
+        calo_truth_dataset, total=max_events, desc=f"t-SNE [{feature_space}]",
+        unit="event", mininterval=2.0,
+    )
+    for event_index, event in enumerate(pbar):
         if events_done >= max_events:
             break
 
@@ -305,8 +311,11 @@ def collect_tsne_points(
         total += k
         events_done += 1
 
+        pbar.set_postfix(points=total, refresh=False)
+
         if total >= max_points:
             break
+    pbar.close()
 
     return TsnePointCollection(
         features=torch.cat(feat_parts) if feat_parts else torch.empty(0, 0),

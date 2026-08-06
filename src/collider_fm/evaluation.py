@@ -214,7 +214,12 @@ def collect_embeddings(
     events_collected = 0
     subsample_total = 0
 
-    for batch_index, events in enumerate(dataloader):
+    from tqdm import tqdm
+
+    pbar = tqdm(
+        dataloader, total=num_batches, desc="v1 embeddings", unit="batch", mininterval=2.0
+    )
+    for batch_index, events in enumerate(pbar):
         if max_events is not None and events_collected >= max_events:
             break
 
@@ -264,12 +269,15 @@ def collect_embeddings(
             subsample_parts.append(sampled.float().cpu())
             subsample_total += k
 
+        pbar.set_postfix(events=events_collected, points=subsample_total, refresh=False)
+
         if (
             max_events is not None
             and events_collected >= max_events
             and subsample_total >= point_subsample_budget
         ):
             break
+    pbar.close()
 
     return EmbeddingCollection(
         crop0=torch.cat(crop0_parts, dim=0) if crop0_parts else torch.empty(0, 0),
