@@ -51,7 +51,7 @@ Common overrides:
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
-- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`)
+- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`
 
 To start a single-GPU training run:
 
@@ -140,6 +140,34 @@ uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> evaluati
 ```
 
 The `evaluation.checkpoint` argument accepts a direct `model.pt` path, a local `runs/<run_name>` directory (resolved via `checkpoint_path.txt` to the latest `checkpoint_*/model.pt`), or a Ray storage directory containing `checkpoint_*` subdirs. The teacher backbone is used because it is deterministic (drop_path / attn_drop / proj_drop forced off) and is the deployment-target network.
+
+### Dominance report (label-noise floor)
+
+Optionally characterize the held-out subset's per-hit label noise with `evaluation.enable_dominance_report=true`. This scans the raw calo truth (`contrib_particle_ids` / `contrib_energies`, which `ColliderMLDataset` drops) over `evaluation.dominance_max_events` events and reports the contributor-count and dominant-energy-fraction distributions: the share of hits with a single contributor vs. shared cells, and how often the dominant particle wins ≥90% / ≥50% of the cell's energy. It is a pure-data property (independent of the checkpoint) that documents the noise floor any per-hit label probe would face.
+
+```bash
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
+    evaluation.enable_dominance_report=true evaluation.dominance_max_events=200 \
+    data.local_files_only=true
+```
+
+### Per-point t-SNE (Panda-style)
+
+`evaluation.enable_tsne=true` produces a Panda-paper-style (arXiv 2512.01324) t-SNE of the pretrained backbone's per-point features: the **full up-cast** features (all pooling levels → one feature per grid-sampled hit, 672-d — *not* the 2-level `up_cast` the pretraining loss uses), unit-normalized, PCA→50-d then 2-D t-SNE. Each dot is one calorimeter hit. PNGs go to `runs/eval_<run_name>/viz/`, colored three ways: by dominant-particle type (the physics channel — needs the `particle_id→pdg_id` join from the sibling `particles` config) and by spatial z / transverse radius (label-free). Particle type collapses the raw `pdg_id` to 7 coarse calorimetry-role buckets — e± / γ / μ± / charged hadron / neutral hadron / nucleus / other — so the legend stays readable (`collider_fm.evaluation_labels.pdg_bucket`; raw `pdg_id` has ~44 values, too many for a distinct colormap). (Prototype coloring is omitted: the diagnostics head is dimensionally bound to the 288-d `up_cast(2)` pretraining features, not the 672-d full-up-cast features embedded here.) The full up-cast gives an exact 1:1 coord bijection back to input hits, so each dot is colored by its raw-hit truth label; the ~15% shared cells are colored by their dominant particle and sit between clusters (informative, not a defect). Run once with the checkpoint and once without (random init) to see the gain from pretraining.
+
+```bash
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
+    evaluation.enable_tsne=true evaluation.tsne_max_events=50 evaluation.tsne_max_points=10000 \
+    data.local_files_only=true
+```
+### Offline mode (avoid slow cache verification)
+
+With `data.local_files_only=true` but **without** `HF_HUB_OFFLINE=1`, the `datasets` library still re-verifies all ~1000 cached Arrow shards against the hub on every load (slow; minutes per load). Set `HF_HUB_OFFLINE=1` to skip verification (loads drop to ~0.4s). SLURM runs already export this via `slurm/load_env.sh`; for **direct script runs** export it yourself:
+
+```bash
+export HF_HUB_OFFLINE=1
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> data.local_files_only=true
+```
 
 Open the walkthrough notebooks:
 

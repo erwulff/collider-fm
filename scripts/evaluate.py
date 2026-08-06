@@ -41,6 +41,7 @@ from collider_fm.project_config import (
     build_config_arg_parser,
     load_project_config,
     model_factory_kwargs,
+    point_view_kwargs,
     select_model_config,
     sonata_batch_kwargs,
     to_plain_container,
@@ -225,6 +226,91 @@ def main() -> None:
         run_name = f"eval_{stem}_{timestamp}"
     run_dir = PROJECT_ROOT / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Optional phases that load the raw calo truth (preserving contrib_* fields that
+    # ColliderMLDataset drops via select_columns). With data.local_files_only=true, set
+    # HF_HUB_OFFLINE=1 to skip the slow 1000-shard hub verification.
+    enable_dominance = bool(eval_config.get("enable_dominance_report", False))
+    enable_tsne = bool(eval_config.get("enable_tsne", False))
+    calo_truth = None
+    pid_to_pdg = None
+    if enable_dominance or enable_tsne:
+        from collider_fm.evaluation_labels import load_calo_truth
+
+        calo_truth = load_calo_truth(
+            split=str(eval_config.val_split),
+            dataset_name=str(data_config.dataset_name),
+            dataset_type=str(data_config.dataset_type),
+            pu_config=str(data_config.pu_config),
+            cache_dir=str(data_config.cache_dir),
+            dataset_revision=str(data_config.dataset_revision)
+            if data_config.get("dataset_revision") is not None
+            else None,
+            local_files_only=bool(data_config.get("local_files_only", False)),
+        )
+
+    # Dominance report: pure-data characterization of the held-out subset's label-noise
+    # floor (shared calorimeter cells have many contributors). Independent of the checkpoint.
+    if enable_dominance:
+        from collider_fm.evaluation_labels import compute_dominance_report
+
+        dominance_max_events = int(eval_config.get("dominance_max_events", 200))
+        print(
+            f"\nDominance report: scanning up to {dominance_max_events} events "
+            f"from {eval_config.val_split}..."
+        )
+        dominance, n_scanned = compute_dominance_report(
+            calo_truth, dominance_max_events
+        )
+        dominance["num_events_scanned"] = n_scanned
+        metrics["dominance"] = dominance
+
+    # t-SNE: Panda-style per-point visualization of the full-up-cast backbone features,
+    # colored by dominant-particle pdg_id + prototype + spatial z/radius. Needs the
+    # particle_id->pdg_id join from the sibling particles config.
+    if enable_tsne:
+        from collider_fm.evaluation_labels import load_particle_pdg
+        from collider_fm.visualization import collect_tsne_points, make_tsne_plots
+
+        tsne_max_events = int(eval_config.get("tsne_max_events", 100))
+        tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
+        print(
+            f"\nt-SNE: collecting up to {tsne_max_points} points over "
+            f"{tsne_max_events} events from {eval_config.val_split}..."
+        )
+        pid_to_pdg = load_particle_pdg(
+            split=str(eval_config.val_split),
+            dataset_name=str(data_config.dataset_name),
+            dataset_type=str(data_config.dataset_type),
+            pu_config=str(data_config.pu_config),
+            cache_dir=str(data_config.cache_dir),
+            dataset_revision=str(data_config.dataset_revision)
+            if data_config.get("dataset_revision") is not None
+            else None,
+            local_files_only=bool(data_config.get("local_files_only", False)),
+        )
+        tsne_collection = collect_tsne_points(
+            model,
+            calo_truth,
+            pid_to_pdg,
+            device,
+            view_kwargs=point_view_kwargs(
+                config, "training",
+                max_calo_hits=int(eval_config.get("tsne_max_calo_hits", 8000)),
+            ),
+            max_events=tsne_max_events,
+            max_points=tsne_max_points,
+            seed=int(eval_config.seed),
+        )
+        tsne_dir = run_dir / "viz"
+        tsne_paths = make_tsne_plots(tsne_collection, tsne_dir, seed=int(eval_config.seed))
+        metrics["tsne"] = {
+            "num_events": tsne_collection.num_events,
+            "num_points": int(tsne_collection.features.shape[0]),
+            "feature_dim": int(tsne_collection.features.shape[1]) if tsne_collection.features.ndim == 2 else 0,
+            "plots": tsne_paths,
+        }
+
     write_run_config(run_dir, to_plain_container(config))
     logger = JsonlLogger(run_dir)
     logger.log_metrics(metrics, step=0)
@@ -260,6 +346,42 @@ def main() -> None:
         f"  stable_rank_spectrum (first 8 of {len(metrics.get('stable_rank_spectrum', []))}): "
         f"{[round(v, 4) for v in metrics.get('stable_rank_spectrum', [])[:8]]}"
     )
+
+    if "dominance" in metrics:
+        dom = metrics["dominance"]
+        print("\n--- dominance report ---")
+        print(f"  num_events_scanned: {dom.get('num_events_scanned')}")
+        print(f"  num_hits: {dom.get('num_hits')}")
+        print(
+            f"  contributor_count: mean={dom.get('contributor_count_mean'):.2f} "
+            f"median={dom.get('contributor_count_median')} p99={dom.get('contributor_count_p99')} "
+            f"max={dom.get('contributor_count_max')}"
+        )
+        print(
+            f"  pct_single_contributor={dom.get('pct_single_contributor'):.1f}% "
+            f"pct_shared={dom.get('pct_shared'):.1f}%"
+        )
+        print(
+            f"  dominant_frac: median={dom.get('dominant_frac_median')} "
+            f"pct>=0.9={dom.get('pct_dominant_ge_0.9'):.1f}% "
+            f"pct>=0.5={dom.get('pct_dominant_ge_0.5'):.1f}%"
+        )
+        if "shared_num_hits" in dom:
+            print(
+                f"  shared-only ({dom.get('shared_num_hits')} hits): "
+                f"frac_median={dom.get('shared_dominant_frac_median')} "
+                f"pct>=0.9={dom.get('shared_pct_dominant_ge_0.9'):.1f}%"
+            )
+
+    if "tsne" in metrics:
+        tsne = metrics["tsne"]
+        print("\n--- t-SNE ---")
+        print(
+            f"  num_events: {tsne.get('num_events')}  num_points: {tsne.get('num_points')}  "
+            f"feature_dim: {tsne.get('feature_dim')}"
+        )
+        for plot in tsne.get("plots", []):
+            print(f"  plot: {plot}")
 
 
 if __name__ == "__main__":

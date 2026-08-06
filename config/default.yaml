@@ -167,3 +167,9 @@ evaluation:
   device: cuda
   seed: 7
   run_name:                 # eval run dir name; default eval_<stem-or-random>_<timestamp>
+  enable_dominance_report: false  # scan raw calo truth for the contributor/dominance distribution
+  dominance_max_events: 200       # events scanned (stable property, so a few hundred suffices)
+  enable_tsne: false              # Panda-style per-point t-SNE (full-up-cast features, pdg/prototype/spatial)
+  tsne_max_events: 100            # events collected for the t-SNE (one clean base view per event)
+  tsne_max_points: 20000          # cap on points subsampled across events for the t-SNE fit
+  tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
