@@ -116,6 +116,10 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 3. **Surgical changes** — Change only what's needed. Do not refactor adjacent code. Do not touch `Panda_repo/` or `_panda/` unless asked.
 4. **Goal-driven execution** — Verify changes with `pytest` before asking to commit. Define success criteria before implementing.
 
+### Code documentation
+- Document code using Google style docstrings. Docstrings should be concrete and concise.
+- Clear, concise inline code comments should be used where code is difficult to understand or where choices need particular motivation. Do not use excessively.
+
 ### Hard rules
 
 - Keep the runtime path calo-only unless explicitly asked otherwise.
@@ -131,7 +135,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 - Load `uv` once: `module load uv`
 - HF cache: `/mnt/ceph/users/ewulff/data/hf`
-- Dataset revision: `e28a24cc9c1641a478ae4e5bc3b376eb624b7283`
+- Dataset revision: `64c3d2f112df3d5d20979d22da7cfdff13e10c4b`
 - SLURM jobs source `slurm/load_env.sh`
 - Single-GPU → `a100-80gb`. Multi-GPU (2 for debug, 8 for full) → `h100`/`h200`.
 - Ray Train checkpoints: `/mnt/ceph/users/ewulff/raytrain_results/`

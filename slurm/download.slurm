@@ -40,7 +40,7 @@ export HF_DATASETS_OFFLINE=0
 # Run the Python script to download the pu0 datasets
 python scripts/download_data.py \
     download.dataset_types=[ttbar] \
-    download.object_types=[calo_hits,tracker_hits,particles,tracks] \
+    download.object_types=[particles,tracks,tracker_hits] \
     download.pu_config=pu0 \
     download.cache_dir=/mnt/ceph/users/ewulff/data/hf \
-    download.num_proc=16
+    download.num_proc=15

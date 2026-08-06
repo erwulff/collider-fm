@@ -78,8 +78,8 @@ The dataset only exposes a Hugging Face `train` split, so the project reserves t
 For reproducible runs, pin the dataset revision and load only from the local cache:
 
 ```bash
-uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 download.num_proc=12
-uv run python scripts/train.py data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 data.local_files_only=true
+uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.dataset_revision=64c3d2f112df3d5d20979d22da7cfdff13e10c4b download.num_proc=12
+uv run python scripts/train.py data.dataset_revision=64c3d2f112df3d5d20979d22da7cfdff13e10c4b data.local_files_only=true
 ```
 
 ## Common local workflows
