@@ -160,6 +160,17 @@ uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
     evaluation.enable_tsne=true evaluation.tsne_max_events=50 evaluation.tsne_max_points=10000 \
     data.local_files_only=true
 ```
+
+### pdg frequency report
+
+`scripts/pdg_frequency.py` tallies how often each `pdg_id` appears among all particle records in the sibling `..._particles` config (the full GenParticle record, not just calorimeter contributors), and collapses the counts into the same 7 t-SNE colormap buckets. Loads via `ColliderMLDataset` (correct revision / cache / `local_files_only` from the project config) and tallies with one pyarrow `value_counts` pass, so the full 50k-event split finishes in seconds. Use it to see how large each t-SNE color bucket is and which raw `pdg_id` values land in "other".
+
+```bash
+uv run python scripts/pdg_frequency.py                       # held-out val split
+uv run python scripts/pdg_frequency.py --split train[:8]     # tiny smoke check
+HF_HUB_OFFLINE=1 uv run python scripts/pdg_frequency.py data.local_files_only=true
+```
+
 ### Offline mode (avoid slow cache verification)
 
 With `data.local_files_only=true` but **without** `HF_HUB_OFFLINE=1`, the `datasets` library still re-verifies all ~1000 cached Arrow shards against the hub on every load (slow; minutes per load). Set `HF_HUB_OFFLINE=1` to skip verification (loads drop to ~0.4s). SLURM runs already export this via `slurm/load_env.sh`; for **direct script runs** export it yourself:
