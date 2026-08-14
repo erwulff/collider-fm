@@ -47,9 +47,20 @@ def _resolve_split_window(split_name: str) -> tuple[int, int]:
 def resolve_colliderml_split(split: str) -> str:
     """Map project-level train/val aliases onto explicit HF `train[...]` slices.
 
-    The upstream dataset only exposes `train`, so we reserve the last 50k events for
-    validation and allow bounded slicing within the project-level `train` and `val`
-    windows.
+    The upstream dataset only exposes `train`, so we reserve the last 50k events
+    for validation and allow bounded slicing within the project-level `train`
+    and `val` windows.
+
+    Args:
+        split (str): Project split alias. One of `"train"`, `"val"`,
+            `"train[:N]"`, `"train[N:M]"`, `"val[:N]"`, or `"val[N:M]"`.
+
+    Returns:
+        str: The resolved Hugging Face split string (e.g. `"train[:950000]"`).
+
+    Raises:
+        ValueError: If the split uses negative indices, has start > stop, or
+            exceeds the project train/val window.
     """
 
     split_name, start, stop = _parse_project_split_slice(split)
@@ -63,15 +74,11 @@ def resolve_colliderml_split(split: str) -> str:
     if relative_start < 0 or relative_stop < 0:
         raise ValueError(f"Negative indices are not supported for split '{split}'.")
     if relative_start > relative_stop:
-        raise ValueError(
-            f"Split '{split}' has start {relative_start} larger than stop {relative_stop}."
-        )
+        raise ValueError(f"Split '{split}' has start {relative_start} larger than stop {relative_stop}.")
 
     window_size = window_stop - window_start
     if relative_stop > window_size:
-        raise ValueError(
-            f"Split '{split}' exceeds the project {split_name} window of {window_size} events."
-        )
+        raise ValueError(f"Split '{split}' exceeds the project {split_name} window of {window_size} events.")
 
     absolute_start = window_start + relative_start
     absolute_stop = window_start + relative_stop
@@ -88,11 +95,7 @@ def _torch_format_columns_for_object(obj_type: str, dataset: Any) -> Any:
     if not hasattr(dataset, "column_names") or not hasattr(dataset, "with_format"):
         return dataset
 
-    available_columns = [
-        column_name
-        for column_name in CALO_TORCH_COLUMNS
-        if column_name in dataset.column_names
-    ]
+    available_columns = [column_name for column_name in CALO_TORCH_COLUMNS if column_name in dataset.column_names]
     if len(available_columns) != len(CALO_TORCH_COLUMNS):
         return dataset
 
@@ -128,9 +131,7 @@ class ColliderMLDataset(Dataset):
         self.dataset_revision = dataset_revision
         self.local_files_only = local_files_only
         if not self.object_types:
-            raise ValueError(
-                "'object_types' must contain at least one dataset configuration."
-            )
+            raise ValueError("'object_types' must contain at least one dataset configuration.")
         self.datasets = {}
         resolved_split = resolve_colliderml_split(split)
 
@@ -145,18 +146,14 @@ class ColliderMLDataset(Dataset):
                 revision=dataset_revision,
                 download_config=DownloadConfig(local_files_only=local_files_only),
             )
-            self.datasets[obj_type] = _torch_format_columns_for_object(
-                obj_type, dataset
-            )
+            self.datasets[obj_type] = _torch_format_columns_for_object(obj_type, dataset)
 
         # All datasets should have the same number of rows (events)
         self.num_events = len(self.datasets[self.object_types[0]])
         for obj_type in self.object_types:
             dataset_length = len(self.datasets[obj_type])
             if dataset_length != self.num_events:
-                raise ValueError(
-                    f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}."
-                )
+                raise ValueError(f"Dataset {obj_type} has {dataset_length} rows, expected {self.num_events}.")
 
     def __len__(self) -> int:
         return self.num_events
@@ -173,10 +170,17 @@ class ColliderMLDataset(Dataset):
 def collate_fn(
     batch: list[dict[str, dict[str, Any]]],
 ) -> list[dict[str, dict[str, Any]]]:
-    """
-    Custom collate function to handle variable-length events.
-    ColliderML events have variable numbers of calorimeter cells, so we keep events
-    separate until the view-building stage.
+    """Pass-through collate for variable-length events.
+
+    ColliderML events have variable numbers of calorimeter cells, so events are
+    kept as a list until the view-building stage.
+
+    Args:
+        batch (list[dict[str, dict[str, Any]]]): List of raw event dicts from
+            the dataset.
+
+    Returns:
+        list[dict[str, dict[str, Any]]]: The input batch unchanged.
     """
     return batch
 
@@ -193,7 +197,4 @@ class ViewBuildingCollate:
         self.batch_kwargs = dict(batch_kwargs)
 
     def __call__(self, batch: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:
-        return build_sonata_batch(
-            batch, device=torch.device("cpu"), **self.batch_kwargs
-        )
-
+        return build_sonata_batch(batch, device=torch.device("cpu"), **self.batch_kwargs)

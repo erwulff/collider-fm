@@ -20,7 +20,14 @@ from collider_fm.project_config import (
 
 
 def plot_event_3d(event: Mapping[str, Any], event_idx: int = 0) -> None:
-    """Save a simple 3D scatter plot for one raw calorimeter event."""
+    """Save a simple 3D scatter plot for one raw calorimeter event.
+
+    Args:
+        event (Mapping[str, Any]): Raw ColliderML event dict with a `calo_hits`
+            sub-mapping.
+        event_idx (int, optional): Event index for the output filename and
+            title. Defaults to 0.
+    """
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
@@ -80,6 +87,4 @@ if __name__ == "__main__":
     print(f"Calo x range: [{calo_hits['x'].min():.2f}, {calo_hits['x'].max():.2f}]")
     print(f"Calo y range: [{calo_hits['y'].min():.2f}, {calo_hits['y'].max():.2f}]")
     print(f"Calo z range: [{calo_hits['z'].min():.2f}, {calo_hits['z'].max():.2f}]")
-    print(
-        f"Calo energy range: [{calo_hits['total_energy'].min():.2f}, {calo_hits['total_energy'].max():.2f}]"
-    )
+    print(f"Calo energy range: [{calo_hits['total_energy'].min():.2f}, {calo_hits['total_energy'].max():.2f}]")

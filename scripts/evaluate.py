@@ -50,10 +50,15 @@ from collider_fm._panda.utils import set_seed
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the evaluate CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config` and dotlist
+        override support.
+    """
     return build_config_arg_parser(
         description=(
-            "Evaluate ColliderFM pretraining with label-free collapse metrics "
-            "(stable rank, prototype usage, NN view-retrieval, alignment/uniformity)."
+            "Evaluate ColliderFM pretraining with label-free collapse metrics " "(stable rank, prototype usage, NN view-retrieval, alignment/uniformity)."
         ),
         epilog=(
             "Examples:\n"
@@ -67,6 +72,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def resolve_device(device_name: str) -> torch.device:
+    """Resolve a torch device, falling back to CPU if CUDA is unavailable.
+
+    Args:
+        device_name (str): Requested device name (e.g. `"cuda"` or `"cpu"`).
+
+    Returns:
+        torch.device: The resolved device.
+    """
     if device_name == "cuda" and not torch.cuda.is_available():
         print("CUDA requested but unavailable; falling back to CPU.")
         return torch.device("cpu")
@@ -88,14 +101,22 @@ def _config_by_run_name(ray_dir: Path) -> Path | None:
 
 
 def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
-    """Resolve a checkpoint spec to ``(model.pt path, run config.json path or None)``.
+    """Resolve a checkpoint spec to `(model.pt path, run config.json path)`.
 
-    Accepts ``None``/empty (random-init baseline -> ``(None, None)``), a ``model.pt``
-    file, a run directory (``runs/<run>`` -> reads ``checkpoint_path.txt`` -> latest
-    ``checkpoint_*/model.pt``), or a Ray storage directory containing ``checkpoint_*``
-    subdirs. The run ``config.json`` is recovered when the spec is a training run dir
-    (``runs/<run>``) or a Ray storage dir whose name matches a run dir, so the model can
-    be built to match the checkpoint's architecture exactly.
+    Accepts `None`/empty (random-init baseline -> `(None, None)`), a `model.pt`
+    file, a run directory (`runs/<run>` -> reads `checkpoint_path.txt` -> latest
+    `checkpoint_*/model.pt`), or a Ray storage directory containing
+    `checkpoint_*` subdirs. The run `config.json` is recovered when the spec is
+    a training run dir (`runs/<run>`) or a Ray storage dir whose name matches a
+    run dir, so the model can be built to match the checkpoint's architecture
+    exactly.
+
+    Args:
+        spec (Any): Checkpoint specification (None, path string, or Path).
+
+    Returns:
+        tuple[Path | None, Path | None]: `(model_pt_path, run_config_path)`.
+        Both are None for a random-init baseline.
     """
     if spec is None or str(spec).strip() == "":
         return None, None
@@ -127,6 +148,7 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
 
 
 def main() -> None:
+    """CLI entry point: loads checkpoint, collects embeddings, reports metrics."""
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
 
@@ -137,9 +159,7 @@ def main() -> None:
     print(f"Using device: {device}")
 
     checkpoint, run_config_path = resolve_checkpoint(eval_config.get("checkpoint"))
-    weights_source = (
-        f"checkpoint: {checkpoint}" if checkpoint is not None else "random initialization"
-    )
+    weights_source = f"checkpoint: {checkpoint}" if checkpoint is not None else "random initialization"
     print(f"Weights: {weights_source}")
 
     # Build the model to match the checkpoint's architecture. When a run config.json is
@@ -169,10 +189,7 @@ def main() -> None:
         missing = checkpoint_report.get("missing_keys", [])
         unexpected = checkpoint_report.get("unexpected_keys", [])
         if missing or unexpected:
-            print(
-                f"Checkpoint key report -- missing: {len(missing)}, "
-                f"unexpected: {len(unexpected)}"
-            )
+            print(f"Checkpoint key report -- missing: {len(missing)}, " f"unexpected: {len(unexpected)}")
     model.eval()
 
     dataloader = create_dataloader(
@@ -182,15 +199,11 @@ def main() -> None:
         dataset_type=str(data_config.dataset_type),
         pu_config=str(data_config.pu_config),
         cache_dir=str(data_config.cache_dir),
-        dataset_revision=str(data_config.dataset_revision)
-        if data_config.get("dataset_revision") is not None
-        else None,
+        dataset_revision=str(data_config.dataset_revision) if data_config.get("dataset_revision") is not None else None,
         local_files_only=bool(data_config.get("local_files_only", False)),
     )
 
-    batch_kwargs = sonata_batch_kwargs(
-        config, "training", max_calo_hits=config.views.max_calo_hits
-    )
+    batch_kwargs = sonata_batch_kwargs(config, "training", max_calo_hits=config.views.max_calo_hits)
 
     num_prototypes = int(model.num_prototypes)
     max_events = eval_config.get("max_events")
@@ -219,9 +232,7 @@ def main() -> None:
 
     run_name = str(eval_config.get("run_name") or "").strip()
     if not run_name:
-        stem = (
-            checkpoint.stem if checkpoint is not None else "random_init"
-        )
+        stem = checkpoint.stem if checkpoint is not None else "random_init"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"eval_{stem}_{timestamp}"
     run_dir = PROJECT_ROOT / "runs" / run_name
@@ -243,9 +254,7 @@ def main() -> None:
             dataset_type=str(data_config.dataset_type),
             pu_config=str(data_config.pu_config),
             cache_dir=str(data_config.cache_dir),
-            dataset_revision=str(data_config.dataset_revision)
-            if data_config.get("dataset_revision") is not None
-            else None,
+            dataset_revision=str(data_config.dataset_revision) if data_config.get("dataset_revision") is not None else None,
             local_files_only=bool(data_config.get("local_files_only", False)),
         )
 
@@ -255,18 +264,11 @@ def main() -> None:
         from collider_fm.evaluation_labels import compute_dominance_report, format_dominance_report
 
         dominance_max_events = int(eval_config.get("dominance_max_events", 200))
-        print(
-            f"\nDominance report: scanning up to {dominance_max_events} events "
-            f"from {eval_config.val_split}..."
-        )
-        dominance, n_scanned = compute_dominance_report(
-            calo_truth, dominance_max_events
-        )
+        print(f"\nDominance report: scanning up to {dominance_max_events} events " f"from {eval_config.val_split}...")
+        dominance, n_scanned = compute_dominance_report(calo_truth, dominance_max_events)
         dominance["num_events_scanned"] = n_scanned
         metrics["dominance"] = dominance
-        (run_dir / "dominance_report.txt").write_text(
-            format_dominance_report(dominance)
-        )
+        (run_dir / "dominance_report.txt").write_text(format_dominance_report(dominance))
         print(f"  wrote {run_dir / 'dominance_report.txt'}")
 
     # t-SNE: Panda-style per-point visualization of the backbone features, colored by
@@ -281,23 +283,19 @@ def main() -> None:
         tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
         enable_upcast2 = bool(eval_config.get("tsne_upcast2", False))
         up_cast_level = int(config.model.training.get("up_cast_level", 2))
-        print(
-            f"\nt-SNE: collecting up to {tsne_max_points} points over "
-            f"{tsne_max_events} events from {eval_config.val_split}..."
-        )
+        print(f"\nt-SNE: collecting up to {tsne_max_points} points over " f"{tsne_max_events} events from {eval_config.val_split}...")
         pid_to_pdg = load_particle_pdg(
             split=str(eval_config.val_split),
             dataset_name=str(data_config.dataset_name),
             dataset_type=str(data_config.dataset_type),
             pu_config=str(data_config.pu_config),
             cache_dir=str(data_config.cache_dir),
-            dataset_revision=str(data_config.dataset_revision)
-            if data_config.get("dataset_revision") is not None
-            else None,
+            dataset_revision=str(data_config.dataset_revision) if data_config.get("dataset_revision") is not None else None,
             local_files_only=bool(data_config.get("local_files_only", False)),
         )
         tsne_view_kwargs = point_view_kwargs(
-            config, "training",
+            config,
+            "training",
             max_calo_hits=int(eval_config.get("tsne_max_calo_hits", 8000)),
         )
         tsne_dir = run_dir / "viz"
@@ -320,9 +318,7 @@ def main() -> None:
             "num_events": full_collection.num_events,
             "num_points": int(full_collection.features.shape[0]),
             "feature_dim": int(full_collection.features.shape[1]) if full_collection.features.ndim == 2 else 0,
-            "plots": make_tsne_plots(
-                full_collection, tsne_dir, seed=int(eval_config.seed)
-            ),
+            "plots": make_tsne_plots(full_collection, tsne_dir, seed=int(eval_config.seed)),
         }
 
         # up_cast(2): the pretraining feature space (the one the prototype loss shapes).
@@ -346,9 +342,7 @@ def main() -> None:
                 "num_events": upcast2_collection.num_events,
                 "num_points": int(upcast2_collection.features.shape[0]),
                 "feature_dim": int(upcast2_collection.features.shape[1]) if upcast2_collection.features.ndim == 2 else 0,
-                "plots": make_tsne_plots(
-                    upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2"
-                ),
+                "plots": make_tsne_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2"),
             }
         metrics["tsne"] = tsne_metrics
 
@@ -361,7 +355,7 @@ def main() -> None:
 
     print(f"\nWrote metrics to {run_dir / 'metrics_step.jsonl'}")
     print(f"Wrote summary to {report_path}\n")
-    print("--- v1 metrics ---")
+    print("--- metrics ---")
     headline = [
         "stable_rank",
         "stable_rank_dim",
@@ -398,10 +392,7 @@ def main() -> None:
             f"median={dom.get('contributor_count_median')} p99={dom.get('contributor_count_p99')} "
             f"max={dom.get('contributor_count_max')}"
         )
-        print(
-            f"  pct_single_contributor={dom.get('pct_single_contributor'):.1f}% "
-            f"pct_shared={dom.get('pct_shared'):.1f}%"
-        )
+        print(f"  pct_single_contributor={dom.get('pct_single_contributor'):.1f}% " f"pct_shared={dom.get('pct_shared'):.1f}%")
         print(
             f"  dominant_frac: median={dom.get('dominant_frac_median')} "
             f"pct>=0.9={dom.get('pct_dominant_ge_0.9'):.1f}% "
@@ -417,11 +408,7 @@ def main() -> None:
     if "tsne" in metrics:
         print("\n--- t-SNE ---")
         for space, tsne in metrics["tsne"].items():
-            print(
-                f"  [{space}] num_events: {tsne.get('num_events')}  "
-                f"num_points: {tsne.get('num_points')}  "
-                f"feature_dim: {tsne.get('feature_dim')}"
-            )
+            print(f"  [{space}] num_events: {tsne.get('num_events')}  " f"num_points: {tsne.get('num_points')}  " f"feature_dim: {tsne.get('feature_dim')}")
             for plot in tsne.get("plots", []):
                 print(f"    plot: {plot}")
 

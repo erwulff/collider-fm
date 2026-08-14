@@ -28,6 +28,12 @@ from collider_fm.views import (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the smoke test CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config` and dotlist
+        override support.
+    """
     return build_config_arg_parser(
         description="Run a compact Sonata smoke test on ColliderML point views.",
         epilog=(
@@ -46,10 +52,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
 
-def load_smoke_test_views(
-    config: DictConfig, device: torch.device, batch_kwargs: dict[str, object]
-) -> tuple[SonataBatch, str]:
-    """Load one cached event, or optionally synthesize one for a CUDA-only check."""
+def load_smoke_test_views(config: DictConfig, device: torch.device, batch_kwargs: dict[str, object]) -> tuple[SonataBatch, str]:
+    """Load one cached event, or optionally synthesize one for a CUDA-only check.
+
+    Args:
+        config (DictConfig): Project config with `data` and `smoke_test` sections.
+        device (torch.device): Compute device.
+        batch_kwargs (dict[str, object]): Keyword arguments for
+            `build_sonata_batch`.
+
+    Returns:
+        tuple[SonataBatch, str]: The built Sonata batch and a description of the
+        data source (cached event or synthetic fallback).
+
+    Raises:
+        RuntimeError: If cached data cannot be loaded and synthetic fallback is
+            disabled.
+    """
 
     data_config = config.data
     smoke_config = config.smoke_test
@@ -90,6 +109,11 @@ def load_smoke_test_views(
 
 
 def run_smoke_test(project_config: DictConfig) -> None:
+    """Run a compact Sonata smoke test (forward pass + teacher update).
+
+    Args:
+        project_config (DictConfig): Full project config.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     batch_kwargs = sonata_batch_kwargs(
@@ -106,16 +130,12 @@ def run_smoke_test(project_config: DictConfig) -> None:
     print(f"Total parameters: {num_params / 1e6:.2f}M")
 
     if device.type != "cuda":
-        print(
-            "Skipping forward pass because the smoke test is intended for a CUDA-enabled node."
-        )
+        print("Skipping forward pass because the smoke test is intended for a CUDA-enabled node.")
         return
 
     batch, data_source = load_smoke_test_views(project_config, device, batch_kwargs)
     max_calo_hits = batch_kwargs["max_calo_hits"]
-    point_limit = (
-        "full-event point views" if max_calo_hits is None else f"calo<={max_calo_hits}"
-    )
+    point_limit = "full-event point views" if max_calo_hits is None else f"calo<={max_calo_hits}"
     print(f"Smoke test data source: {data_source}")
     model.setup_schedulers(total_steps=1)
     model.step_schedules()
@@ -125,9 +145,7 @@ def run_smoke_test(project_config: DictConfig) -> None:
     model.update_teacher(momentum=None)
     monitoring = getattr(model, "last_monitoring_state", {})
     student_logits = monitoring.get("student_logits")
-    print(
-        f"Forward pass successful. Student point-logit shape: {tuple(student_logits.shape) if student_logits is not None else (0, 0)}"
-    )
+    print(f"Forward pass successful. Student point-logit shape: {tuple(student_logits.shape) if student_logits is not None else (0, 0)}")
     print(f"Distillation loss: {loss.item():.4f}")
 
 

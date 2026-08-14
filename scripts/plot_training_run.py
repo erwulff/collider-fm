@@ -20,9 +20,13 @@ import matplotlib.pyplot as plt
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Plot saved metrics for a completed ColliderFM training run."
-    )
+    """Build the argparse parser for the plot-training-run CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `run_dir` positional and
+        `--output-subdir` arguments.
+    """
+    parser = argparse.ArgumentParser(description="Plot saved metrics for a completed ColliderFM training run.")
     parser.add_argument("run_dir", help="Path to a completed run directory.")
     parser.add_argument(
         "--output-subdir",
@@ -33,14 +37,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    """Read a small JSON file into a dictionary."""
+    """Read a small JSON file into a dictionary.
 
+    Args:
+        path (Path): Path to the JSON file.
+
+    Returns:
+        dict[str, Any]: Parsed JSON content.
+    """
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
-    """Load JSONL metric records written by the training script."""
+    """Load JSONL metric records written by the training script.
 
+    Args:
+        metrics_path (Path): Path to the JSONL metrics file.
+
+    Returns:
+        list[dict[str, Any]]: List of metric record dicts.
+
+    Raises:
+        ValueError: If the file contains no records.
+    """
     records = []
     for line in metrics_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -52,11 +71,18 @@ def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def metric_series(
-    records: list[dict[str, Any]], key: str, *, x_key: str = "epoch"
-) -> tuple[list[float], list[float]]:
-    """Extract one metric series against an explicit x-axis key."""
+def metric_series(records: list[dict[str, Any]], key: str, *, x_key: str = "epoch") -> tuple[list[float], list[float]]:
+    """Extract one metric series against an explicit x-axis key.
 
+    Args:
+        records (list[dict[str, Any]]): Metric records from `load_metric_records`.
+        key (str): Metric key to extract.
+        x_key (str, optional): X-axis key (e.g. `"epoch"` or `"step"`). Defaults
+            to `"epoch"`.
+
+    Returns:
+        tuple[list[float], list[float]]: `(x_values, y_values)` for the metric.
+    """
     xs = []
     ys = []
     for index, record in enumerate(records, start=1):
@@ -74,8 +100,18 @@ def metric_gap(
     *,
     x_key: str = "epoch",
 ) -> tuple[list[float], list[float]]:
-    """Compute the validation-minus-training gap for one metric pair."""
+    """Compute the validation-minus-training gap for one metric pair.
 
+    Args:
+        records (list[dict[str, Any]]): Metric records from `load_metric_records`.
+        train_key (str): Training metric key.
+        val_key (str): Validation metric key.
+        x_key (str, optional): X-axis key. Defaults to `"epoch"`.
+
+    Returns:
+        tuple[list[float], list[float]]: `(x_values, gap_values)` where
+        `gap = val - train`.
+    """
     xs = []
     ys = []
     for index, record in enumerate(records, start=1):
@@ -87,14 +123,26 @@ def metric_gap(
 
 
 def save_figure(fig: plt.Figure, path: Path) -> None:
+    """Tighten, save, and close a matplotlib figure.
+
+    Args:
+        fig (plt.Figure): Figure to save.
+        path (Path): Output file path.
+    """
     fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
 def best_epoch(records: list[dict[str, Any]]) -> int | None:
-    """Return the epoch with the lowest recorded validation loss."""
+    """Return the epoch with the lowest recorded validation loss.
 
+    Args:
+        records (list[dict[str, Any]]): Metric records from `load_metric_records`.
+
+    Returns:
+        int | None: The best epoch index, or None if no val_loss records exist.
+    """
     candidates = [record for record in records if "val_loss" in record]
     if not candidates:
         return None
@@ -103,6 +151,12 @@ def best_epoch(records: list[dict[str, Any]]) -> int | None:
 
 
 def add_best_epoch_marker(axis: plt.Axes, best_epoch_index: int | None) -> None:
+    """Add a vertical dashed line marker for the best epoch on an axis.
+
+    Args:
+        axis (plt.Axes): Matplotlib axis to annotate.
+        best_epoch_index (int | None): Best epoch index, or None to skip.
+    """
     if best_epoch_index is None:
         return
     axis.axvline(best_epoch_index, color="tab:gray", linestyle="--", linewidth=1)
@@ -119,6 +173,18 @@ def plot_metric_pair(
     x_key: str = "epoch",
     x_label: str = "epoch",
 ) -> None:
+    """Plot train/val metric pair with best-epoch marker on an axis.
+
+    Args:
+        axis (plt.Axes): Matplotlib axis to plot on.
+        records (list[dict[str, Any]]): Metric records.
+        title (str): Plot title.
+        train_key (str): Training metric key.
+        val_key (str): Validation metric key.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+        x_key (str, optional): X-axis record key. Defaults to `"epoch"`.
+        x_label (str, optional): X-axis label. Defaults to `"epoch"`.
+    """
     train_x, train_y = metric_series(records, train_key, x_key=x_key)
     val_x, val_y = metric_series(records, val_key, x_key=x_key)
     if not train_y and not val_y:
@@ -144,6 +210,17 @@ def plot_metric_single(
     x_key: str = "epoch",
     x_label: str = "epoch",
 ) -> None:
+    """Plot a single metric series with best-epoch marker on an axis.
+
+    Args:
+        axis (plt.Axes): Matplotlib axis to plot on.
+        records (list[dict[str, Any]]): Metric records.
+        title (str): Plot title.
+        key (str): Metric key to plot.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+        x_key (str, optional): X-axis record key. Defaults to `"epoch"`.
+        x_label (str, optional): X-axis label. Defaults to `"epoch"`.
+    """
     xs, ys = metric_series(records, key, x_key=x_key)
     if not ys:
         axis.set_axis_off()
@@ -165,6 +242,18 @@ def plot_gap_series(
     x_key: str = "epoch",
     x_label: str = "epoch",
 ) -> None:
+    """Plot val-minus-train gap series with a zero line on an axis.
+
+    Args:
+        axis (plt.Axes): Matplotlib axis to plot on.
+        records (list[dict[str, Any]]): Metric records.
+        title (str): Plot title.
+        train_key (str): Training metric key.
+        val_key (str): Validation metric key.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+        x_key (str, optional): X-axis record key. Defaults to `"epoch"`.
+        x_label (str, optional): X-axis label. Defaults to `"epoch"`.
+    """
     xs, ys = metric_gap(records, train_key, val_key, x_key=x_key)
     if not ys:
         axis.set_axis_off()
@@ -176,17 +265,27 @@ def plot_gap_series(
     axis.set_xlabel(x_label)
 
 
-def plot_loss_curves(
-    records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
-) -> None:
+def plot_loss_curves(records: list[dict[str, Any]], path: Path, best_epoch_index: int | None) -> None:
+    """Plot train/val loss curves to a PNG file.
+
+    Args:
+        records (list[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+    """
     fig, ax = plt.subplots(figsize=(8, 5))
     plot_metric_pair(ax, records, "Loss", "train_loss", "val_loss", best_epoch_index)
     save_figure(fig, path)
 
 
-def plot_representation_curves(
-    records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
-) -> None:
+def plot_representation_curves(records: list[dict[str, Any]], path: Path, best_epoch_index: int | None) -> None:
+    """Plot prototype entropy, embedding norm, and masked fraction curves.
+
+    Args:
+        records (list[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+    """
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     plot_metric_pair(
         axes[0],
@@ -216,9 +315,14 @@ def plot_representation_curves(
     save_figure(fig, path)
 
 
-def plot_optimization_curves(
-    records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
-) -> None:
+def plot_optimization_curves(records: list[dict[str, Any]], path: Path, best_epoch_index: int | None) -> None:
+    """Plot learning rate, teacher momentum, and temperature schedule curves.
+
+    Args:
+        records (list[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+        best_epoch_index (int | None): Unused (schedules have no best epoch).
+    """
     del best_epoch_index
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     plot_metric_single(
@@ -252,9 +356,14 @@ def plot_optimization_curves(
     save_figure(fig, path)
 
 
-def plot_run_health(
-    records: list[dict[str, Any]], path: Path, best_epoch_index: int | None
-) -> None:
+def plot_run_health(records: list[dict[str, Any]], path: Path, best_epoch_index: int | None) -> None:
+    """Plot a 2x2 grid of train/val gap series for run health.
+
+    Args:
+        records (list[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+        best_epoch_index (int | None): Best epoch for the marker, or None.
+    """
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
     plot_gap_series(
         axes[0, 0],
@@ -298,24 +407,27 @@ def summarize_run(
     config: dict[str, Any],
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build a compact machine-readable summary for a completed run."""
+    """Build a compact machine-readable summary for a completed run.
+
+    Args:
+        run_dir (Path): Run directory path.
+        output_dir (Path): Plot output directory path.
+        config (dict[str, Any]): Run config dict.
+        records (list[dict[str, Any]]): Metric records.
+
+    Returns:
+        dict[str, Any]: Summary dict with best epoch, final metrics, and
+        checkpoint file list.
+    """
 
     best_epoch_index = best_epoch(records)
     best_record = next(
-        (
-            record
-            for record in records
-            if int(record.get("epoch", -1)) == best_epoch_index
-        ),
+        (record for record in records if int(record.get("epoch", -1)) == best_epoch_index),
         records[-1],
     )
     final_record = records[-1]
     checkpoints_dir = run_dir / "checkpoints"
-    checkpoint_files = (
-        sorted(path.name for path in checkpoints_dir.iterdir())
-        if checkpoints_dir.exists()
-        else []
-    )
+    checkpoint_files = sorted(path.name for path in checkpoints_dir.iterdir()) if checkpoints_dir.exists() else []
     return {
         "run_dir": str(run_dir),
         "output_dir": str(output_dir),
@@ -335,6 +447,12 @@ def summarize_run(
 
 
 def write_summary(path: Path, summary: dict[str, Any]) -> None:
+    """Write a human-readable summary text file for a training run.
+
+    Args:
+        path (Path): Output text file path.
+        summary (dict[str, Any]): Summary dict from `summarize_run`.
+    """
     lines = [
         "ColliderFM training-run plots",
         "",
@@ -351,6 +469,7 @@ def write_summary(path: Path, summary: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    """CLI entry point: reads run dir, generates all plots and summary."""
     args = build_arg_parser().parse_args()
     run_dir = Path(args.run_dir).resolve()
     if not run_dir.exists():
@@ -371,18 +490,12 @@ def main() -> None:
     best_epoch_index = best_epoch(records)
 
     plot_loss_curves(records, output_dir / "loss_curves.png", best_epoch_index)
-    plot_representation_curves(
-        records, output_dir / "representation_curves.png", best_epoch_index
-    )
-    plot_optimization_curves(
-        records, output_dir / "optimization_curves.png", best_epoch_index
-    )
+    plot_representation_curves(records, output_dir / "representation_curves.png", best_epoch_index)
+    plot_optimization_curves(records, output_dir / "optimization_curves.png", best_epoch_index)
     plot_run_health(records, output_dir / "run_health.png", best_epoch_index)
 
     summary = summarize_run(run_dir, output_dir, config, records)
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_summary(output_dir / "summary.txt", summary)
 
     print(f"Saved training-run plots to {output_dir}")

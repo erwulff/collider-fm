@@ -8,6 +8,7 @@ from pathlib import Path
 
 # Import Comet before torch so the optional backend can initialize cleanly.
 import comet_ml
+
 del comet_ml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,12 @@ from collider_fm.training_loop import train_loop_per_worker
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the train CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config` and dotlist
+        override support.
+    """
     return build_config_arg_parser(
         description="Train the ColliderFM Sonata model using Ray Train.",
         epilog=(
@@ -47,6 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point: resolves run lifecycle and launches a Ray Train `TorchTrainer`."""
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     training_config = config.training
@@ -54,9 +62,7 @@ def main() -> None:
     num_gpus = int(training_config.get("num_gpus", 1))
     resume = bool(training_config.get("resume", False))
     overwrite = bool(training_config.get("overwrite", False))
-    storage_path = str(
-        training_config.get("ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/")
-    )
+    storage_path = str(training_config.get("ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/"))
     resolved_run_dir, resolved_run_name = resolve_run_lifecycle(
         PROJECT_ROOT,
         ray_storage_path=storage_path,
@@ -94,10 +100,7 @@ def main() -> None:
         ),
     )
 
-    print(
-        f"Launching Ray Train: {num_gpus} GPU(s), storage={storage_path}, "
-        f"name={resolved_run_name}, resume={resume}"
-    )
+    print(f"Launching Ray Train: {num_gpus} GPU(s), storage={storage_path}, " f"name={resolved_run_name}, resume={resume}")
     result = trainer.fit()
     print(f"Training finished. Best checkpoint: {result.checkpoint.path}")
 

@@ -48,9 +48,7 @@ def _default_source_index(num_points: int, device: torch.device) -> torch.Tensor
 
 
 def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Tensor:
-    grid_coord = torch.div(
-        coord - coord.min(dim=0).values, grid_size, rounding_mode="floor"
-    ).long()
+    grid_coord = torch.div(coord - coord.min(dim=0).values, grid_size, rounding_mode="floor").long()
     base = grid_coord.max(dim=0).values + 1
     stride_y = base[2].clamp_min(1)
     stride_x = (base[1] * stride_y).clamp_min(1)
@@ -60,20 +58,26 @@ def _default_patch_id(coord: torch.Tensor, grid_size: torch.Tensor) -> torch.Ten
 def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
     """Return indices of one representative point per voxel (train-mode random pick).
 
-    Points are quantized onto a regular grid with spacing *grid_size*.  When
-    multiple points fall into the same voxel, one is selected at random.  The
+    Points are quantized onto a regular grid with spacing `grid_size`. When
+    multiple points fall into the same voxel, one is selected at random. The
     returned index tensor can be used to index into coord and any per-point
     tensors (energy, source_index, etc.).
 
     A random priority is assigned to every point and the lowest wins each voxel,
     which is a uniform random pick per voxel.
+
+    Args:
+        coord (torch.Tensor): Point coordinates of shape `[N, 3]`.
+        grid_size (float): Voxel edge length for the regular grid.
+
+    Returns:
+        torch.Tensor: Indices of the selected representative points (shape `[M]`,
+        `M <= N`), one per occupied voxel.
     """
     if coord.numel() == 0:
         return torch.arange(0, device=coord.device, dtype=torch.long)
 
-    grid_size_tensor = torch.as_tensor(
-        grid_size, dtype=coord.dtype, device=coord.device
-    )
+    grid_size_tensor = torch.as_tensor(grid_size, dtype=coord.dtype, device=coord.device)
     scaled = coord / grid_size_tensor
     grid_coord = torch.floor(scaled).long()
     grid_coord = grid_coord - grid_coord.min(dim=0).values
@@ -84,27 +88,31 @@ def grid_sample(coord: torch.Tensor, grid_size: float) -> torch.Tensor:
     num_voxels = unique_grid.shape[0]
 
     priority = torch.rand(coord.shape[0], device=coord.device)
-    best_priority = torch.full(
-        (num_voxels,), float("inf"), device=coord.device
-    )
-    best_priority.scatter_reduce_(
-        0, inverse, priority, reduce="amin", include_self=True
-    )
+    best_priority = torch.full((num_voxels,), float("inf"), device=coord.device)
+    best_priority.scatter_reduce_(0, inverse, priority, reduce="amin", include_self=True)
     # Ties are astronomically unlikely for float32 random draws.
     is_min = priority == best_priority[inverse]
     return torch.where(is_min)[0].to(dtype=torch.long)
 
 
-def assemble_point_features(
-    coord: torch.Tensor, total_energy: torch.Tensor
-) -> torch.Tensor:
-    """Build the simple project feature contract `[x, y, z, total_energy]`."""
+def assemble_point_features(coord: torch.Tensor, total_energy: torch.Tensor) -> torch.Tensor:
+    """Build the simple project feature contract `[x, y, z, total_energy]`.
+
+    Args:
+        coord (torch.Tensor): Point coordinates of shape `[N, 3]`.
+        total_energy (torch.Tensor): Per-point energy values, shape `[N]`.
+
+    Returns:
+        torch.Tensor: Feature tensor of shape `[N, 4]`.
+
+    Raises:
+        ValueError: If `coord` is not `[N, 3]` or `total_energy` length
+            mismatches `coord`.
+    """
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
 
-    total_energy = torch.as_tensor(
-        total_energy, dtype=torch.float32, device=coord.device
-    ).flatten()
+    total_energy = torch.as_tensor(total_energy, dtype=torch.float32, device=coord.device).flatten()
     if total_energy.shape[0] != coord.shape[0]:
         raise ValueError("'total_energy' must contain one value per point.")
 
@@ -118,7 +126,23 @@ def transform_total_energy(
     min_val: float = 1.0e-2,
     max_val: float = 20.0,
 ) -> torch.Tensor:
-    """Transform raw hit energy into the feature space used by the model."""
+    """Transform raw hit energy into the feature space used by the model.
+
+    Args:
+        total_energy (torch.Tensor): Raw per-hit energy values.
+        transform (str, optional): Transform mode; `"raw"` (identity) or
+            `"log"` (log-normalized to `[-1, 1]`). Defaults to `"raw"`.
+        min_val (float, optional): Minimum energy clamp for the log transform.
+            Defaults to 1e-2.
+        max_val (float, optional): Maximum energy for the log transform range.
+            Defaults to 20.0.
+
+    Returns:
+        torch.Tensor: Transformed energy values (float32).
+
+    Raises:
+        ValueError: If `transform` is not `"raw"` or `"log"`.
+    """
 
     energy = torch.as_tensor(total_energy, dtype=torch.float32).flatten()
     if transform == "raw":
@@ -127,9 +151,7 @@ def transform_total_energy(
         raise ValueError(f"Unsupported energy transform: {transform}.")
 
     y0 = torch.log10(torch.tensor(min_val, dtype=energy.dtype, device=energy.device))
-    y1 = torch.log10(
-        torch.tensor(max_val + min_val, dtype=energy.dtype, device=energy.device)
-    )
+    y1 = torch.log10(torch.tensor(max_val + min_val, dtype=energy.dtype, device=energy.device))
     transformed = 2 * (torch.log10(energy + min_val) - y0) / (y1 - y0) - 1
     return transformed
 
@@ -140,15 +162,27 @@ def normalize_coord(
     center: Sequence[float] | None = None,
     scale: float | None = None,
 ) -> torch.Tensor:
-    """Optionally shift and scale coordinates before view construction."""
+    """Optionally shift and scale coordinates before view construction.
+
+    Args:
+        coord (torch.Tensor): Point coordinates of shape `[N, 3]`.
+        center (Sequence[float] | None, optional): Shift applied to each axis.
+            If None, no shift is applied. Defaults to None.
+        scale (float | None, optional): Uniform scale factor. If None, no
+            scaling is applied. Defaults to None.
+
+    Returns:
+        torch.Tensor: Normalized coordinates (float32).
+
+    Raises:
+        ValueError: If `center` is not length 3, or if `scale` is not positive.
+    """
 
     normalized = torch.as_tensor(coord, dtype=torch.float32).clone()
     if center is None:
         center_tensor = normalized.new_zeros(3)
     else:
-        center_tensor = torch.as_tensor(
-            center, dtype=normalized.dtype, device=normalized.device
-        )
+        center_tensor = torch.as_tensor(center, dtype=normalized.dtype, device=normalized.device)
         if center_tensor.shape != (3,):
             raise ValueError("'center' must contain exactly three coordinates.")
     normalized = normalized - center_tensor
@@ -160,10 +194,22 @@ def normalize_coord(
 
 
 def normalize_point_view(view: Mapping[str, Any]) -> PointView:
-    """Coerce a loose point-view mapping into the canonical typed ``PointView``.
+    """Coerce a loose point-view mapping into the canonical typed `PointView`.
 
     Fills defaults, casts dtypes, and returns a fresh dict. Data-dependent
-    invariants are checked separately in :func:`assert_point_view`.
+    invariants are checked separately in `assert_point_view`.
+
+    Args:
+        view (Mapping[str, Any]): Loose point-view mapping; must contain at
+            least `coord` and `feat` keys.
+
+    Returns:
+        PointView: The canonical typed point view with defaults filled and
+        dtypes cast.
+
+    Raises:
+        KeyError: If required keys (`coord`, `feat`) are missing.
+        ValueError: If any tensor has an unexpected shape or dtype mismatch.
     """
     required_keys = {"coord", "feat"}
     missing_keys = required_keys.difference(view.keys())
@@ -172,9 +218,7 @@ def normalize_point_view(view: Mapping[str, Any]) -> PointView:
         raise KeyError(f"Point view is missing required keys: {missing}.")
 
     coord = torch.as_tensor(view["coord"], dtype=torch.float32)
-    origin_coord = torch.as_tensor(
-        view.get("origin_coord", coord), dtype=torch.float32, device=coord.device
-    )
+    origin_coord = torch.as_tensor(view.get("origin_coord", coord), dtype=torch.float32, device=coord.device)
     feat = torch.as_tensor(view["feat"], dtype=torch.float32, device=coord.device)
     if coord.ndim != 2 or coord.shape[1] != 3:
         raise ValueError("'coord' must have shape [num_points, 3].")
@@ -185,14 +229,10 @@ def normalize_point_view(view: Mapping[str, Any]) -> PointView:
     if feat.shape[0] != coord.shape[0]:
         raise ValueError("'coord' and 'feat' must have the same number of points.")
     if origin_coord.shape[0] != coord.shape[0]:
-        raise ValueError(
-            "'origin_coord' and 'coord' must have the same number of points."
-        )
+        raise ValueError("'origin_coord' and 'coord' must have the same number of points.")
 
     offset_value = view.get("offset", [coord.shape[0]])
-    offset = torch.as_tensor(
-        offset_value, dtype=torch.long, device=coord.device
-    ).flatten()
+    offset = torch.as_tensor(offset_value, dtype=torch.long, device=coord.device).flatten()
     if offset.numel() == 0:
         raise ValueError("'offset' must contain at least one event boundary.")
 
@@ -204,9 +244,7 @@ def normalize_point_view(view: Mapping[str, Any]) -> PointView:
     if grid_size.numel() != 1:
         raise ValueError("'grid_size' must be a scalar.")
     grid_size = grid_size[0]
-    total_energy = torch.as_tensor(
-        view.get("total_energy", feat[:, 3]), dtype=torch.float32, device=coord.device
-    ).flatten()
+    total_energy = torch.as_tensor(view.get("total_energy", feat[:, 3]), dtype=torch.float32, device=coord.device).flatten()
     if total_energy.shape[0] != coord.shape[0]:
         raise ValueError("'total_energy' must contain one value per point.")
 
@@ -249,10 +287,17 @@ def normalize_point_view(view: Mapping[str, Any]) -> PointView:
 
 
 def assert_point_view(view: PointView) -> None:
-    """Check ``PointView`` invariants without forcing a GPU->host sync.
+    """Check `PointView` invariants without forcing a GPU->host sync.
 
-    Written as ``torch.nonzero(...).numel()`` guards so the happy path never
+    Written as `torch.nonzero(...).numel()` guards so the happy path never
     reads a scalar back to the host; a sync only happens if a check fails.
+
+    Args:
+        view (PointView): The point view to validate.
+
+    Raises:
+        ValueError: If the final offset does not equal the number of points, or
+            if offsets are not strictly increasing.
     """
     coord = view["coord"]
     offset = view["offset"]
@@ -267,10 +312,18 @@ def assert_point_view(view: PointView) -> None:
         raise ValueError("'offset' must be a strictly increasing cumulative count.")
 
 
-def sample_hit_indices(
-    num_hits: int, max_hits: int | None, device: torch.device
-) -> torch.Tensor:
-    """Return evenly spaced hit indices, optionally downsampling to ``max_hits``."""
+def sample_hit_indices(num_hits: int, max_hits: int | None, device: torch.device) -> torch.Tensor:
+    """Return evenly spaced hit indices, optionally downsampling to `max_hits`.
+
+    Args:
+        num_hits (int): Total number of hits available.
+        max_hits (int | None): Maximum hits to keep. If None or `>= num_hits`,
+            all indices are returned.
+        device (torch.device): Device for the index tensor.
+
+    Returns:
+        torch.Tensor: Hit indices (long tensor on `device`).
+    """
     if max_hits is None or num_hits <= max_hits:
         return torch.arange(num_hits, device=device)
     return torch.linspace(0, num_hits - 1, steps=max_hits, device=device).round().long()
@@ -295,6 +348,35 @@ def build_point_view_from_event(
     point coordinates in `coord`, model features in `feat`, cumulative event
     boundaries in `offset`, and bookkeeping tensors for matching masked student
     points back to the original calorimeter hits.
+
+    Args:
+        event (Mapping[str, Any]): Raw ColliderML event dict with a `calo_hits`
+            sub-mapping containing `x`, `y`, `z`, and `total_energy` tensors.
+        device (torch.device): Device for the output tensors.
+        max_calo_hits (int | None, optional): Cap on calorimeter hits via
+            even-spaced downsampling. Defaults to None.
+        grid_size (float, optional): Grid size for patch id assignment. Defaults
+            to `DEFAULT_POINT_GRID_SIZE`.
+        coord_center (Sequence[float] | None, optional): Coordinate shift.
+            Defaults to None.
+        coord_scale (float | None, optional): Uniform coordinate scale factor.
+            Defaults to None.
+        energy_transform (str, optional): Energy transform mode (`"raw"` or
+            `"log"`). Defaults to `"raw"`.
+        energy_min (float, optional): Minimum energy for log transform.
+            Defaults to 1e-2.
+        energy_max (float, optional): Maximum energy for log transform range.
+            Defaults to 20.0.
+        grid_sample_enabled (bool, optional): Whether to voxel-downsample.
+            Defaults to True.
+        grid_sample_size (float, optional): Voxel size for grid sampling.
+            Defaults to 0.002.
+
+    Returns:
+        PointView: The canonical point view for the event.
+
+    Raises:
+        ValueError: If the event has zero calorimeter hits.
     """
     calo_hits = event["calo_hits"]
     coord_x = cast(torch.Tensor, calo_hits["x"])
@@ -303,9 +385,7 @@ def build_point_view_from_event(
     total_energy = cast(torch.Tensor, calo_hits["total_energy"])
     source_device = coord_x.device
     if coord_x.numel() == 0:
-        raise ValueError(
-            "Cannot build a point view from an event with zero calorimeter hits."
-        )
+        raise ValueError("Cannot build a point view from an event with zero calorimeter hits.")
 
     calo_indices = sample_hit_indices(
         num_hits=coord_x.shape[0],
@@ -358,7 +438,15 @@ def build_point_view_from_event(
 
 
 def rotate_around_beam_axis(coord: torch.Tensor, angle: float | torch.Tensor) -> torch.Tensor:
-    """Rotate x/y coordinates while leaving z unchanged."""
+    """Rotate x/y coordinates while leaving z unchanged.
+
+    Args:
+        coord (torch.Tensor): Point coordinates of shape `[N, 3]`.
+        angle (float | torch.Tensor): Rotation angle in radians.
+
+    Returns:
+        torch.Tensor: Rotated coordinates of the same shape.
+    """
     angle_tensor = torch.as_tensor(angle, dtype=coord.dtype, device=coord.device)
     cosine = torch.cos(angle_tensor)
     sine = torch.sin(angle_tensor)
@@ -377,13 +465,23 @@ def crop_point_view(
 ) -> PointView:
     """Keep the nearest points to a center to create a contiguous crop.
 
-    When *center_coord* is ``None`` the crop center is drawn uniformly at random
+    When `center_coord` is None the crop center is drawn uniformly at random
     from the view's own points (Sonata default). When provided, the crop is
     centered on that coordinate instead, e.g. to constrain a secondary view to
     lie within the footprint of a principal view.
 
-    *view* must already be a validated ``PointView``; slicing preserves the
+    `view` must already be a validated `PointView`; slicing preserves the
     invariants by construction, so no re-validation is needed.
+
+    Args:
+        view (Mapping[str, Any]): Validated point view to crop.
+        keep_ratio (float): Fraction of points to keep (0, 1].
+        center_coord (torch.Tensor | None, optional): Crop center coordinate.
+            If None, a random point from the view is used. Defaults to None.
+
+    Returns:
+        PointView: A cropped copy of the view (or the original view if
+        `keep_ratio` >= 1).
     """
     base_view = view
     num_points = base_view["coord"].shape[0]
@@ -408,9 +506,7 @@ def crop_point_view(
         "coord": cast(torch.Tensor, base_view["coord"])[keep_indices],
         "origin_coord": cast(torch.Tensor, base_view["origin_coord"])[keep_indices],
         "feat": cast(torch.Tensor, base_view["feat"])[keep_indices],
-        "offset": torch.tensor(
-            [keep_count], dtype=torch.long, device=base_view["coord"].device
-        ),
+        "offset": torch.tensor([keep_count], dtype=torch.long, device=base_view["coord"].device),
         "grid_size": base_view["grid_size"],
         "source_index": cast(torch.Tensor, base_view["source_index"])[keep_indices],
         "total_energy": cast(torch.Tensor, base_view["total_energy"])[keep_indices],
@@ -440,12 +536,30 @@ def augment_point_view(
     - random point dropout
 
     Masking is handled by the Sonata model during forward(), not here. When
-    *center_coord* is provided it is forwarded to :func:`crop_point_view` to
+    `center_coord` is provided it is forwarded to `crop_point_view` to
     constrain the crop center.
+
+    Args:
+        view (Mapping[str, Any]): Validated point view to augment.
+        coord_noise_scale (float, optional): Stddev of Gaussian coordinate
+            jitter. Defaults to 0.5.
+        feat_noise_scale (float, optional): Stddev of multiplicative energy
+            jitter. Defaults to 0.01.
+        phi_rotation_max (float, optional): Max rotation angle around the beam
+            axis (radians, uniform in `[-max, max]`). Defaults to 0.25.
+        point_dropout (float, optional): Fraction of points to randomly drop.
+            Defaults to 0.0.
+        crop_keep_ratio (float, optional): Fraction of points to keep in the
+            crop. Defaults to 1.0.
+        view_kind (str, optional): Label stored in the output `view_kind` field.
+            Defaults to `"augmented"`.
+        center_coord (torch.Tensor | None, optional): Crop center forwarded to
+            `crop_point_view`. Defaults to None.
+
+    Returns:
+        PointView: The augmented point view.
     """
-    working_view = crop_point_view(
-        view, keep_ratio=crop_keep_ratio, center_coord=center_coord
-    )
+    working_view = crop_point_view(view, keep_ratio=crop_keep_ratio, center_coord=center_coord)
     coord = working_view["coord"].clone()
     origin_coord = working_view["origin_coord"].clone()
     total_energy = working_view["total_energy"].clone()
@@ -465,9 +579,7 @@ def augment_point_view(
     if point_dropout > 0.0 and coord.shape[0] > 1:
         keep_mask = torch.rand(coord.shape[0], device=coord.device) >= point_dropout
         if not torch.any(keep_mask):
-            keep_mask[torch.randint(0, coord.shape[0], (1,), device=coord.device)] = (
-                True
-            )
+            keep_mask[torch.randint(0, coord.shape[0], (1,), device=coord.device)] = True
         coord = coord[keep_mask]
         origin_coord = origin_coord[keep_mask]
         total_energy = total_energy[keep_mask]
@@ -478,9 +590,7 @@ def augment_point_view(
         "coord": coord,
         "origin_coord": origin_coord,
         "feat": assemble_point_features(coord, total_energy),
-        "offset": torch.tensor(
-            [coord.shape[0]], dtype=torch.long, device=coord.device
-        ),
+        "offset": torch.tensor([coord.shape[0]], dtype=torch.long, device=coord.device),
         "grid_size": working_view["grid_size"].clone(),
         "source_index": source_index,
         "total_energy": total_energy,
@@ -495,6 +605,16 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
 
     Source indices and patch ids are offset so they remain unique across events.
     That keeps the later point-level matching logic simple and local to the batch.
+
+    Args:
+        views (Sequence[Mapping[str, Any]]): Non-empty list of validated point
+            views that share the same grid size.
+
+    Returns:
+        PointView: A single batched point view with cumulative offsets.
+
+    Raises:
+        ValueError: If `views` is empty or grid sizes differ across views.
     """
     if not views:
         raise ValueError("At least one point view is required to create a batch.")
@@ -505,9 +625,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     view_kind = normalized_views[0].get("view_kind", "unknown")
     for view in normalized_views[1:]:
         if not torch.allclose(view["grid_size"], grid_size):
-            raise ValueError(
-                "All point views in a batch must share the same grid size."
-            )
+            raise ValueError("All point views in a batch must share the same grid size.")
 
     coord = torch.cat([view["coord"] for view in normalized_views], dim=0)
     origin_coord = torch.cat([view["origin_coord"] for view in normalized_views], dim=0)
@@ -547,9 +665,7 @@ def batch_point_views(views: Sequence[Mapping[str, Any]]) -> PointView:
     return batched_view
 
 
-def _sample_crop_keep_ratio(
-    min_ratio: float, max_ratio: float, device: torch.device
-) -> float:
+def _sample_crop_keep_ratio(min_ratio: float, max_ratio: float, device: torch.device) -> float:
     if min_ratio <= 0 or max_ratio <= 0:
         raise ValueError("Crop ratios must be positive.")
     if min_ratio > max_ratio:
@@ -593,11 +709,59 @@ def build_sonata_batch(
 ) -> SonataBatch:
     """Build the packed global/local multiview batch expected by Sonata.
 
-    When *constrain_to_principal* is true (Sonata default, App. A.1) the crop
+    When `constrain_to_principal` is true (Sonata default, App. A.1) the crop
     center of every non-principal global view and every local view is drawn from
     the principal (first) global view's pre-augmentation coordinates, so those
     crops are centered within the principal footprint while still sampling from
     the full event. The first global view keeps an unconstrained random center.
+
+    Args:
+        events (Sequence[Mapping[str, Any]]): Raw ColliderML event dicts.
+        device (torch.device): Device for the output tensors.
+        max_calo_hits (int | None, optional): Cap on calorimeter hits per event.
+            Defaults to None.
+        grid_size (float, optional): Grid size for patch id assignment. Defaults
+            to `DEFAULT_POINT_GRID_SIZE`.
+        coord_noise_scale (float, optional): Stddev of coordinate jitter.
+            Defaults to 0.5.
+        feat_noise_scale (float, optional): Stddev of energy jitter. Defaults
+            to 0.01.
+        phi_rotation_max (float, optional): Max beam-axis rotation (radians).
+            Defaults to 0.25.
+        point_dropout (float, optional): Fraction of points to drop. Defaults
+            to 0.05.
+        num_global_views (int, optional): Number of global views per event.
+            Defaults to 2.
+        num_local_views (int, optional): Number of local views per event.
+            Defaults to 4.
+        global_crop_min_ratio (float, optional): Min crop ratio for global views.
+            Defaults to 0.4.
+        global_crop_max_ratio (float, optional): Max crop ratio for global views.
+            Defaults to 1.0.
+        local_crop_min_ratio (float, optional): Min crop ratio for local views.
+            Defaults to 0.1.
+        local_crop_max_ratio (float, optional): Max crop ratio for local views.
+            Defaults to 0.4.
+        coord_center (Sequence[float] | None, optional): Coordinate shift.
+            Defaults to None.
+        coord_scale (float | None, optional): Uniform coordinate scale factor.
+            Defaults to None.
+        energy_transform (str, optional): Energy transform mode. Defaults to
+            `"raw"`.
+        energy_min (float, optional): Min energy for log transform. Defaults
+            to 1e-2.
+        energy_max (float, optional): Max energy for log transform. Defaults
+            to 20.0.
+        grid_sample_enabled (bool, optional): Whether to voxel-downsample.
+            Defaults to True.
+        grid_sample_size (float, optional): Voxel size for grid sampling.
+            Defaults to 0.002.
+        constrain_to_principal (bool, optional): Whether to constrain
+            non-principal crop centers to the principal view's footprint.
+            Defaults to True.
+
+    Returns:
+        SonataBatch: Packed global and local views ready for the Sonata model.
     """
 
     global_views: list[PointView] = []
@@ -619,9 +783,7 @@ def build_sonata_batch(
 
         principal: PointView | None = None
         for view_index in range(num_global_views):
-            keep_ratio = _sample_crop_keep_ratio(
-                global_crop_min_ratio, global_crop_max_ratio, base_view["coord"].device
-            )
+            keep_ratio = _sample_crop_keep_ratio(global_crop_min_ratio, global_crop_max_ratio, base_view["coord"].device)
             center_coord = None
             if constrain_to_principal and view_index > 0 and principal is not None:
                 center_coord = _sample_center_from_view(principal)
@@ -640,9 +802,7 @@ def build_sonata_batch(
             global_views.append(view)
 
         for view_index in range(num_local_views):
-            keep_ratio = _sample_crop_keep_ratio(
-                local_crop_min_ratio, local_crop_max_ratio, base_view["coord"].device
-            )
+            keep_ratio = _sample_crop_keep_ratio(local_crop_min_ratio, local_crop_max_ratio, base_view["coord"].device)
             center_coord = None
             if constrain_to_principal and principal is not None:
                 center_coord = _sample_center_from_view(principal)
@@ -674,11 +834,16 @@ def build_sonata_batch(
     }
 
 
-def move_sonata_batch_to_device(
-    batch: SonataBatch, device: torch.device, *, non_blocking: bool = True
-) -> SonataBatch:
-    """Move a worker-built SonataBatch onto the compute device (non-blocking)."""
-    return {
-        key: tensor.to(device=device, non_blocking=non_blocking)
-        for key, tensor in batch.items()
-    }
+def move_sonata_batch_to_device(batch: SonataBatch, device: torch.device, *, non_blocking: bool = True) -> SonataBatch:
+    """Move a worker-built SonataBatch onto the compute device (non-blocking).
+
+    Args:
+        batch (SonataBatch): Worker-built batch with CPU tensors.
+        device (torch.device): Target compute device.
+        non_blocking (bool, optional): Whether to use non-blocking transfers.
+            Defaults to True.
+
+    Returns:
+        SonataBatch: The batch with all tensors moved to `device`.
+    """
+    return {key: tensor.to(device=device, non_blocking=non_blocking) for key, tensor in batch.items()}
