@@ -10,6 +10,7 @@ The project uses a shared OmegaConf config in `config/default.yaml`. Runtime scr
 - `src/collider_fm/views.py` builds the current point-view and masking pipeline
 - `src/collider_fm/model.py` contains the current point-level student-teacher training scaffold
 - `scripts/train.py` runs training with checkpointing, JSONL metrics, optional Comet logging, and mixed precision
+- `scripts/evaluate.py` runs the label-free pretraining evaluation harness (collapse detection: stable rank, prototype usage, NN view-retrieval, alignment/uniformity) on held-out events
 - `scripts/plot_diagnostics.py` and `scripts/plot_training_run.py` cover diagnostics and completed-run plotting
 - `notebooks/dataset_walkthrough.ipynb`, `notebooks/sonata_views.ipynb`, and `notebooks/model_walkthrough.ipynb` explain the data and training path
 
@@ -19,7 +20,7 @@ The project uses a shared OmegaConf config in `config/default.yaml`. Runtime scr
 /
 |- src/collider_fm/            # Package code for data, views, model, diagnostics, and vendored PTv3 pieces
 |- tests/                      # Unit tests for the current pipeline
-|- scripts/                    # Download, inspection, training, smoke-test, and plotting scripts
+|- scripts/                    # Download, inspection, training, evaluation, smoke-test, and plotting scripts
 |- notebooks/                  # Newcomer walkthrough notebooks
 |- slurm/                      # Cluster job scripts for setup, downloads, smoke tests, and training
 |- apptainer/                  # Container helper scripts

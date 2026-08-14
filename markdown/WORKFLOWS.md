@@ -14,7 +14,7 @@ This document collects the detailed runtime contract, configuration notes, and c
 - current training recipe: Sonata self-distillation
   - two global views (teacher + masked student) and four local views (student only)
   - Sinkhorn-Knopp prototype assignment
-  - separate student mask/unmask heads with a unified teacher mask head during training
+  - separate student mask/unmask heads with matching teacher mask/unmask heads (`_head_for_diagnostics` prefers `unmask_head`)
   - cosine schedulers for mask size, mask ratio, temperature, and EMA momentum
   - `match_neighbour` alignment via `origin_coord`
 - current training defaults:
@@ -51,6 +51,7 @@ Common overrides:
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
+- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_upcast2`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`
 
 To start a single-GPU training run:
 
@@ -77,8 +78,8 @@ The dataset only exposes a Hugging Face `train` split, so the project reserves t
 For reproducible runs, pin the dataset revision and load only from the local cache:
 
 ```bash
-uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 download.num_proc=12
-uv run python scripts/train.py data.dataset_revision=e28a24cc9c1641a478ae4e5bc3b376eb624b7283 data.local_files_only=true
+uv run python scripts/download_data.py download.dataset_types=[ttbar] download.object_types=[calo_hits] download.dataset_revision=64c3d2f112df3d5d20979d22da7cfdff13e10c4b download.num_proc=12
+uv run python scripts/train.py data.dataset_revision=64c3d2f112df3d5d20979d22da7cfdff13e10c4b data.local_files_only=true
 ```
 
 ## Common local workflows
@@ -125,6 +126,68 @@ Plot the saved metrics from a completed run:
 uv run python scripts/plot_training_run.py runs/<run_name>
 ```
 
+Evaluate pretraining quality with the label-free collapse-detection harness. It encodes held-out events through the deterministic teacher backbone and reports per-point stable rank + singular-value spectrum, per-point prototype usage / entropy / effective count + dead-prototype count, and per-event NN view-retrieval R@1/R@5 + alignment / uniformity. Metrics go to `runs/eval_<run_name>/metrics_step.jsonl` and `summary.json`.
+
+```bash
+# trained checkpoint: a single model.pt, a runs/<run> dir, or a Ray storage dir all resolve
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> data.local_files_only=true
+
+# random-init baseline (omit evaluation.checkpoint) for the trained-vs-random sanity comparison
+uv run python scripts/evaluate.py data.local_files_only=true
+
+# smaller / faster eval
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> evaluation.max_events=500 evaluation.val_split=val[:500]
+```
+
+The `evaluation.checkpoint` argument accepts a direct `model.pt` path, a local `runs/<run_name>` directory (resolved via `checkpoint_path.txt` to the latest `checkpoint_*/model.pt`), or a Ray storage directory containing `checkpoint_*` subdirs. The teacher backbone is used because it is deterministic (drop_path / attn_drop / proj_drop forced off) and is the deployment-target network.
+
+### Dominance report (label-noise floor)
+
+Optionally characterize the held-out subset's per-hit label noise with `evaluation.enable_dominance_report=true`. This scans the raw calo truth (`contrib_particle_ids` / `contrib_energies`, which `ColliderMLDataset` drops) over `evaluation.dominance_max_events` events and reports the contributor-count and dominant-energy-fraction distributions: the share of hits with a single contributor vs. shared cells, and how often the dominant particle wins ≥90% / ≥50% of the cell's energy. It is a pure-data property (independent of the checkpoint) that documents the noise floor any per-hit label probe would face.
+
+```bash
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
+    evaluation.enable_dominance_report=true evaluation.dominance_max_events=200 \
+    data.local_files_only=true
+```
+
+### Per-point t-SNE (Panda-style)
+
+`evaluation.enable_tsne=true` produces a Panda-paper-style (arXiv 2512.01324) t-SNE of the pretrained backbone's per-point features, unit-normalized, PCA→50-d then 2-D t-SNE. Each dot is one calorimeter hit (full up-cast) or one up-cast voxel (`up_cast(2)`). PNGs go to `runs/eval_<run_name>/viz/`, colored two ways: by dominant-particle type (the physics channel — needs the `particle_id→pdg_id` join from the sibling `particles` config) and by event id (the "is the grouping just events separating?" floor-check). Particle type collapses the raw `pdg_id` to 7 coarse calorimetry-role buckets — e± / γ / μ± / charged hadron / neutral hadron / nucleus / other — so the legend stays readable (`collider_fm.evaluation_labels.pdg_bucket`; raw `pdg_id` has ~44 values, too many for a distinct colormap).
+
+Two feature spaces are supported:
+
+- **Full up-cast** (always on): all pooling levels → one feature per grid-sampled hit (672-d for the default backbone — *not* the 2-level `up_cast` the pretraining loss uses). An exact 1:1 coord bijection back to input hits lets each dot take its raw-hit truth label; shared cells are colored by their dominant particle and sit between clusters (informative, not a defect). Plots: `viz/tsne_{pdg_id,event_id}.png`.
+- **`up_cast(2)`** (`evaluation.tsne_upcast2=true`): the 2-level up-cast, i.e. the pretraining feature space the prototype loss directly shapes (288-d). These points are downsampled vs input; each is a cluster of input points (recovered exactly by inverting the surviving pooling chain), and inherits the **energy-dominant** pdg across its raw hits (the particle type carrying the most cell energy in the voxel). A second forward pass, so only run when requested. Plots: `viz/upcast2/tsne_{pdg_id,event_id}.png`.
+
+Comparing the two spaces shows what the pretraining loss does (tight grouping in `up_cast(2)`) vs. what the full feature does; the event-id coloring in each reveals how much of the grouping is trivial event separation. Run once with the checkpoint and once without (random init) to see the gain from pretraining.
+
+```bash
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
+    evaluation.enable_tsne=true evaluation.tsne_upcast2=true \
+    evaluation.tsne_max_events=50 evaluation.tsne_max_points=10000 \
+    data.local_files_only=true
+```
+
+### pdg frequency report
+
+`scripts/pdg_frequency.py` tallies how often each `pdg_id` appears among all particle records in the sibling `..._particles` config (the full GenParticle record, not just calorimeter contributors), and collapses the counts into the same 7 t-SNE colormap buckets. Loads via `ColliderMLDataset` (correct revision / cache / `local_files_only` from the project config) and tallies with one pyarrow `value_counts` pass, so the full 50k-event split finishes in seconds. Use it to see how large each t-SNE color bucket is and which raw `pdg_id` values land in "other".
+
+```bash
+uv run python scripts/pdg_frequency.py                       # held-out val split
+uv run python scripts/pdg_frequency.py --split train[:8]     # tiny smoke check
+HF_HUB_OFFLINE=1 uv run python scripts/pdg_frequency.py data.local_files_only=true
+```
+
+### Offline mode (avoid slow cache verification)
+
+With `data.local_files_only=true` but **without** `HF_HUB_OFFLINE=1`, the `datasets` library still re-verifies all ~1000 cached Arrow shards against the hub on every load (slow; minutes per load). Set `HF_HUB_OFFLINE=1` to skip verification (loads drop to ~0.4s). SLURM runs already export this via `slurm/load_env.sh`; for **direct script runs** export it yourself:
+
+```bash
+export HF_HUB_OFFLINE=1
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> data.local_files_only=true
+```
+
 Open the walkthrough notebooks:
 
 ```bash
@@ -145,6 +208,11 @@ Training runs write two kinds of artifacts:
 - `metrics_epoch.jsonl`
 - `viz/` (diagnostic PNGs)
 - `checkpoint_path.txt` (points to the Ray checkpoint directory)
+
+**Evaluation run directory** (`runs/eval_<run_name>/` from `scripts/evaluate.py`):
+- `config.json`
+- `metrics_step.jsonl` (one `record_type: "eval"` record with all v1 metrics)
+- `summary.json` (the same metrics, pretty-printed for quick inspection)
 
 **Ray checkpoint storage** (`/mnt/ceph/users/ewulff/raytrain_results/<run_name>/`):
 - `checkpoint_000000/`, `checkpoint_000001/`, ... (each contains `model.pt`, `optimizer.pt`, `scheduler.pt`, `scaler.pt`, `training_state.pt`)

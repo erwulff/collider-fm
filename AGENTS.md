@@ -78,7 +78,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 |---|---|
 | Model | `SonataSelfDistillation` (`sonata_model.py`) |
 | Views | `build_sonata_batch` (`views.py`) |
-| Heads | Dual `OnlineCluster` student heads (mask/unmask) + Sinkhorn-Knopp; teacher uses unified mask_head for both branches |
+| Heads | Dual `OnlineCluster` heads (mask/unmask) on **both** student and teacher (`sonata_model.py:316-320`) + Sinkhorn-Knopp; diagnostics prefer `unmask_head` (`_head_for_diagnostics`, `:587`) |
 | Scheduling | Per-step cosine schedulers (mask_size, mask_ratio, temp, momentum) |
 | Monitoring | `last_monitoring_state` (+ `global_mask`, `cosine_similarities`) |
 | Multi-GPU | Ray Train (`training_loop.py`) with PyTorch DDP; future Ray Tune HPO compatible |
@@ -87,7 +87,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 **Data flow**: `ColliderMLDataset` → `collate_fn` → `build_sonata_batch` → `SonataBatch` → `SonataSelfDistillation.forward()`
 
-**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`.
+**Config**: `config/default.yaml` — single file, overridden via dotlist CLI args. Sections: `data`, `views`, `model.*`, `training`, `diagnostics`, `evaluation`.
 
 **Training loop**: `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint I/O. `scripts/train.py` is a thin CLI driver that launches a `TorchTrainer`.
 
@@ -104,7 +104,9 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 - `src/collider_fm/training_loop.py` — Ray Train worker function, epoch loop, checkpoint save/load
 - `src/collider_fm/experiment_logging.py` — Null/Jsonl/Comet loggers + `log_image`
 - `src/collider_fm/project_config.py` — OmegaConf config loading
+- `src/collider_fm/evaluation.py` — Label-free collapse metrics (stable rank, prototype usage, NN view-retrieval, alignment/uniformity) + bounded embedding collection
 - `scripts/train.py` — Ray Train CLI driver
+- `scripts/evaluate.py` — Evaluation CLI: load checkpoint (or random-init), encode held-out events through teacher backbone, log v1 metrics
 - `config/default.yaml` — All defaults
 
 ### Operating principles
@@ -113,6 +115,10 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 2. **Simplicity first** — No new abstractions, no new files, no new dependencies unless the user asks. Prefer config changes over code changes.
 3. **Surgical changes** — Change only what's needed. Do not refactor adjacent code. Do not touch `Panda_repo/` or `_panda/` unless asked.
 4. **Goal-driven execution** — Verify changes with `pytest` before asking to commit. Define success criteria before implementing.
+
+### Code documentation
+- Document code using Google style docstrings. Docstrings should be concrete and concise.
+- Clear, concise inline code comments should be used where code is difficult to understand or where choices need particular motivation. Do not use excessively.
 
 ### Hard rules
 
@@ -129,7 +135,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 - Load `uv` once: `module load uv`
 - HF cache: `/mnt/ceph/users/ewulff/data/hf`
-- Dataset revision: `e28a24cc9c1641a478ae4e5bc3b376eb624b7283`
+- Dataset revision: `64c3d2f112df3d5d20979d22da7cfdff13e10c4b`
 - SLURM jobs source `slurm/load_env.sh`
 - Single-GPU → `a100-80gb`. Multi-GPU (2 for debug, 8 for full) → `h100`/`h200`.
 - Ray Train checkpoints: `/mnt/ceph/users/ewulff/raytrain_results/`

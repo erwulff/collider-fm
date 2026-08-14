@@ -23,7 +23,7 @@ python --version
 
 python scripts/train.py \
     training.num_gpus=8 \
-    training.num_workers=4 \
+    training.num_workers=6 \
     data.local_files_only=true \
     training.num_epochs=5 \
     training.batch_size=12 \

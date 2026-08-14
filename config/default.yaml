@@ -5,8 +5,8 @@ data:
   object_types:
     - calo_hits
   cache_dir: /mnt/ceph/users/ewulff/data/hf
-  dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
-  local_files_only: false
+  dataset_revision: 64c3d2f112df3d5d20979d22da7cfdff13e10c4b
+  local_files_only: true
 
 views:
   max_calo_hits:
@@ -60,8 +60,8 @@ model:
     up_cast_level: 2
     backbone:
       enc_depths: [1, 1, 2, 2, 1]
-      enc_channels: [16, 32, 64, 96, 128]
-      enc_num_head: [1, 2, 4, 4, 8]
+      enc_channels: [32, 64, 128, 192, 256]
+      enc_num_head: [2, 4, 8, 12, 16]
       enc_patch_size: [48, 48, 48, 48, 48]
       shuffle_orders: false
       enable_flash: true
@@ -148,9 +148,29 @@ download:
     - calo_hits
   pu_config: pu0
   cache_dir: /mnt/ceph/users/ewulff/data/hf
-  dataset_revision: e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+  dataset_revision: 64c3d2f112df3d5d20979d22da7cfdff13e10c4b
   num_proc: 4
 
 smoke_test:
   train_split: train[:1]
   allow_synthetic_fallback: false
+
+evaluation:
+  # Path to a single model.pt. Empty => random-init baseline (for the trained-vs-random
+  # sanity comparison). Convenience: pass a run dir (runs/<run_name>) and the script resolves
+  # runs/<run_name>/checkpoint_path.txt -> latest checkpoint_*/model.pt.
+  checkpoint:
+  val_split: val            # held-out window, e.g. val or val[:2000]
+  max_events: 4000          # cap on events collected for per-event retrieval/alignment/uniformity
+  point_subsample_budget: 50000  # per-point features sampled for stable rank + prototype usage
+  batch_size: 8             # dataloader batch size (events per batch)
+  device: cuda
+  seed: 7
+  run_name:                 # eval run dir name; default eval_<stem-or-random>_<timestamp>
+  enable_dominance_report: false  # scan raw calo truth for the contributor/dominance distribution
+  dominance_max_events: 200       # events scanned (stable property, so a few hundred suffices)
+  enable_tsne: false              # Panda-style per-point t-SNE (full-up-cast features, pdg/prototype/spatial)
+  tsne_max_events: 100            # events collected for the t-SNE (one clean base view per event)
+  tsne_max_points: 20000          # cap on points subsampled across events for the t-SNE fit
+  tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
+  tsne_upcast2: false             # also embed the up_cast(2) pretraining feature space (extra forward)

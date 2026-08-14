@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Local secrets (e.g. HF_TOKEN)
+.env
+
 # SLURM logs
 logs_slurm/*
 

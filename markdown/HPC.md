@@ -95,7 +95,7 @@ If you want to prewarm the dataset cache first, either edit `slurm/download.slur
 The checked-in default dataset revision is:
 
 ```text
-e28a24cc9c1641a478ae4e5bc3b376eb624b7283
+64c3d2f112df3d5d20979d22da7cfdff13e10c4b
 ```
 
 For reproducible training, prefer pinning that revision and using `data.local_files_only=true` once the cache is populated.
