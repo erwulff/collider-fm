@@ -20,6 +20,12 @@ from collider_fm.project_config import (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the download CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config` and dotlist
+        override support.
+    """
     return build_config_arg_parser(
         description="Download selected ColliderML dataset configurations.",
         epilog=(
@@ -33,6 +39,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point: downloads selected ColliderML dataset configs into the HF cache."""
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     data_config = config.data

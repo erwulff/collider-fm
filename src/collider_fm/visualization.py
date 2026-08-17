@@ -54,20 +54,37 @@ PDG_BUCKET_COLORS: dict[str, str] = {
 
 # Per-event colors (cycles for >10 events); fine for the event-separation floor-check.
 _EVENT_COLORS: list[str] = [
-    "tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
-    "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan",
+    "tab:blue",
+    "tab:orange",
+    "tab:green",
+    "tab:red",
+    "tab:purple",
+    "tab:brown",
+    "tab:pink",
+    "tab:gray",
+    "tab:olive",
+    "tab:cyan",
 ]
 
 
 def full_up_cast(point: Point) -> Point:
     """Rebuild per-point features at input resolution by walking the full pooling chain.
 
-    Mirrors ``Panda_repo/panda/model_base.py`` ``forward(upcast=True)``: repeatedly pop
-    ``pooling_parent`` / ``pooling_inverse`` and concatenate each parent's feature with
-    its children's features broadcast back via ``point.feat[inverse]``, until no parent
-    remains. Unlike :meth:`SonataModel.up_cast` (which stops after ``up_cast_level``),
-    this walks *all* levels and returns one feature per input point. Consumes the
-    breadcrumb keys (run on a fresh enc output each call).
+    Mirrors `Panda_repo/panda/model_base.py` `forward(upcast=True)`: repeatedly pop
+    `pooling_parent` / `pooling_inverse` and concatenate each parent's feature with
+    its children's features broadcast back via `point.feat[inverse]`, until no parent
+    remains. Unlike `SonataModel.up_cast` (which stops after `up_cast_level`), this
+    walks all levels and returns one feature per input point. Consumes the breadcrumb
+    keys (run on a fresh enc output each call).
+
+    Args:
+        point (Point): Backbone output (deepest stage, full pooling chain intact).
+
+    Returns:
+        Point: Input-resolution point with one feature per input hit.
+
+    Raises:
+        KeyError: If traceable PTv3 pooling features are missing.
     """
     while "pooling_parent" in point.keys():
         if "pooling_inverse" not in point.keys():
@@ -88,10 +105,7 @@ def _up_cast_levels(point: Point, n_levels: int) -> Point:
     ``depth - n_levels`` breadcrumbs stay on the point for :func:`upcast2_input_map`.
     """
     for _ in range(n_levels):
-        if (
-            "pooling_parent" not in point.keys()
-            or "pooling_inverse" not in point.keys()
-        ):
+        if "pooling_parent" not in point.keys() or "pooling_inverse" not in point.keys():
             raise KeyError("Up-cast requires traceable PTv3 pooling features.")
         parent = point.pop("pooling_parent")
         inverse = point.pop("pooling_inverse")
@@ -101,23 +115,25 @@ def _up_cast_levels(point: Point, n_levels: int) -> Point:
 
 
 def upcast2_input_map(point: Point, up_cast_level: int = 2) -> tuple[Point, torch.Tensor]:
-    """Up-cast ``up_cast_level`` levels and map each input point to its up-cast cluster.
+    """Up-cast `up_cast_level` levels and map each input point to its up-cast cluster.
 
-    Runs :func:`_up_cast_levels` (consuming ``up_cast_level`` breadcrumbs), then inverts
-    the *remaining* pooling chain to recover, for every stage-0 (input) point, which
-    up-cast point it pooled into. This lets each up-cast point (a downsampled voxel)
-    inherit a label from its cluster of input points. Verified exact: the coord-mean
-    invariant of ``GridPooling`` (each cluster's coord = mean of its members' coords)
-    holds to float noise (~1e-3).
+    Runs `_up_cast_levels` (consuming `up_cast_level` breadcrumbs), then inverts the
+    remaining pooling chain to recover, for every stage-0 (input) point, which up-cast
+    point it pooled into. This lets each up-cast point (a downsampled voxel) inherit a
+    label from its cluster of input points. Verified exact: the coord-mean invariant of
+    `GridPooling` (each cluster's coord = mean of its members' coords) holds to float
+    noise (~1e-3).
 
     Args:
-        point: the backbone output (deepest stage, full pooling chain intact).
-        up_cast_level: levels to walk up (the pretraining ``up_cast_level``, default 2).
+        point (Point): The backbone output (deepest stage, full pooling chain intact).
+        up_cast_level (int, optional): Levels to walk up (the pretraining
+            `up_cast_level`). Defaults to 2.
 
     Returns:
-        ``(upcast_point, input_to_cluster)``: the up-cast :class:`Point`
-        (``[N_up, D]`` features) and a ``[N0]`` long tensor mapping each input point to
-        its up-cast cluster id in ``[0, N_up)``.
+        tuple[Point, torch.Tensor]: `(upcast_point, input_to_cluster)` where
+        `upcast_point` is the up-cast `Point` with `[N_up, D]` features, and
+        `input_to_cluster` is a `[N0]` long tensor mapping each input point to its
+        up-cast cluster id in `[0, N_up)`.
     """
     upcast_point = _up_cast_levels(point, up_cast_level)
     n_up = upcast_point.feat.shape[0]
@@ -133,19 +149,24 @@ def upcast2_input_map(point: Point, up_cast_level: int = 2) -> tuple[Point, torc
     return upcast_point, membership
 
 
-def match_to_input_coords(
-    out_coord: torch.Tensor, in_coord: torch.Tensor
-) -> torch.Tensor:
-    """For each output point, the index of its nearest input point by Euclidean distance.
+def match_to_input_coords(out_coord: torch.Tensor, in_coord: torch.Tensor) -> torch.Tensor:
+    """For each output point, return the index of its nearest input point by Euclidean distance.
 
-    Recovers the input row (-> ``source_index`` / raw hit index) for each full-up-cast
+    Recovers the input row (-> `source_index` / raw hit index) for each full-up-cast
     output point, which is at the same resolution but reordered by serialization.
-    Returns ``[num_out]`` long indices into ``in_coord``; on the happy path (verified)
-    this is a bijection within float noise.
+    Returns `[num_out]` long indices into `in_coord`; on the happy path (verified) this
+    is a bijection within float noise.
 
-    Uses ``scipy.spatial.cKDTree`` on CPU (O(N log N), bounded memory) rather than an
-    O(N^2) ``cdist`` -- the per-event point count (~10^4) makes the dense distance
-    matrix GPU-prohibitive on a shared machine.
+    Uses `scipy.spatial.cKDTree` on CPU (O(N log N), bounded memory) rather than an
+    O(N^2) `cdist` -- the per-event point count (~10^4) makes the dense distance matrix
+    GPU-prohibitive on a shared machine.
+
+    Args:
+        out_coord (torch.Tensor): Output point coordinates, shape `[N_out, 3]`.
+        in_coord (torch.Tensor): Input point coordinates, shape `[N_in, 3]`.
+
+    Returns:
+        torch.Tensor: Long tensor of shape `[N_out]` indexing into `in_coord`.
     """
     from scipy.spatial import cKDTree
 
@@ -188,19 +209,40 @@ def collect_tsne_points(
     """Collect bounded per-point features + coloring channels for the t-SNE plots.
 
     For each event: build one augmentation-free base view
-    (:func:`build_point_view_from_event`), run the deterministic teacher backbone, then
+    (`build_point_view_from_event`), run the deterministic teacher backbone, then
     extract features in one of two spaces:
 
-    - ``"full"`` (default): :func:`full_up_cast` to input resolution (one feature per
+    - `"full"` (default): `full_up_cast` to input resolution (one feature per
       grid-sampled hit). Each output point is coord-matched back to its input row ->
-      ``source_index`` (raw hit index) -> the dominant particle's ``pdg_id``.
-    - ``"upcast2"``: up-cast only ``up_cast_level`` levels (the pretraining feature
-      space). These points are downsampled vs input; each is a cluster of input points
-      (recovered exactly via :func:`upcast2_input_map`) and inherits the
-      **energy-dominant** pdg across its raw hits.
+      `source_index` (raw hit index) -> the dominant particle's `pdg_id`.
+    - `"upcast2"`: up-cast only `up_cast_level` levels (the pretraining feature space).
+      These points are downsampled vs input; each is a cluster of input points
+      (recovered exactly via `upcast2_input_map`) and inherits the energy-dominant
+      pdg across its raw hits.
 
-    ``event_id`` (per-event index) is assigned in both spaces. Points are subsampled
-    proportionally across events to bound total memory at ``max_points``.
+    `event_id` (per-event index) is assigned in both spaces. Points are subsampled
+    proportionally across events to bound total memory at `max_points`.
+
+    Args:
+        model: Sonata model with a teacher backbone.
+        calo_truth_dataset (Any): Raw calo truth dataset (from `load_calo_truth`).
+        pid_to_pdg (Mapping[int, int] | None): `particle_id -> pdg_id` map, or None.
+        device (torch.device): Compute device.
+        view_kwargs (Mapping[str, Any]): Keyword arguments for
+            `build_point_view_from_event`.
+        max_events (int): Maximum events to process.
+        max_points (int, optional): Maximum total points to collect. Defaults to
+            20000.
+        seed (int, optional): RNG seed for subsampling. Defaults to 0.
+        feature_space (str, optional): `"full"` or `"upcast2"`. Defaults to `"full"`.
+        up_cast_level (int, optional): Up-cast levels for the `"upcast2"` space.
+            Defaults to 2.
+
+    Returns:
+        TsnePointCollection: Bounded features and coloring channels.
+
+    Raises:
+        ValueError: If `feature_space` is not `"full"` or `"upcast2"`.
     """
     from .evaluation_labels import event_dominant_particles
 
@@ -220,8 +262,11 @@ def collect_tsne_points(
     from tqdm import tqdm
 
     pbar = tqdm(
-        calo_truth_dataset, total=max_events, desc=f"t-SNE [{feature_space}]",
-        unit="event", mininterval=2.0,
+        calo_truth_dataset,
+        total=max_events,
+        desc=f"t-SNE [{feature_space}]",
+        unit="event",
+        mininterval=2.0,
     )
     for event_index, event in enumerate(pbar):
         if events_done >= max_events:
@@ -235,9 +280,7 @@ def collect_tsne_points(
                 "x": torch.as_tensor(event["x"], dtype=torch.float32, device=device),
                 "y": torch.as_tensor(event["y"], dtype=torch.float32, device=device),
                 "z": torch.as_tensor(event["z"], dtype=torch.float32, device=device),
-                "total_energy": torch.as_tensor(
-                    event["total_energy"], dtype=torch.float32, device=device
-                ),
+                "total_energy": torch.as_tensor(event["total_energy"], dtype=torch.float32, device=device),
             }
         }
         view = build_point_view_from_event(wrapped, device=device, **dict(view_kwargs))
@@ -262,9 +305,7 @@ def collect_tsne_points(
         if feature_space == "full":
             feats, pdg_lab = _full_space_labels(point, view, pdg_per_hit)
         else:
-            feats, pdg_lab = _upcast2_space_labels(
-                point, view, pdg_per_hit, hit_energy, up_cast_level
-            )
+            feats, pdg_lab = _upcast2_space_labels(point, view, pdg_per_hit, hit_energy, up_cast_level)
         n_out = feats.shape[0]
 
         remaining_budget = max_points - total
@@ -322,9 +363,7 @@ def _upcast2_space_labels(point, view, pdg_per_hit, hit_energy, up_cast_level):
     # Map each input point -> raw hit, then each cluster -> energy-dominant pdg.
     raw_hit = view["source_index"].cpu().numpy().astype(np.int64)
     n_up = feats.shape[0]
-    pdg_lab = _cluster_dominant_pdg(
-        input_to_cluster.cpu().numpy(), raw_hit, pdg_per_hit, hit_energy, n_up
-    )
+    pdg_lab = _cluster_dominant_pdg(input_to_cluster.cpu().numpy(), raw_hit, pdg_per_hit, hit_energy, n_up)
     pdg_lab = torch.from_numpy(pdg_lab)
     return feats, pdg_lab
 
@@ -380,15 +419,31 @@ def tsne_plot(
     seed: int = 0,
     categories: Sequence[tuple[str, str]] | None = None,
 ) -> None:
-    """2D t-SNE scatter of ``features`` colored by ``color``; saved to ``path``.
+    """2D t-SNE scatter of `features` colored by `color`; saved to `path`.
 
     PCA-reduces to 50-d first (standard practice for high-dim features, bounds the
-    t-SNE cost), then ``sklearn.manifold.TSNE`` (Barnes-Hut). ``color`` rows with
-    ``-1`` (unknown) are dropped. Subsampled to ``max_points`` for the fit.
+    t-SNE cost), then `sklearn.manifold.TSNE` (Barnes-Hut). `color` rows with `-1`
+    (unknown) are dropped. Subsampled to `max_points` for the fit.
 
-    If ``categories`` is given (a list of ``(name, color)`` pairs), ``color`` is taken
-    as integer bucket ids in ``[0, len(categories))`` and the plot uses a discrete
-    colormap with a per-bucket legend instead of a continuous colorbar.
+    If `categories` is given (a list of `(name, color)` pairs), `color` is taken as
+    integer bucket ids in `[0, len(categories))` and the plot uses a discrete colormap
+    with a per-bucket legend instead of a continuous colorbar.
+
+    Args:
+        features (torch.Tensor): Feature matrix of shape `[N, D]`.
+        color (torch.Tensor): Per-point color values, shape `[N]`. Rows with `-1`
+            are dropped.
+        path (str | Path): Output PNG file path.
+        title (str, optional): Plot title. Defaults to `""`.
+        color_label (str, optional): Colorbar label for continuous coloring. Defaults
+            to `"label id"`.
+        max_points (int, optional): Maximum points for the t-SNE fit. Defaults to
+            8000.
+        seed (int, optional): RNG seed for PCA, t-SNE, and subsampling. Defaults to
+            0.
+        categories (Sequence[tuple[str, str]] | None, optional): List of
+            `(name, color)` pairs for discrete coloring. If None, uses continuous
+            coloring. Defaults to None.
     """
     import matplotlib
 
@@ -438,10 +493,7 @@ def tsne_plot(
             vmin=-0.5,
             vmax=k - 0.5,
         )
-        proxies = [
-            plt.Line2D([], [], marker="o", linestyle="", markersize=5, color=c, label=n)
-            for n, c in categories
-        ]
+        proxies = [plt.Line2D([], [], marker="o", linestyle="", markersize=5, color=c, label=n) for n, c in categories]
         ax.legend(handles=proxies, loc="best", fontsize=8, framealpha=0.7)
     else:
         scatter = ax.scatter(emb[:, 0], emb[:, 1], c=y, cmap="tab20", s=2, alpha=0.5)
@@ -461,12 +513,22 @@ def make_tsne_plots(
     seed: int = 0,
     subdir: str | None = None,
 ) -> list[str]:
-    """Write the pdg_id / event_id t-SNE PNGs to ``tsne_dir``.
+    """Write the pdg_id / event_id t-SNE PNGs to `tsne_dir`.
 
     Returns the list of written paths; skips a plot silently if its channel is empty.
-    pdg_id collapses to the 7 calorimetry-role buckets (:func:`pdg_bucket`) with a
-    discrete legend; event_id is a discrete per-event colormap. ``subdir`` writes to
-    ``tsne_dir/subdir`` (keeps the up_cast(2) plots separate from the full-up-cast ones).
+    pdg_id collapses to the 7 calorimetry-role buckets (`pdg_bucket`) with a discrete
+    legend; event_id is a discrete per-event colormap. `subdir` writes to
+    `tsne_dir/subdir` (keeps the up_cast(2) plots separate from the full-up-cast ones).
+
+    Args:
+        collection (TsnePointCollection): Bounded features and coloring channels.
+        tsne_dir (str | Path): Output directory for the PNG files.
+        seed (int, optional): RNG seed for t-SNE. Defaults to 0.
+        subdir (str | None, optional): Subdirectory under `tsne_dir`. If None, writes
+            directly to `tsne_dir`. Defaults to None.
+
+    Returns:
+        list[str]: Paths to the written PNG files.
     """
     out_dir = Path(tsne_dir) if subdir is None else Path(tsne_dir) / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -477,9 +539,7 @@ def make_tsne_plots(
     bucket = torch.as_tensor(pdg_bucket(collection.pdg_id.cpu().numpy()))
     pdg_categories = [(name, PDG_BUCKET_COLORS[name]) for name in PDG_BUCKET_NAMES]
     n_events = max(int(collection.event_id.max().item()) + 1, 1) if collection.num_events else 1
-    event_categories = [
-        (f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)
-    ]
+    event_categories = [(f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)]
     specs = [
         (bucket, "tsne_pdg_id.png", "t-SNE colored by particle type", "particle type", pdg_categories),
         (collection.event_id, "tsne_event_id.png", "t-SNE colored by event id", "event id", event_categories),

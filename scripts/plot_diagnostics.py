@@ -53,6 +53,12 @@ from collider_fm.views import (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the diagnostics CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config` and dotlist
+        override support.
+    """
     return build_config_arg_parser(
         description=(
             "Generate diagnostic plots for the ColliderFM calorimeter data-to-view-to-representation pipeline. "
@@ -75,11 +81,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def default_output_dir() -> Path:
+    """Return a timestamped default diagnostics output directory.
+
+    Returns:
+        Path: `diagnostics/diagnostics_<YYYYMMDD_HHMMSS>` under the project root.
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return PROJECT_ROOT / "diagnostics" / f"diagnostics_{timestamp}"
 
 
 def ensure_output_dirs(root: Path) -> dict[str, Path]:
+    """Create raw/views/model/artifacts subdirectories and return them.
+
+    Args:
+        root (Path): Root diagnostics directory.
+
+    Returns:
+        dict[str, Path]: Mapping of subdirectory name to path.
+    """
     subdirs = {
         "root": root,
         "raw": root / "raw",
@@ -93,6 +112,11 @@ def ensure_output_dirs(root: Path) -> dict[str, Path]:
 
 
 def set_seed(seed: int) -> None:
+    """Seed numpy and torch RNGs for reproducibility.
+
+    Args:
+        seed (int): Random seed value.
+    """
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -100,21 +124,42 @@ def set_seed(seed: int) -> None:
 
 
 def resolve_device(device_name: str) -> torch.device:
+    """Resolve a torch device, falling back to CPU if CUDA is unavailable.
+
+    Args:
+        device_name (str): Requested device name (e.g. `"cuda"` or `"cpu"`).
+
+    Returns:
+        torch.device: The resolved device.
+    """
     if device_name == "cuda" and not torch.cuda.is_available():
-        print(
-            "CUDA was requested but is unavailable; falling back to CPU for raw/view diagnostics only."
-        )
+        print("CUDA was requested but is unavailable; falling back to CPU for raw/view diagnostics only.")
         return torch.device("cpu")
     return torch.device(device_name)
 
 
 def save_figure(fig: Figure, path: Path) -> None:
+    """Tighten, save, and close a matplotlib figure.
+
+    Args:
+        fig (Figure): Figure to save.
+        path (Path): Output file path.
+    """
     fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
 def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
+    """Normalize a PointView and return its tensor dict.
+
+    Args:
+        view (PointView): Point view to normalize.
+
+    Returns:
+        dict[str, torch.Tensor]: Dict with `coord`, `feat`, `offset`,
+        `grid_size`, `source_index`, `total_energy`, `patch_id`, and `mask`.
+    """
     normalized = normalize_point_view(view)
     return {
         "coord": normalized["coord"],
@@ -129,6 +174,12 @@ def normalize_tensor_view(view: PointView) -> dict[str, torch.Tensor]:
 
 
 def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
+    """3D scatter plot of raw calorimeter event geometry.
+
+    Args:
+        event (dict[str, Any]): Raw ColliderML event dict with `calo_hits`.
+        path (Path): Output PNG file path.
+    """
     calo_hits = event["calo_hits"]
     coord = np.stack(
         [to_numpy(calo_hits["z"]), to_numpy(calo_hits["x"]), to_numpy(calo_hits["y"])],
@@ -171,6 +222,12 @@ def plot_raw_geometry(event: dict[str, Any], path: Path) -> None:
 
 
 def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
+    """Histograms of raw calo energy and radius.
+
+    Args:
+        event (dict[str, Any]): Raw ColliderML event dict with `calo_hits`.
+        path (Path): Output PNG file path.
+    """
     calo_hits = event["calo_hits"]
     coord = torch.stack([calo_hits["x"], calo_hits["y"], calo_hits["z"]], dim=1)
     radius = torch.linalg.norm(coord, dim=1)
@@ -200,6 +257,12 @@ def plot_raw_scalars(event: dict[str, Any], path: Path) -> None:
 
 
 def plot_view_signal(view: PointView, path: Path) -> None:
+    """Plot model input feature summary (coords, energy, mask).
+
+    Args:
+        view (PointView): Point view to visualize.
+        path (Path): Output PNG file path.
+    """
     normalized_view = normalize_tensor_view(view)
     coord = to_numpy(normalized_view["coord"])
     total_energy = to_numpy(normalized_view["total_energy"])
@@ -249,9 +312,15 @@ def plot_view_signal(view: PointView, path: Path) -> None:
     save_figure(fig, path)
 
 
-def plot_augmentations(
-    base_view: PointView, aug_a: PointView, aug_b: PointView, path: Path
-) -> None:
+def plot_augmentations(base_view: PointView, aug_a: PointView, aug_b: PointView, path: Path) -> None:
+    """Plot base and two augmented views side by side.
+
+    Args:
+        base_view (PointView): Base point view.
+        aug_a (PointView): First augmented view.
+        aug_b (PointView): Second augmented view.
+        path (Path): Output PNG file path.
+    """
     views = [
         ("base", normalize_tensor_view(base_view)),
         ("aug A", normalize_tensor_view(aug_a)),
@@ -285,6 +354,14 @@ def plot_augmentation_delta(
     aug_b: PointView,
     path: Path,
 ) -> None:
+    """Plot augmentation deltas (coord displacement, energy perturbation).
+
+    Args:
+        base_view (PointView): Base point view.
+        aug_a (PointView): First augmented view.
+        aug_b (PointView): Second augmented view.
+        path (Path): Output PNG file path.
+    """
     normalized_base_view = normalize_tensor_view(base_view)
     normalized_aug_a = normalize_tensor_view(aug_a)
     normalized_aug_b = normalize_tensor_view(aug_b)
@@ -313,6 +390,12 @@ def plot_augmentation_delta(
 
 
 def plot_batch_summary(views: Sequence[PointView], path: Path) -> None:
+    """Bar chart of point counts per event in a representation batch.
+
+    Args:
+        views (Sequence[PointView]): List of point views.
+        path (Path): Output PNG file path.
+    """
     normalized_views = [normalize_tensor_view(view) for view in views]
     total_counts = [view["coord"].shape[0] for view in normalized_views]
     masked_counts = [int(view["mask"].sum().item()) for view in normalized_views]
@@ -351,6 +434,14 @@ def plot_logits(
     path: Path,
     top_k: int,
 ) -> None:
+    """Grouped bar chart of top-k prototype distributions.
+
+    Args:
+        student_probs (list[np.ndarray]): Student probability arrays.
+        teacher_probs (list[np.ndarray]): Teacher probability arrays.
+        path (Path): Output PNG file path.
+        top_k (int): Number of top prototypes to show.
+    """
     stacked = np.vstack(student_probs + teacher_probs)
     mean_scores = stacked.mean(axis=0)
     top_indices = np.argsort(mean_scores)[-top_k:]
@@ -377,21 +468,31 @@ def plot_logits(
 
 
 def jensen_shannon_divergence(prob_a: torch.Tensor, prob_b: torch.Tensor) -> float:
+    """Compute Jensen-Shannon divergence between two probability tensors.
+
+    Args:
+        prob_a (torch.Tensor): First probability distribution.
+        prob_b (torch.Tensor): Second probability distribution.
+
+    Returns:
+        float: The Jensen-Shannon divergence.
+    """
     mean_prob = 0.5 * (prob_a + prob_b)
-    js = 0.5 * F.kl_div(prob_a.log(), mean_prob, reduction="sum") + 0.5 * F.kl_div(
-        prob_b.log(), mean_prob, reduction="sum"
-    )
+    js = 0.5 * F.kl_div(prob_a.log(), mean_prob, reduction="sum") + 0.5 * F.kl_div(prob_b.log(), mean_prob, reduction="sum")
     return float(js.item())
 
 
-def embedding_cosine_similarity(
-    embedding_a: torch.Tensor, embedding_b: torch.Tensor
-) -> float:
-    return float(
-        F.cosine_similarity(
-            embedding_a.reshape(1, -1), embedding_b.reshape(1, -1), dim=1
-        ).item()
-    )
+def embedding_cosine_similarity(embedding_a: torch.Tensor, embedding_b: torch.Tensor) -> float:
+    """Cosine similarity between two flattened embedding tensors.
+
+    Args:
+        embedding_a (torch.Tensor): First embedding.
+        embedding_b (torch.Tensor): Second embedding.
+
+    Returns:
+        float: Cosine similarity in `[-1, 1]`.
+    """
+    return float(F.cosine_similarity(embedding_a.reshape(1, -1), embedding_b.reshape(1, -1), dim=1).item())
 
 
 def plot_view_agreement(
@@ -402,6 +503,16 @@ def plot_view_agreement(
     teacher_probs: list[torch.Tensor],
     path: Path,
 ) -> None:
+    """Plot embedding cosine similarity and JSD bar charts.
+
+    Args:
+        base_pooled (torch.Tensor): Base view pooled embedding.
+        aug_a_pooled (torch.Tensor): Augmented view A pooled embedding.
+        aug_b_pooled (torch.Tensor): Augmented view B pooled embedding.
+        student_probs (list[torch.Tensor]): Student probability distributions.
+        teacher_probs (list[torch.Tensor]): Teacher probability distributions.
+        path (Path): Output PNG file path.
+    """
     cosine_values = {
         "base vs aug A": embedding_cosine_similarity(base_pooled, aug_a_pooled),
         "base vs aug B": embedding_cosine_similarity(base_pooled, aug_b_pooled),
@@ -413,9 +524,7 @@ def plot_view_agreement(
     }
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].bar(
-        list(cosine_values.keys()), list(cosine_values.values()), color="tab:green"
-    )
+    axes[0].bar(list(cosine_values.keys()), list(cosine_values.values()), color="tab:green")
     axes[0].set_ylim(0.0, 1.05)
     axes[0].set_title("Embedding cosine similarity")
     axes[0].tick_params(axis="x", rotation=20)
@@ -425,9 +534,14 @@ def plot_view_agreement(
     save_figure(fig, path)
 
 
-def plot_embedding_pca(
-    embeddings: torch.Tensor, event_labels: list[str], path: Path
-) -> None:
+def plot_embedding_pca(embeddings: torch.Tensor, event_labels: list[str], path: Path) -> None:
+    """PCA scatter of pooled event embeddings.
+
+    Args:
+        embeddings (torch.Tensor): Pooled embeddings of shape `[N, D]`.
+        event_labels (list[str]): Per-event labels for annotation.
+        path (Path): Output PNG file path.
+    """
     projected = compute_pca(to_numpy(embeddings), n_components=2)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(
@@ -445,15 +559,19 @@ def plot_embedding_pca(
     save_figure(fig, path)
 
 
-def plot_point_feature_pca(
-    point_features: torch.Tensor, path: Path, max_points: int, seed: int
-) -> None:
+def plot_point_feature_pca(point_features: torch.Tensor, path: Path, max_points: int, seed: int) -> None:
+    """PCA scatter of subsampled backbone point features.
+
+    Args:
+        point_features (torch.Tensor): Per-point features of shape `[N, D]`.
+        path (Path): Output PNG file path.
+        max_points (int): Maximum points to plot (subsampled if exceeded).
+        seed (int): RNG seed for subsampling.
+    """
     point_features_np = to_numpy(point_features)
     if point_features_np.shape[0] > max_points:
         rng = np.random.default_rng(seed)
-        selected = np.sort(
-            rng.choice(point_features_np.shape[0], size=max_points, replace=False)
-        )
+        selected = np.sort(rng.choice(point_features_np.shape[0], size=max_points, replace=False))
     else:
         selected = np.arange(point_features_np.shape[0])
     projected = compute_pca(point_features_np[selected], n_components=2)
@@ -467,12 +585,24 @@ def plot_point_feature_pca(
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write a dict to a JSON file (sorted keys, indented).
+
+    Args:
+        path (Path): Output file path.
+        payload (dict[str, Any]): Data to serialize.
+    """
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def write_summary(
-    path: Path, device: torch.device, ran_model_plots: bool, weights_source: str
-) -> None:
+def write_summary(path: Path, device: torch.device, ran_model_plots: bool, weights_source: str) -> None:
+    """Write a human-readable diagnostics run summary text file.
+
+    Args:
+        path (Path): Output text file path.
+        device (torch.device): Device used for the run.
+        ran_model_plots (bool): Whether model-backed plots were generated.
+        weights_source (str): Description of the weights source.
+    """
     lines = [
         "ColliderFM diagnostics run",
         "",
@@ -489,20 +619,23 @@ def write_summary(
     path.write_text("\n".join(lines))
 
 
-def infer_metrics_path(
-    checkpoint_path: str | None, metrics_file: str | None
-) -> Path | None:
+def infer_metrics_path(checkpoint_path: str | None, metrics_file: str | None) -> Path | None:
+    """Infer `metrics.jsonl` path from a checkpoint path or explicit file.
+
+    Args:
+        checkpoint_path (str | None): Checkpoint path or None.
+        metrics_file (str | None): Explicit metrics file path, or None.
+
+    Returns:
+        Path | None: The metrics file path if found, else None.
+    """
     if metrics_file is not None:
         return Path(metrics_file)
     if checkpoint_path is None:
         return None
 
     checkpoint = Path(checkpoint_path)
-    run_dir = (
-        checkpoint.parent.parent
-        if checkpoint.parent.name == "checkpoints"
-        else checkpoint.parent
-    )
+    run_dir = checkpoint.parent.parent if checkpoint.parent.name == "checkpoints" else checkpoint.parent
     candidate = run_dir / "metrics.jsonl"
     if candidate.exists():
         return candidate
@@ -510,6 +643,14 @@ def infer_metrics_path(
 
 
 def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
+    """Load JSONL metric records from a file.
+
+    Args:
+        metrics_path (Path): Path to the JSONL metrics file.
+
+    Returns:
+        list[dict[str, Any]]: List of metric record dicts.
+    """
     records = []
     for line in metrics_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -519,9 +660,7 @@ def load_metric_records(metrics_path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _metric_series(
-    records: Sequence[dict[str, Any]], key: str, *, x_key: str = "epoch"
-) -> tuple[list[float], list[float]]:
+def _metric_series(records: Sequence[dict[str, Any]], key: str, *, x_key: str = "epoch") -> tuple[list[float], list[float]]:
     """Extract one metric series against an explicit x-axis key."""
 
     xs = []
@@ -535,6 +674,12 @@ def _metric_series(
 
 
 def plot_metric_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
+    """Plot train/val loss, prototype entropy, and embedding norm curves.
+
+    Args:
+        records (Sequence[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+    """
     fig, axes = plt.subplots(1, 3, figsize=(16, 4))
     curve_specs = [
         ("Loss", "train_loss", "val_loss"),
@@ -558,6 +703,12 @@ def plot_metric_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
 
 
 def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
+    """Plot learning rate, teacher momentum, and temperature schedules.
+
+    Args:
+        records (Sequence[dict[str, Any]]): Metric records.
+        path (Path): Output PNG file path.
+    """
     fig, axes = plt.subplots(1, 3, figsize=(16, 4))
     curve_specs = [
         ("Learning rate", "learning_rate"),
@@ -577,17 +728,14 @@ def plot_schedule_curves(records: Sequence[dict[str, Any]], path: Path) -> None:
 
 
 def main() -> None:
+    """CLI entry point: runs the full diagnostics pipeline."""
     cli_args = build_arg_parser().parse_args()
     project_config = load_project_config(cli_args.config, cli_args.overrides)
     data_config = project_config.data
     diagnostics_config = project_config.diagnostics
     set_seed(diagnostics_config.seed)
 
-    output_root = (
-        Path(diagnostics_config.get("output_dir"))
-        if diagnostics_config.get("output_dir") is not None
-        else default_output_dir()
-    )
+    output_root = Path(diagnostics_config.get("output_dir")) if diagnostics_config.get("output_dir") is not None else default_output_dir()
     output_dirs = ensure_output_dirs(output_root)
 
     device = resolve_device(diagnostics_config.device)
@@ -631,9 +779,7 @@ def main() -> None:
     plot_raw_geometry(detail_event, output_dirs["raw"] / "event_000_geometry.png")
     plot_raw_scalars(detail_event, output_dirs["raw"] / "event_000_scalars.png")
     plot_view_signal(base_view, output_dirs["views"] / "event_000_input_signal.png")
-    plot_augmentations(
-        base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentations.png"
-    )
+    plot_augmentations(base_view, aug_a, aug_b, output_dirs["views"] / "event_000_augmentations.png")
     plot_augmentation_delta(
         base_view,
         aug_a,
@@ -641,14 +787,9 @@ def main() -> None:
         output_dirs["views"] / "event_000_augmentation_delta.png",
     )
 
-    representation_views = [
-        build_point_view_from_event(event, device=device, **view_kwargs)
-        for event in representation_events
-    ]
+    representation_views = [build_point_view_from_event(event, device=device, **view_kwargs) for event in representation_events]
     normalized_base_view = normalize_tensor_view(base_view)
-    normalized_representation_views = [
-        normalize_tensor_view(view) for view in representation_views
-    ]
+    normalized_representation_views = [normalize_tensor_view(view) for view in representation_views]
     plot_batch_summary(representation_views, output_dirs["views"] / "batch_summary.png")
 
     model_artifact: dict[str, Any] = {
@@ -656,9 +797,7 @@ def main() -> None:
         "checkpoint_path": diagnostics_config.get("checkpoint"),
         "metrics_path": diagnostics_config.get("metrics_file"),
         "model_plots_generated": False,
-        "weights_source": "fresh initialization"
-        if diagnostics_config.get("checkpoint") is None
-        else f"checkpoint: {diagnostics_config.checkpoint}",
+        "weights_source": "fresh initialization" if diagnostics_config.get("checkpoint") is None else f"checkpoint: {diagnostics_config.checkpoint}",
     }
     tensor_artifact: dict[str, Any] = {
         "detail_event": {
@@ -668,28 +807,17 @@ def main() -> None:
         },
         "representation_sample": {
             "num_events": len(normalized_representation_views),
-            "point_counts": [
-                int(view["coord"].shape[0]) for view in normalized_representation_views
-            ],
-            "masked_counts": [
-                int(view["mask"].sum().item())
-                for view in normalized_representation_views
-            ],
+            "point_counts": [int(view["coord"].shape[0]) for view in normalized_representation_views],
+            "masked_counts": [int(view["mask"].sum().item()) for view in normalized_representation_views],
         },
     }
 
-    metrics_path = infer_metrics_path(
-        diagnostics_config.get("checkpoint"), diagnostics_config.get("metrics_file")
-    )
+    metrics_path = infer_metrics_path(diagnostics_config.get("checkpoint"), diagnostics_config.get("metrics_file"))
     if metrics_path is not None and metrics_path.exists():
         metric_records = load_metric_records(metrics_path)
         if metric_records:
-            plot_metric_curves(
-                metric_records, output_dirs["model"] / "training_metrics.png"
-            )
-            plot_schedule_curves(
-                metric_records, output_dirs["model"] / "training_schedules.png"
-            )
+            plot_metric_curves(metric_records, output_dirs["model"] / "training_metrics.png")
+            plot_schedule_curves(metric_records, output_dirs["model"] / "training_schedules.png")
             model_artifact["metrics_path"] = str(metrics_path)
             model_artifact["num_metric_records"] = len(metric_records)
 
@@ -702,9 +830,7 @@ def main() -> None:
             if diagnostics_config.get("checkpoint") is not None
             else create_small_model(
                 device=device,
-                **model_factory_kwargs(
-                    select_model_config(project_config, "diagnostics")
-                ),
+                **model_factory_kwargs(select_model_config(project_config, "diagnostics")),
             )
         )
         checkpoint_artifact = None
@@ -720,9 +846,7 @@ def main() -> None:
             }
         )
 
-        detail_base_encoding = encode_view(
-            model, normalized_base_view, use_teacher=False
-        )
+        detail_base_encoding = encode_view(model, normalized_base_view, use_teacher=False)
         normalized_aug_a = normalize_tensor_view(aug_a)
         normalized_aug_b = normalize_tensor_view(aug_b)
         detail_aug_a_student = encode_view(model, normalized_aug_a, use_teacher=False)
@@ -754,16 +878,9 @@ def main() -> None:
             output_dirs["model"] / "event_000_view_agreement.png",
         )
 
-        representation_batch = normalize_tensor_view(
-            batch_point_views(normalized_representation_views)
-        )
-        representation_encoding = encode_view(
-            model, representation_batch, use_teacher=False
-        )
-        event_labels = [
-            f"event_{index:03d}"
-            for index in range(representation_encoding["pooled"].shape[0])
-        ]
+        representation_batch = normalize_tensor_view(batch_point_views(normalized_representation_views))
+        representation_encoding = encode_view(model, representation_batch, use_teacher=False)
+        event_labels = [f"event_{index:03d}" for index in range(representation_encoding["pooled"].shape[0])]
         plot_embedding_pca(
             representation_encoding["pooled"],
             event_labels,
@@ -787,15 +904,11 @@ def main() -> None:
         tensor_artifact["representation_sample"].update(
             {
                 "pooled_embeddings": tensor_summary(representation_encoding["pooled"]),
-                "point_features": tensor_summary(
-                    representation_encoding["point_features"]
-                ),
+                "point_features": tensor_summary(representation_encoding["point_features"]),
             }
         )
     else:
-        print(
-            "Skipping model-backed plots because the current PTv3/spconv path requires CUDA."
-        )
+        print("Skipping model-backed plots because the current PTv3/spconv path requires CUDA.")
 
     write_json(
         output_dirs["artifacts"] / "run_config.json",

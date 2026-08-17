@@ -118,6 +118,7 @@ Self-distillation pretraining on ColliderML Release 1 (calo-only, `CERN/Collider
 
 ### Code documentation
 - Document code using Google style docstrings. Docstrings should be concrete and concise.
+- When changing a function's signature, behavior, or return value, update its docstring in the same commit.
 - Clear, concise inline code comments should be used where code is difficult to understand or where choices need particular motivation. Do not use excessively.
 
 ### Hard rules

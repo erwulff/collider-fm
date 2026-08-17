@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,28 +40,56 @@ from .project_config import (
 from .sonata_model import CosineScheduler
 from .views import build_sonata_batch, move_sonata_batch_to_device
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
-    """Unwrap a DDP-wrapped model to access the underlying module."""
+    """Unwrap a DDP-wrapped model to access the underlying module.
+
+    Args:
+        model (torch.nn.Module): Potentially DDP-wrapped model.
+
+    Returns:
+        torch.nn.Module: The underlying module (or `model` itself if not
+        wrapped).
+    """
     if isinstance(model, DistributedDataParallel):
         return model.module
     return model
 
 
 def is_main_process() -> bool:
-    """True on rank 0 (or in non-distributed mode)."""
+    """Return True on rank 0 (or in non-distributed mode).
+
+    Returns:
+        bool: True if this is the main process.
+    """
     return ray.train.get_context().get_world_rank() == 0
 
 
 def learning_rate(optimizer: AdamW) -> float:
+    """Return the current learning rate from the optimizer's first param group.
+
+    Args:
+        optimizer (AdamW): The optimizer.
+
+    Returns:
+        float: The current learning rate.
+    """
     return float(optimizer.param_groups[0]["lr"])
 
 
 def mixed_precision_name(dtype: torch.dtype | None) -> str:
+    """Return a human-readable name for a mixed-precision dtype.
+
+    Args:
+        dtype (torch.dtype | None): The mixed-precision dtype, or None.
+
+    Returns:
+        str: `"none"`, `"bf16"`, `"fp16"`, or the stringified dtype.
+    """
     if dtype is None:
         return "none"
     if dtype is torch.bfloat16:
@@ -70,9 +99,21 @@ def mixed_precision_name(dtype: torch.dtype | None) -> str:
     return str(dtype)
 
 
-def resolve_mixed_precision_dtype(
-    training_config: DictConfig, device: torch.device
-) -> torch.dtype | None:
+def resolve_mixed_precision_dtype(training_config: DictConfig, device: torch.device) -> torch.dtype | None:
+    """Resolve the torch dtype for mixed precision from config and device capability.
+
+    Args:
+        training_config (DictConfig): Training config with a `mixed_precision`
+            field.
+        device (torch.device): Target device.
+
+    Returns:
+        torch.dtype | None: The resolved dtype, or None if mixed precision is
+        disabled or unsupported on this device.
+
+    Raises:
+        ValueError: If `mixed_precision` is an unsupported mode.
+    """
     mode = str(training_config.get("mixed_precision", "none")).lower()
     if mode == "none":
         return None
@@ -87,28 +128,45 @@ def resolve_mixed_precision_dtype(
     raise ValueError(f"Unsupported mixed_precision: {mode}")
 
 
-def resolve_epoch_batch_limit(
-    dataloader: DataLoader, requested_max_batches: int | None, phase: str
-) -> int:
+def resolve_epoch_batch_limit(dataloader: DataLoader, requested_max_batches: int | None, phase: str) -> int:
+    """Clamp a requested `max_batches` against the dataloader length and validate.
+
+    Args:
+        dataloader (DataLoader): The dataloader to measure.
+        requested_max_batches (int | None): Requested batch limit, or None for
+            all batches.
+        phase (str): Phase name for error messages (e.g. `"train"`, `"val"`).
+
+    Returns:
+        int: The resolved batch count.
+
+    Raises:
+        ValueError: If the dataloader has zero batches, or if
+            `requested_max_batches` is not positive.
+    """
     total_batches = len(dataloader)
     if total_batches <= 0:
         raise ValueError(f"The {phase} dataloader produced zero batches.")
     if requested_max_batches is None:
         return total_batches
     if requested_max_batches <= 0:
-        raise ValueError(
-            f"{phase} max_batches must be positive or None, got {requested_max_batches}."
-        )
+        raise ValueError(f"{phase} max_batches must be positive or None, got {requested_max_batches}.")
     return min(total_batches, requested_max_batches)
 
 
-def build_optimizer_param_groups(
-    model: torch.nn.Module, weight_decay: float
-) -> list[dict[str, Any]]:
+def build_optimizer_param_groups(model: torch.nn.Module, weight_decay: float) -> list[dict[str, Any]]:
     """Build optimizer param groups with WD exclusion for bias/norm/1D params.
 
     Matches pimm's WeightDecayExclusion: bias, norm, gamma, token, and 1D
     parameters are excluded from weight decay.
+
+    Args:
+        model (torch.nn.Module): The model (may be DDP-wrapped).
+        weight_decay (float): Weight decay for the decay group.
+
+    Returns:
+        list[dict[str, Any]]: Two param groups: decay and no-decay, each with
+        an `apply_wd` flag for the WD scheduler.
     """
     base = unwrap_model(model)
     decay_params: list[torch.Tensor] = []
@@ -116,13 +174,7 @@ def build_optimizer_param_groups(
     for name, param in base.named_parameters():
         if not param.requires_grad:
             continue
-        if (
-            name.endswith(".bias")
-            or "norm" in name.lower()
-            or "gamma" in name.lower()
-            or "token" in name.lower()
-            or param.ndim == 1
-        ):
+        if name.endswith(".bias") or "norm" in name.lower() or "gamma" in name.lower() or "token" in name.lower() or param.ndim == 1:
             no_decay_params.append(param)
         else:
             decay_params.append(param)
@@ -133,7 +185,15 @@ def build_optimizer_param_groups(
 
 
 def step_weight_decay(optimizer: AdamW, wd_scheduler: CosineScheduler) -> float:
-    """Advance the WD scheduler and update applicable param groups."""
+    """Advance the WD scheduler and update applicable param groups.
+
+    Args:
+        optimizer (AdamW): The optimizer with `apply_wd`-tagged param groups.
+        wd_scheduler (CosineScheduler): The weight decay scheduler.
+
+    Returns:
+        float: The new weight decay value.
+    """
     wd = wd_scheduler.step()
     for group in optimizer.param_groups:
         if group.get("apply_wd", False):
@@ -145,31 +205,75 @@ def step_weight_decay(optimizer: AdamW, wd_scheduler: CosineScheduler) -> float:
 # Metric helpers
 # ---------------------------------------------------------------------------
 
+
 def prototype_usage(logits: torch.Tensor, num_prototypes: int) -> torch.Tensor:
+    """Return normalized prototype assignment counts from argmax of logits.
+
+    Args:
+        logits (torch.Tensor): Prototype logits of shape `[N, num_prototypes]`.
+        num_prototypes (int): Number of prototypes.
+
+    Returns:
+        torch.Tensor: Normalized usage distribution of shape `[num_prototypes]`.
+    """
     assignments = logits.argmax(dim=-1)
     counts = torch.bincount(assignments, minlength=num_prototypes).to(dtype=torch.float32)
     return counts / counts.sum().clamp_min(1.0)
 
 
 def prototype_entropy(probabilities: torch.Tensor) -> float:
+    """Return the Shannon entropy of a prototype usage distribution.
+
+    Args:
+        probabilities (torch.Tensor): Usage probabilities of shape
+            `[num_prototypes]`.
+
+    Returns:
+        float: Entropy `-sum p log p` (max = `log(K)`).
+    """
     p = probabilities.clamp_min(1.0e-8)
     return float(-(p * p.log()).sum().item())
 
 
 def embedding_norm(embeddings: torch.Tensor | None) -> float:
+    """Return the mean L2 norm of embeddings (0 if None or empty).
+
+    Args:
+        embeddings (torch.Tensor | None): Embeddings of shape `[N, D]`, or None.
+
+    Returns:
+        float: Mean L2 norm across the last dimension.
+    """
     if embeddings is None or embeddings.numel() == 0:
         return 0.0
     return float(embeddings.norm(dim=-1).mean().item())
 
 
 def feature_std(features: torch.Tensor | None) -> float:
+    """Return the mean per-feature standard deviation (0 if None or empty).
+
+    Args:
+        features (torch.Tensor | None): Features of shape `[N, D]`, or None.
+
+    Returns:
+        float: Mean standard deviation across the feature dimension.
+    """
     if features is None or features.numel() == 0:
         return 0.0
     return float(features.std(dim=0).mean().item())
 
 
 def reduce_scalar(value: float, device: torch.device) -> float:
-    """All-reduce a scalar across ranks and return the sum."""
+    """All-reduce a scalar across DDP ranks and return the sum.
+
+    Args:
+        value (float): Local scalar value.
+        device (torch.device): Device for the reduction tensor.
+
+    Returns:
+        float: The summed value across all ranks (or `value` if not
+        distributed).
+    """
     if dist.is_available() and dist.is_initialized():
         tensor = torch.tensor(value, device=device)
         dist.all_reduce(tensor)
@@ -181,7 +285,16 @@ def reduce_scalar(value: float, device: torch.device) -> float:
 # Visualization helpers
 # ---------------------------------------------------------------------------
 
+
 def fig_to_numpy(fig: plt.Figure) -> np.ndarray:
+    """Render a matplotlib figure to an RGB numpy array.
+
+    Args:
+        fig (plt.Figure): Matplotlib figure to render.
+
+    Returns:
+        np.ndarray: RGB image array of shape `[H, W, 3]`.
+    """
     fig.canvas.draw()
     buf = np.asarray(fig.canvas.buffer_rgba())
     plt.close(fig)
@@ -189,6 +302,16 @@ def fig_to_numpy(fig: plt.Figure) -> np.ndarray:
 
 
 def plot_prototype_usage(logits: torch.Tensor, num_prototypes: int, step: int) -> np.ndarray:
+    """Bar chart of sorted prototype occupancy (log scale) as an RGB array.
+
+    Args:
+        logits (torch.Tensor): Prototype logits of shape `[N, num_prototypes]`.
+        num_prototypes (int): Number of prototypes.
+        step (int): Current step (for the title).
+
+    Returns:
+        np.ndarray: RGB image of the bar chart.
+    """
     assignments = logits.argmax(dim=-1)
     counts = torch.bincount(assignments, minlength=num_prototypes).cpu().numpy()
     sorted_counts = np.sort(counts)[::-1]
@@ -203,14 +326,22 @@ def plot_prototype_usage(logits: torch.Tensor, num_prototypes: int, step: int) -
 
 
 def plot_cosine_similarity_histogram(sims: torch.Tensor, step: int) -> np.ndarray:
+    """Histogram of teacher-student cosine similarities as an RGB array.
+
+    Args:
+        sims (torch.Tensor): Cosine similarity values, shape `[N]`.
+        step (int): Current step (for the title).
+
+    Returns:
+        np.ndarray: RGB image of the histogram.
+    """
     sims_np = sims.cpu().numpy()
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.hist(sims_np, bins=50, range=(-1.0, 1.0), edgecolor="black", linewidth=0.3)
     ax.set_xlabel("Cosine similarity (teacher vs student)")
     ax.set_ylabel("Number of matched points")
     ax.set_title(f"Teacher-student alignment — step {step}")
-    ax.axvline(sims_np.mean(), color="red", linestyle="--", linewidth=1,
-               label=f"mean={sims_np.mean():.3f}")
+    ax.axvline(sims_np.mean(), color="red", linestyle="--", linewidth=1, label=f"mean={sims_np.mean():.3f}")
     ax.legend()
     fig.tight_layout()
     return fig_to_numpy(fig)
@@ -224,6 +355,21 @@ def plot_views_and_mask(
     local_offset: torch.Tensor,
     step: int,
 ) -> np.ndarray:
+    """3D scatter of global/local views and masked points as an RGB array.
+
+    Args:
+        global_origin_coord (torch.Tensor): Global view origin coordinates,
+            shape `[N_g, 3]`.
+        global_offset (torch.Tensor): Global view cumulative boundaries.
+        global_mask (torch.Tensor): Boolean mask over global points.
+        local_origin_coord (torch.Tensor): Local view origin coordinates,
+            shape `[N_l, 3]`.
+        local_offset (torch.Tensor): Local view cumulative boundaries.
+        step (int): Current step (for the title).
+
+    Returns:
+        np.ndarray: RGB image of the 3D scatter plot.
+    """
     g_end = global_offset[0].item()
     l_end = local_offset[0].item()
     g_coords = global_origin_coord[:g_end].cpu().numpy()
@@ -231,15 +377,14 @@ def plot_views_and_mask(
     g_mask = global_mask[:g_end].cpu().numpy()
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(g_coords[:, 0], g_coords[:, 1], g_coords[:, 2],
-               c="lightgrey", s=1, alpha=0.3, label="Global view")
+    ax.scatter(g_coords[:, 0], g_coords[:, 1], g_coords[:, 2], c="lightgrey", s=1, alpha=0.3, label="Global view")
     if g_mask.any():
-        ax.scatter(g_coords[g_mask, 0], g_coords[g_mask, 1], g_coords[g_mask, 2],
-                   c="red", s=2, alpha=0.5, label="Masked")
-    ax.scatter(l_coords[:, 0], l_coords[:, 1], l_coords[:, 2],
-               c="blue", s=3, alpha=0.6, label="Local views")
+        ax.scatter(g_coords[g_mask, 0], g_coords[g_mask, 1], g_coords[g_mask, 2], c="red", s=2, alpha=0.5, label="Masked")
+    ax.scatter(l_coords[:, 0], l_coords[:, 1], l_coords[:, 2], c="blue", s=3, alpha=0.6, label="Local views")
     ax.view_init(elev=20, azim=45)
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
     ax.set_title(f"Views + mask — step {step}")
     ax.legend(loc="upper right")
     fig.tight_layout()
@@ -270,7 +415,24 @@ def save_checkpoint_to_dir(
     best_val_loss: float,
     wd_scheduler_iter: int | None = None,
 ) -> None:
-    """Write the canonical checkpoint payload into *directory*."""
+    """Write the canonical checkpoint payload into `directory`.
+
+    Saves model state, optimizer state, LR scheduler state, optional grad
+    scaler state, and training state (epoch, global_step, best_val_loss, Sonata
+    schedule values).
+
+    Args:
+        directory (Path): Target checkpoint directory.
+        model (torch.nn.Module): Model (may be DDP-wrapped).
+        optimizer (AdamW): Optimizer.
+        lr_scheduler (OneCycleLR): LR scheduler.
+        grad_scaler (torch.amp.GradScaler | None): Grad scaler, or None.
+        epoch (int): Next epoch to run.
+        global_step (int): Total steps completed.
+        best_val_loss (float): Best validation loss so far.
+        wd_scheduler_iter (int | None, optional): Weight decay scheduler
+            iteration. Defaults to None.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
     torch.save(base_model.state_dict(), directory / CHECKPOINT_FILES["model"])
@@ -283,9 +445,7 @@ def save_checkpoint_to_dir(
         val = getattr(base_model, attr, None)
         if val is not None:
             sonata_state[attr] = float(val)
-    for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler",
-                       "teacher_temp_scheduler", "momentum_scheduler",
-                       "mask_jitter_scheduler"):
+    for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler", "teacher_temp_scheduler", "momentum_scheduler", "mask_jitter_scheduler"):
         sched = getattr(base_model, sched_name, None)
         if sched is not None:
             sonata_state[f"{sched_name}_iter"] = sched.iter
@@ -310,36 +470,33 @@ def load_checkpoint_from_dir(
     lr_scheduler: OneCycleLR,
     grad_scaler: torch.amp.GradScaler | None,
 ) -> tuple[int, int, float, int | None]:
-    """Restore model/optimizer/scheduler/scaler from *directory*.
+    """Restore model/optimizer/scheduler/scaler from `directory`.
 
-    Returns (epoch, global_step, best_val_loss, wd_scheduler_iter).
+    Args:
+        directory (Path): Checkpoint directory to load from.
+        model (torch.nn.Module): Model (may be DDP-wrapped).
+        optimizer (AdamW): Optimizer to restore state into.
+        lr_scheduler (OneCycleLR): LR scheduler to restore state into.
+        grad_scaler (torch.amp.GradScaler | None): Grad scaler, or None.
+
+    Returns:
+        tuple[int, int, float, int | None]: `(epoch, global_step,
+        best_val_loss, wd_scheduler_iter)`.
     """
     base_model = unwrap_model(model)
-    base_model.load_state_dict(
-        torch.load(directory / CHECKPOINT_FILES["model"], map_location="cpu", weights_only=True)
-    )
-    optimizer.load_state_dict(
-        torch.load(directory / CHECKPOINT_FILES["optimizer"], map_location="cpu", weights_only=True)
-    )
-    lr_scheduler.load_state_dict(
-        torch.load(directory / CHECKPOINT_FILES["lr_scheduler"], map_location="cpu", weights_only=True)
-    )
+    base_model.load_state_dict(torch.load(directory / CHECKPOINT_FILES["model"], map_location="cpu", weights_only=True))
+    optimizer.load_state_dict(torch.load(directory / CHECKPOINT_FILES["optimizer"], map_location="cpu", weights_only=True))
+    lr_scheduler.load_state_dict(torch.load(directory / CHECKPOINT_FILES["lr_scheduler"], map_location="cpu", weights_only=True))
     scaler_path = directory / CHECKPOINT_FILES["scaler"]
     if grad_scaler is not None and scaler_path.exists():
-        grad_scaler.load_state_dict(
-            torch.load(scaler_path, map_location="cpu", weights_only=True)
-        )
-    training_state = torch.load(
-        directory / CHECKPOINT_FILES["training_state"], map_location="cpu", weights_only=True
-    )
+        grad_scaler.load_state_dict(torch.load(scaler_path, map_location="cpu", weights_only=True))
+    training_state = torch.load(directory / CHECKPOINT_FILES["training_state"], map_location="cpu", weights_only=True)
     sonata_state = training_state.get("sonata_state", {})
     base_model = unwrap_model(model)
     for attr in ("mask_size", "mask_ratio", "teacher_temp", "momentum", "mask_jitter"):
         if attr in sonata_state:
             setattr(base_model, attr, sonata_state[attr])
-    for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler",
-                       "teacher_temp_scheduler", "momentum_scheduler",
-                       "mask_jitter_scheduler"):
+    for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler", "teacher_temp_scheduler", "momentum_scheduler", "mask_jitter_scheduler"):
         key = f"{sched_name}_iter"
         if key in sonata_state:
             sched = getattr(base_model, sched_name, None)
@@ -356,6 +513,7 @@ def load_checkpoint_from_dir(
 # ---------------------------------------------------------------------------
 # Dataloader factory
 # ---------------------------------------------------------------------------
+
 
 def _make_worker_init_fn(base_seed: int):
     """Return a DataLoader worker_init_fn that seeds each worker distinctly.
@@ -375,6 +533,20 @@ def _make_worker_init_fn(base_seed: int):
 
 
 def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoader:
+    """Build a DataLoader for a split with optional worker-side view building.
+
+    When `num_workers > 0`, views are built in worker processes via
+    `ViewBuildingCollate` to overlap with GPU compute. Otherwise, raw event
+    lists are collated and views are built on the main process.
+
+    Args:
+        config (DictConfig): Full project config.
+        split (str): Dataset split alias.
+        shuffle (bool): Whether to shuffle the dataset.
+
+    Returns:
+        DataLoader: Configured DataLoader.
+    """
     data_config = config.data
     training_config = config.training
     dataset = ColliderMLDataset(
@@ -393,11 +565,7 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
     # with GPU compute (and the Ceph reads) instead of serializing on the main
     # process.
     if num_workers > 0:
-        collate = ViewBuildingCollate(
-            sonata_batch_kwargs(
-                config, "training", max_calo_hits=config.views.max_calo_hits
-            )
-        )
+        collate = ViewBuildingCollate(sonata_batch_kwargs(config, "training", max_calo_hits=config.views.max_calo_hits))
     else:
         collate = collate_fn
     dataloader_kwargs: dict[str, Any] = {
@@ -412,9 +580,7 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
         dataloader_kwargs["prefetch_factor"] = training_config.prefetch_factor
         # Seed each worker distinctly so the torch.rand/randint calls in view
         # construction diverge across workers and epochs.
-        base_seed = int(training_config.get("seed", 42)) + int(
-            ray.train.get_context().get_world_rank()
-        )
+        base_seed = int(training_config.get("seed", 42)) + int(ray.train.get_context().get_world_rank())
         dataloader_kwargs["worker_init_fn"] = _make_worker_init_fn(base_seed)
     return DataLoader(dataset, **dataloader_kwargs)
 
@@ -422,6 +588,7 @@ def create_dataloader(config: DictConfig, split: str, shuffle: bool) -> DataLoad
 # ---------------------------------------------------------------------------
 # Epoch runner
 # ---------------------------------------------------------------------------
+
 
 def run_epoch(
     model: torch.nn.Module,
@@ -442,7 +609,39 @@ def run_epoch(
     clip_grad: float = float("inf"),
     wd_scheduler: CosineScheduler | None = None,
 ) -> tuple[dict[str, float], int]:
-    """Run one train or validation epoch, rank-safe under DDP."""
+    """Run one train or validation epoch, rank-safe under DDP.
+
+    Args:
+        model (torch.nn.Module): Model (may be DDP-wrapped).
+        dataloader (DataLoader): Dataloader for this epoch.
+        device (torch.device): Compute device.
+        optimizer (AdamW | None): Optimizer (None for validation).
+        lr_scheduler (OneCycleLR | None): LR scheduler (None for validation).
+        grad_scaler (Any): Grad scaler (None for validation).
+        mixed_precision_dtype (torch.dtype | None): AMP dtype, or None.
+        max_batches (int): Maximum batches to process.
+        batch_kwargs (dict[str, Any]): Keyword arguments for
+            `build_sonata_batch` (used when collate returns raw events).
+        phase (str): Phase name (`"train"` or `"val"`).
+        logger (Any, optional): Experiment logger. Defaults to None.
+        log_every_n_steps (int | None, optional): Step logging interval.
+            Defaults to None.
+        viz_every_n_steps (int | None, optional): Visualization interval.
+            Defaults to None.
+        epoch_index (int, optional): Current epoch index. Defaults to 0.
+        global_step_offset (int, optional): Global step at epoch start.
+            Defaults to 0.
+        clip_grad (float, optional): Gradient clipping norm. Defaults to inf.
+        wd_scheduler (CosineScheduler | None, optional): Weight decay
+            scheduler. Defaults to None.
+
+    Returns:
+        tuple[dict[str, float], int]: Averaged epoch metrics and the number of
+        batches processed.
+
+    Raises:
+        ValueError: If no batches were processed.
+    """
 
     world_size = ray.train.get_context().get_world_size()
     is_training = optimizer is not None
@@ -463,10 +662,7 @@ def run_epoch(
     last_viz_step = global_step_offset
 
     progress_bar = (
-        tqdm(range(max_batches), total=max_batches, desc=phase,
-             leave=True, dynamic_ncols=False, ascii=True)
-        if is_main_process()
-        else range(max_batches)
+        tqdm(range(max_batches), total=max_batches, desc=phase, leave=True, dynamic_ncols=False, ascii=True) if is_main_process() else range(max_batches)
     )
 
     data_iter = iter(dataloader)
@@ -514,9 +710,12 @@ def run_epoch(
             if grad_scaler is not None and grad_scaler.is_enabled():
                 grad_scaler.scale(loss).backward()
                 grad_scaler.unscale_(optimizer)
-                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), clip_grad,
-                ).item())
+                batch_grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        clip_grad,
+                    ).item()
+                )
                 grad_scaler.step(optimizer)
                 old_scale = grad_scaler.get_scale()
                 grad_scaler.update()
@@ -524,18 +723,18 @@ def run_epoch(
                     lr_scheduler.step()
             else:
                 loss.backward()
-                batch_grad_norm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), clip_grad,
-                ).item())
+                batch_grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        clip_grad,
+                    ).item()
+                )
                 optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
             base_model.update_teacher(momentum=None)
 
-        num_prototypes = int(getattr(base_model, "num_prototypes",
-                                     monitor_logits.shape[-1]
-                                     if monitor_logits is not None and monitor_logits.ndim == 2
-                                     else 1))
+        num_prototypes = int(getattr(base_model, "num_prototypes", monitor_logits.shape[-1] if monitor_logits is not None and monitor_logits.ndim == 2 else 1))
         if monitor_logits is None:
             monitor_logits = loss.new_zeros((1, num_prototypes))
         usage = prototype_usage(monitor_logits, num_prototypes=num_prototypes)
@@ -635,8 +834,18 @@ def run_epoch(
 # Ray Train worker entrypoint
 # ---------------------------------------------------------------------------
 
+
 def train_loop_per_worker(train_loop_config: dict) -> None:
-    """Ray Train worker function — runs on each GPU rank."""
+    """Ray Train worker function — runs the full training loop on each GPU rank.
+
+    Sets up dataloaders, model, optimizer, LR/WD/schedules, resumes from
+    checkpoint if available, then runs the epoch loop with periodic logging,
+    visualization, and checkpointing.
+
+    Args:
+        train_loop_config (dict): Full training config as a plain dict
+            (converted to OmegaConf internally).
+    """
     config = OmegaConf.create(train_loop_config)
     training_config = config.training
 
@@ -658,15 +867,13 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     val_loader = ray.train.torch.prepare_data_loader(val_loader, move_to_device=False)
 
     batch_kwargs = sonata_batch_kwargs(
-        config, "training", max_calo_hits=config.views.max_calo_hits,
+        config,
+        "training",
+        max_calo_hits=config.views.max_calo_hits,
     )
 
-    max_train_batches = resolve_epoch_batch_limit(
-        train_loader, training_config.max_train_batches, "train"
-    )
-    max_val_batches = resolve_epoch_batch_limit(
-        val_loader, training_config.max_val_batches, "val"
-    )
+    max_train_batches = resolve_epoch_batch_limit(train_loader, training_config.max_train_batches, "train")
+    max_val_batches = resolve_epoch_batch_limit(val_loader, training_config.max_val_batches, "val")
 
     # Run directory & logging — only rank 0 creates real artifacts
     run_dir: Path | None = None
@@ -688,12 +895,8 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
         write_run_config(run_dir, run_config_dict)
         logger.log_params(run_config_dict)
         # Write a hint so downstream tools can find the Ray checkpoint directory
-        storage_path = training_config.get(
-            "ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/"
-        )
-        (run_dir / "checkpoint_path.txt").write_text(
-            str(Path(storage_path) / run_name) + "\n"
-        )
+        storage_path = training_config.get("ray_storage_path", "/mnt/ceph/users/ewulff/raytrain_results/")
+        (run_dir / "checkpoint_path.txt").write_text(str(Path(storage_path) / run_name) + "\n")
 
     mixed_precision_dtype = resolve_mixed_precision_dtype(training_config, device)
 
@@ -709,9 +912,7 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     )
     base_model = unwrap_model(model)
 
-    grad_scaler = torch.amp.GradScaler(
-        "cuda", enabled=mixed_precision_dtype is torch.float16
-    )
+    grad_scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision_dtype is torch.float16)
     if is_rank0:
         print(f"Mixed precision: {mixed_precision_name(mixed_precision_dtype)}")
         print(f"Flash attention: {base_model.flash_attention_enabled} ({base_model.flash_attention_backend})")
@@ -744,7 +945,11 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
     if checkpoint is not None:
         with checkpoint.as_directory() as checkpoint_dir:
             start_epoch, global_step, best_val_loss, wd_scheduler_iter = load_checkpoint_from_dir(
-                Path(checkpoint_dir), model, optimizer, lr_scheduler, grad_scaler,
+                Path(checkpoint_dir),
+                model,
+                optimizer,
+                lr_scheduler,
+                grad_scaler,
             )
         if is_rank0:
             print(f"Resumed from checkpoint: epoch={start_epoch}, step={global_step}")
@@ -765,15 +970,14 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
         with checkpoint.as_directory() as checkpoint_dir:
             ts = torch.load(
                 Path(checkpoint_dir) / CHECKPOINT_FILES["training_state"],
-                map_location="cpu", weights_only=True,
+                map_location="cpu",
+                weights_only=True,
             )
             sonata_state = ts.get("sonata_state", {})
             for attr in ("mask_size", "mask_ratio", "teacher_temp", "momentum", "mask_jitter"):
                 if attr in sonata_state:
                     setattr(base_model, attr, sonata_state[attr])
-            for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler",
-                               "teacher_temp_scheduler", "momentum_scheduler",
-                               "mask_jitter_scheduler"):
+            for sched_name in ("mask_size_scheduler", "mask_ratio_scheduler", "teacher_temp_scheduler", "momentum_scheduler", "mask_jitter_scheduler"):
                 key = f"{sched_name}_iter"
                 if key in sonata_state:
                     sched = getattr(base_model, sched_name, None)
@@ -863,7 +1067,11 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                 ray_checkpoint = None
                 if is_rank0:
                     save_checkpoint_to_dir(
-                        Path(tmpdir), model, optimizer, lr_scheduler, grad_scaler,
+                        Path(tmpdir),
+                        model,
+                        optimizer,
+                        lr_scheduler,
+                        grad_scaler,
                         epoch=epoch + 1,  # + 1 because training_state.epoch is the next epoch to run
                         global_step=global_step,
                         best_val_loss=best_val_loss,

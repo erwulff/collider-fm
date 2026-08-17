@@ -2,10 +2,10 @@
 
 Loads the raw ColliderML ``calo_hits`` config (preserving ``contrib_particle_ids`` /
 ``contrib_energies`` that :class:`ColliderMLDataset` drops via ``select_columns``) and
-derives the contributor / dominance distribution that characterizes the oracle
-label's noisiness: shared calorimeter cells accumulate contributors from showering, so
-a per-hit "which particle made this hit" label is only clean for the majority of hits
-with a single dominant contributor.
+derives the contributor / dominance distribution that characterizes the
+dominant-particle label's noisiness: shared calorimeter cells accumulate
+contributors from showering, so a per-hit "which particle made this hit" label is
+only clean for the majority of hits with a single dominant contributor.
 
 This is a pure-data report -- it does not touch the backbone and is independent of the
 checkpoint, so it documents the label-noise floor of the held-out subset rather than
@@ -38,9 +38,25 @@ def load_calo_truth(
 ) -> Any:
     """Load the raw calo_hits config preserving the truth columns.
 
-    This mirrors :class:`ColliderMLDataset`'s ``load_dataset`` call but skips
-    ``select_columns``, so ``contrib_particle_ids`` / ``contrib_energies`` /
-    ``event_id`` are exposed alongside ``x/y/z/total_energy``.
+    This mirrors `ColliderMLDataset`'s `load_dataset` call but skips
+    `select_columns`, so `contrib_particle_ids` / `contrib_energies` /
+    `event_id` are exposed alongside `x/y/z/total_energy`.
+
+    Args:
+        split (str): Project split alias (e.g. `"val"` or `"val[:100]"`).
+        dataset_name (str, optional): Hugging Face dataset name. Defaults to
+            `"CERN/ColliderML-Release-1"`.
+        dataset_type (str, optional): Dataset type. Defaults to `"ttbar"`.
+        pu_config (str, optional): Pile-up config. Defaults to `"pu0"`.
+        cache_dir (str, optional): HF cache directory. Defaults to the cluster
+            path.
+        dataset_revision (str | None, optional): HF dataset revision. Defaults
+            to None.
+        local_files_only (bool, optional): Whether to load from cache only.
+            Defaults to False.
+
+    Returns:
+        Any: The raw Hugging Face `Dataset` with truth columns preserved.
     """
     from datasets import DownloadConfig, load_dataset
 
@@ -66,13 +82,29 @@ def load_particle_pdg(
     dataset_revision: str | None = None,
     local_files_only: bool = False,
 ) -> dict[int, int]:
-    """Build a ``particle_id -> pdg_id`` map from the sibling particles config.
+    """Build a `particle_id -> pdg_id` map from the sibling particles config.
 
-    ``pdg_id`` (particle type) is not stored in the calo config, only the raw
-    ``contrib_particle_ids``. Row-aligned to :func:`load_calo_truth` via the same split
+    `pdg_id` (particle type) is not stored in the calo config, only the raw
+    `contrib_particle_ids`. Row-aligned to `load_calo_truth` via the same split
     string (index-join by shared slice). Returns a flat dict spanning all events;
-    ``particle_id`` values are globally unique within a run, so cross-event collisions
-    are not an issue.
+    `particle_id` values are globally unique within a run, so cross-event
+    collisions are not an issue.
+
+    Args:
+        split (str): Project split alias (e.g. `"val"` or `"val[:100]"`).
+        dataset_name (str, optional): Hugging Face dataset name. Defaults to
+            `"CERN/ColliderML-Release-1"`.
+        dataset_type (str, optional): Dataset type. Defaults to `"ttbar"`.
+        pu_config (str, optional): Pile-up config. Defaults to `"pu0"`.
+        cache_dir (str, optional): HF cache directory. Defaults to the cluster
+            path.
+        dataset_revision (str | None, optional): HF dataset revision. Defaults
+            to None.
+        local_files_only (bool, optional): Whether to load from cache only.
+            Defaults to False.
+
+    Returns:
+        dict[int, int]: Mapping from `particle_id` to `pdg_id`.
     """
     from datasets import DownloadConfig, load_dataset
 
@@ -106,6 +138,18 @@ def dominant_particle(
     - ``contributor_count``: number of contributing particles (``len(contrib_*)``).
 
     Hits with zero contributors map to ``particle_id = -1`` and ``fraction = 0``.
+
+    Args:
+        contrib_particle_ids (Sequence[Sequence[int]]): Per-hit lists of
+            contributing particle ids.
+        contrib_energies (Sequence[Sequence[float]]): Per-hit lists of
+            contribution energies, positionally paired with
+            `contrib_particle_ids`.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray]: `(dominant_particle_id,
+        dominant_energy_fraction, contributor_count)`, each of shape
+        `[num_hits]`.
     """
     n_hits = len(contrib_particle_ids)
     dom_pid = np.full(n_hits, -1, dtype=np.int64)
@@ -136,16 +180,24 @@ def event_dominant_particles(
     Returns ``(dominant_particle_id, pdg_id, dominant_energy_fraction,
     contributor_count)`` per cell, all ``[num_hits]``. ``pdg_id`` is filled from
     ``pid_to_pdg`` (``-1`` when the dominant particle has no known pdg_id).
+
+    Args:
+        event (Mapping[str, Any]): Raw calo event with `contrib_particle_ids`
+            and `contrib_energies` fields.
+        pid_to_pdg (Mapping[int, int] | None, optional): Mapping from
+            `particle_id` to `pdg_id`. If None, all pdg_ids are set to -1.
+            Defaults to None.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        `(dominant_particle_id, pdg_id, dominant_energy_fraction,
+        contributor_count)`, each of shape `[num_hits]`.
     """
-    dom_pid, dom_frac, counts = dominant_particle(
-        event["contrib_particle_ids"], event["contrib_energies"]
-    )
+    dom_pid, dom_frac, counts = dominant_particle(event["contrib_particle_ids"], event["contrib_energies"])
     if pid_to_pdg is None:
         pdg = np.full(dom_pid.shape, -1, dtype=np.int64)
     else:
-        pdg = np.array(
-            [pid_to_pdg.get(int(p), -1) for p in dom_pid], dtype=np.int64
-        )
+        pdg = np.array([pid_to_pdg.get(int(p), -1) for p in dom_pid], dtype=np.int64)
     return dom_pid, pdg, dom_frac, counts
 
 
@@ -164,22 +216,27 @@ PDG_BUCKETS: list[tuple[str, frozenset[int]]] = [
     ("other", frozenset()),
 ]
 PDG_BUCKET_NAMES: list[str] = [name for name, _ in PDG_BUCKETS]
-_PDG_TO_BUCKET: dict[int, int] = {
-    pdg: idx for idx, (_, pdgs) in enumerate(PDG_BUCKETS) for pdg in pdgs
-}
+_PDG_TO_BUCKET: dict[int, int] = {pdg: idx for idx, (_, pdgs) in enumerate(PDG_BUCKETS) for pdg in pdgs}
 _NUCLEUS_INDEX = PDG_BUCKET_NAMES.index("nucleus")
 _OTHER_INDEX = PDG_BUCKET_NAMES.index("other")
 _NUCLEUS_THRESHOLD = 1_000_000_000  # 10-digit PDG ion codes: 10NZZZAAA...
 
 
 def pdg_bucket(pdg_id: Any) -> np.ndarray:
-    """Map raw ``pdg_id`` values to coarse calorimetry-role bucket indices.
+    """Map raw `pdg_id` values to coarse calorimetry-role bucket indices.
 
     Returns an ``int64`` array (same shape as ``pdg_id``) of bucket indices into
-    :data:`PDG_BUCKET_NAMES` (0=e±, 1=γ, 2=μ±, 3=charged hadron, 4=neutral hadron,
-    5=nucleus, 6=other). The unknown sentinel ``-1`` (no pdg / missing pid) maps to
-    ``-1`` so callers that drop ``-1`` treat it as "no label". Nuclei are matched by
-    magnitude (``abs(pdg) >= 1e9``); everything else unmatched falls to "other".
+    `PDG_BUCKET_NAMES` (0=e±, 1=γ, 2=μ±, 3=charged hadron, 4=neutral hadron,
+    5=nucleus, 6=other). The unknown sentinel ``-1`` (no pdg / missing pid) maps
+    to ``-1`` so callers that drop ``-1`` treat it as "no label". Nuclei are
+    matched by magnitude (``abs(pdg) >= 1e9``); everything else unmatched falls
+    to "other".
+
+    Args:
+        pdg_id (Any): Raw PDG id values (scalar or array-like).
+
+    Returns:
+        np.ndarray: Bucket index array (int64, same shape as `pdg_id`).
     """
     arr = np.asarray(pdg_id)
     flat = arr.ravel().astype(np.int64, copy=False)
@@ -191,14 +248,23 @@ def pdg_bucket(pdg_id: Any) -> np.ndarray:
     return out.reshape(arr.shape)
 
 
-def dominance_report(
-    contributor_counts: np.ndarray, dominant_fractions: np.ndarray
-) -> dict[str, Any]:
+def dominance_report(contributor_counts: np.ndarray, dominant_fractions: np.ndarray) -> dict[str, Any]:
     """Summarize the contributor/dominance distributions for one eval subset.
 
-    Computed from the arrays :func:`dominant_particle` builds; logged once per run to
-    characterize the oracle label's noisiness (shared calorimeter cells have many
-    contributors from showering).
+    Computed from the arrays `dominant_particle` builds; logged once per run to
+    characterize the dominant-particle label's noisiness (shared calorimeter cells have
+    many contributors from showering).
+
+    Args:
+        contributor_counts (np.ndarray): Per-hit contributor counts (from
+            `dominant_particle`).
+        dominant_fractions (np.ndarray): Per-hit dominant energy fractions
+            (from `dominant_particle`).
+
+    Returns:
+        dict[str, Any]: Dominance report with contributor-count and
+        dominant-fraction statistics. Includes shared-only sub-stats when any
+        shared hits exist.
     """
     counts = np.asarray(contributor_counts)
     frac = np.asarray(dominant_fractions, dtype=np.float64)
@@ -229,11 +295,19 @@ def dominance_report(
 def format_dominance_report(report: Mapping[str, Any]) -> str:
     """Render a dominance report dict as human-readable plain text.
 
-    Mirrors the console block printed by ``scripts/evaluate.py``: a header, the
+    Mirrors the console block printed by `scripts/evaluate.py`: a header, the
     contributor-count summary, the single/shared split, the dominant-fraction
     distribution, and (when present) the shared-only sub-stats. Written to
-    ``runs/eval_<run>/dominance_report.txt`` alongside the JSON summary.
+    `runs/eval_<run>/dominance_report.txt` alongside the JSON summary.
+
+    Args:
+        report (Mapping[str, Any]): Dominance report dict from
+            `dominance_report` or `compute_dominance_report`.
+
+    Returns:
+        str: Human-readable plain-text report.
     """
+
     def _pct(v: Any) -> str:
         return f"{float(v):.1f}%" if v is not None else "n/a"
 
@@ -274,14 +348,20 @@ def format_dominance_report(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def compute_dominance_report(
-    calo_truth_dataset: Any, max_events: int | None = None
-) -> tuple[dict[str, Any], int]:
-    """Compute the dominance report over up to ``max_events`` raw calo events.
+def compute_dominance_report(calo_truth_dataset: Any, max_events: int | None = None) -> tuple[dict[str, Any], int]:
+    """Compute the dominance report over up to `max_events` raw calo events.
 
-    Walks the dataset, derives per-hit ``(contributor_count, dominant_fraction)`` via
-    :func:`dominant_particle`, concatenates across events, and returns the
-    :func:`dominance_report` output plus the number of events scanned.
+    Walks the dataset, derives per-hit ``(contributor_count, dominant_fraction)``
+    via `dominant_particle`, concatenates across events, and returns the
+    `dominance_report` output plus the number of events scanned.
+
+    Args:
+        calo_truth_dataset (Any): Raw calo truth dataset (from `load_calo_truth`).
+        max_events (int | None, optional): Maximum events to scan. If None, scans
+            all events. Defaults to None.
+
+    Returns:
+        tuple[dict[str, Any], int]: `(dominance_report_dict, num_events_scanned)`.
     """
     counts_parts: list[np.ndarray] = []
     frac_parts: list[np.ndarray] = []
@@ -289,18 +369,10 @@ def compute_dominance_report(
     for event in calo_truth_dataset:
         if max_events is not None and n >= max_events:
             break
-        _, frac, counts = dominant_particle(
-            event["contrib_particle_ids"], event["contrib_energies"]
-        )
+        _, frac, counts = dominant_particle(event["contrib_particle_ids"], event["contrib_energies"])
         counts_parts.append(counts)
         frac_parts.append(frac)
         n += 1
-    counts = (
-        np.concatenate(counts_parts) if counts_parts else np.array([], dtype=np.int64)
-    )
-    frac = (
-        np.concatenate(frac_parts)
-        if frac_parts
-        else np.array([], dtype=np.float32)
-    )
+    counts = np.concatenate(counts_parts) if counts_parts else np.array([], dtype=np.int64)
+    frac = np.concatenate(frac_parts) if frac_parts else np.array([], dtype=np.float32)
     return dominance_report(counts, frac), n

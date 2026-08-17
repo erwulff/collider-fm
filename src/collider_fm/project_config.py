@@ -17,7 +17,17 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.yaml"
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
-    """Resolve a config path relative to the repository root when needed."""
+    """Resolve a config path relative to the repository root when needed.
+
+    Args:
+        config_path (str | Path | None, optional): Path to a config file. If
+            None, returns the default config path. Relative paths are resolved
+            against the repository root; absolute paths are used as-is.
+            Defaults to None.
+
+    Returns:
+        Path: The resolved absolute config file path.
+    """
 
     if config_path is None:
         return DEFAULT_CONFIG_PATH
@@ -31,7 +41,21 @@ def load_project_config(
     config_path: str | Path | None = None,
     overrides: Sequence[str] | None = None,
 ) -> DictConfig:
-    """Load the default config, optionally merge a file, then apply dotlist overrides."""
+    """Load the default config, optionally merge a file, then apply dotlist overrides.
+
+    Args:
+        config_path (str | Path | None, optional): Path to an OmegaConf YAML
+            file merged on top of the default config. Defaults to None.
+        overrides (Sequence[str] | None, optional): OmegaConf dotlist overrides
+            such as `["training.batch_size=16"]`. Defaults to None.
+
+    Returns:
+        DictConfig: The merged configuration.
+
+    Raises:
+        ValueError: If any override string lacks `=` (key=value syntax
+            required).
+    """
 
     base_config = OmegaConf.load(DEFAULT_CONFIG_PATH)
     resolved_path = resolve_config_path(config_path)
@@ -43,14 +67,8 @@ def load_project_config(
         invalid_overrides = [override for override in overrides if "=" not in override]
         if invalid_overrides:
             invalid_str = ", ".join(invalid_overrides)
-            raise ValueError(
-                "OmegaConf CLI overrides must use key=value syntax. "
-                f"Invalid overrides: {invalid_str}. "
-                "Example: training.batch_size=16"
-            )
-        merged_config = OmegaConf.merge(
-            merged_config, OmegaConf.from_dotlist(list(overrides))
-        )
+            raise ValueError("OmegaConf CLI overrides must use key=value syntax. " f"Invalid overrides: {invalid_str}. " "Example: training.batch_size=16")
+        merged_config = OmegaConf.merge(merged_config, OmegaConf.from_dotlist(list(overrides)))
     return merged_config
 
 
@@ -60,6 +78,24 @@ def build_config_arg_parser(
     epilog: str | None = None,
     config_sections: Sequence[str] | None = None,
 ) -> argparse.ArgumentParser:
+    """Build an argparse parser with `--config` and dotlist override support.
+
+    When `config_sections` is provided, the epilog lists every available
+    override key for the requested sections, pulled from the loaded default
+    config.
+
+    Args:
+        description (str): Parser description shown in `--help`.
+        epilog (str | None, optional): Extra epilog text appended after the
+            override listing. Defaults to None.
+        config_sections (Sequence[str] | None, optional): Dotted config section
+            names (e.g. `["training", "model.training"]`) whose keys are listed
+            as available overrides in the epilog. Defaults to None.
+
+    Returns:
+        argparse.ArgumentParser: The configured argument parser.
+    """
+
     combined_epilog = epilog or ""
     if config_sections:
         config = load_project_config()
@@ -68,17 +104,9 @@ def build_config_arg_parser(
             section_value = config
             for part in section.split("."):
                 section_value = section_value[part]
-            override_lines.extend(
-                _collect_override_lines(section, to_plain_container(section_value))
-            )
-        override_block = "Available overrides:\n" + "\n".join(
-            f"  {line}" for line in override_lines
-        )
-        combined_epilog = (
-            f"{combined_epilog}\n\n{override_block}"
-            if combined_epilog
-            else override_block
-        )
+            override_lines.extend(_collect_override_lines(section, to_plain_container(section_value)))
+        override_block = "Available overrides:\n" + "\n".join(f"  {line}" for line in override_lines)
+        combined_epilog = f"{combined_epilog}\n\n{override_block}" if combined_epilog else override_block
 
     parser = argparse.ArgumentParser(
         description=description,
@@ -99,7 +127,15 @@ def build_config_arg_parser(
 
 
 def to_plain_container(config: Any) -> Any:
-    """Convert OmegaConf containers into plain Python values."""
+    """Convert OmegaConf containers into plain Python values.
+
+    Args:
+        config (Any): An OmegaConf config node or a plain Python value.
+
+    Returns:
+        Any: The resolved plain Python value (dict/list/scalar), or the input
+        unchanged if it is not an OmegaConf config.
+    """
 
     if not OmegaConf.is_config(config):
         return config
@@ -111,10 +147,22 @@ def resolve_run_identity(
     experiment_dir: str | None = None,
     run_name: str | None = None,
 ) -> tuple[Path, str]:
+    """Resolve the run directory and run name for a training run.
+
+    Args:
+        project_root (Path): Repository root path.
+        experiment_dir (str | None, optional): Explicit experiment directory.
+            If None, defaults to `<project_root>/runs`. Defaults to None.
+        run_name (str | None, optional): Explicit run name. If None, a
+            timestamped name `run_<YYYYMMDD_HHMMSS>` is generated. Defaults to
+            None.
+
+    Returns:
+        tuple[Path, str]: The resolved run directory and run name.
+    """
+
     resolved_run_name = str(run_name) if run_name else f"run_{timestamp_suffix()}"
-    resolved_experiment_dir = (
-        Path(experiment_dir) if experiment_dir is not None else project_root / "runs"
-    )
+    resolved_experiment_dir = Path(experiment_dir) if experiment_dir is not None else project_root / "runs"
     resolved_run_dir = resolved_experiment_dir / resolved_run_name
     return resolved_run_dir, resolved_run_name
 
@@ -128,15 +176,38 @@ def resolve_run_lifecycle(
     resume: bool = False,
     overwrite: bool = False,
 ) -> tuple[Path, str]:
-    resolved_run_dir, resolved_run_name = resolve_run_identity(
-        project_root, experiment_dir=experiment_dir, run_name=run_name
-    )
+    """Resolve run directory/name with resume and overwrite semantics.
+
+    Validates that a fresh run does not collide with existing state, that
+    resume targets an existing run, and that overwrite removes existing state
+    before starting fresh.
+
+    Args:
+        project_root (Path): Repository root path.
+        ray_storage_path (str | Path): Ray Train checkpoint storage root.
+        experiment_dir (str | None, optional): Explicit experiment directory.
+            Defaults to None (uses `<project_root>/runs`).
+        run_name (str | None, optional): Explicit run name. Defaults to None
+            (timestamped).
+        resume (bool, optional): Whether to resume an existing run. Defaults to
+            False.
+        overwrite (bool, optional): Whether to remove existing run state and
+            start fresh. Defaults to False.
+
+    Returns:
+        tuple[Path, str]: The resolved run directory and run name.
+
+    Raises:
+        ValueError: If `resume` and `overwrite` are both True, if `resume` is
+            True without a `run_name`, or if a fresh run collides with existing
+            state.
+    """
+
+    resolved_run_dir, resolved_run_name = resolve_run_identity(project_root, experiment_dir=experiment_dir, run_name=run_name)
     ray_run_dir = Path(ray_storage_path) / resolved_run_name
 
     if resume and overwrite:
-        raise ValueError(
-            "training.resume=true cannot be combined with training.overwrite=true."
-        )
+        raise ValueError("training.resume=true cannot be combined with training.overwrite=true.")
 
     if overwrite:
         warnings.warn(
@@ -151,19 +222,11 @@ def resolve_run_lifecycle(
 
     if resume:
         if run_name is None:
-            raise ValueError(
-                "training.resume=true requires an explicit training.run_name."
-            )
+            raise ValueError("training.resume=true requires an explicit training.run_name.")
         if not resolved_run_dir.exists():
-            raise ValueError(
-                f"Run {resolved_run_name} cannot be resumed because local run directory "
-                f"{resolved_run_dir} does not exist."
-            )
+            raise ValueError(f"Run {resolved_run_name} cannot be resumed because local run directory " f"{resolved_run_dir} does not exist.")
         if not ray_run_dir.exists():
-            raise ValueError(
-                f"Run {resolved_run_name} cannot be resumed because Ray storage directory "
-                f"{ray_run_dir} does not exist."
-            )
+            raise ValueError(f"Run {resolved_run_name} cannot be resumed because Ray storage directory " f"{ray_run_dir} does not exist.")
         return resolved_run_dir, resolved_run_name
 
     if resolved_run_dir.exists() or ray_run_dir.exists():
@@ -195,7 +258,19 @@ def _collect_override_lines(prefix: str, value: Any) -> list[str]:
 def model_factory_kwargs(
     model_config: DictConfig | dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Translate config sections into the model factory's kwargs shape."""
+    """Translate a model config block into the model factory's kwargs shape.
+
+    Moves the `backbone` sub-config to `backbone_kwargs` and flattens the
+    remaining keys into a plain dict.
+
+    Args:
+        model_config (DictConfig | dict[str, Any] | None): The model config
+            block, or None.
+
+    Returns:
+        dict[str, Any]: Keyword arguments for the model factory (empty dict if
+        `model_config` is None).
+    """
 
     if model_config is None:
         return {}
@@ -207,17 +282,37 @@ def model_factory_kwargs(
 
 
 def select_model_config(config: DictConfig, flavor: str) -> DictConfig:
-    """Select one named model config block from the shared project config."""
+    """Select one named model config block from the shared project config.
+
+    Args:
+        config (DictConfig): The full project config.
+        flavor (str): Model flavor to select; one of `"training"` or
+            `"diagnostics"`.
+
+    Returns:
+        DictConfig: The selected model config block.
+
+    Raises:
+        ValueError: If `flavor` is not `"training"` or `"diagnostics"`.
+    """
 
     if flavor not in {"training", "diagnostics"}:
         raise ValueError(f"Unsupported model flavor: {flavor}.")
     return config.model[flavor]
 
 
-def point_view_kwargs(
-    config: DictConfig, flavor: str, *, max_calo_hits: int | None
-) -> dict[str, Any]:
-    """Build `build_point_view_from_event()` kwargs from the shared config."""
+def point_view_kwargs(config: DictConfig, flavor: str, *, max_calo_hits: int | None) -> dict[str, Any]:
+    """Build `build_point_view_from_event()` kwargs from the shared config.
+
+    Args:
+        config (DictConfig): The full project config.
+        flavor (str): Model flavor (`"training"` or `"diagnostics"`); selects
+            the grid_size to use.
+        max_calo_hits (int | None): Optional cap on calorimeter hits per event.
+
+    Returns:
+        dict[str, Any]: Keyword arguments for `build_point_view_from_event()`.
+    """
 
     view_config = config.views
     model_config = select_model_config(config, flavor)
@@ -234,10 +329,19 @@ def point_view_kwargs(
     }
 
 
-def sonata_batch_kwargs(
-    config: DictConfig, flavor: str, *, max_calo_hits: int | None
-) -> dict[str, Any]:
-    """Build `build_sonata_batch()` kwargs from the shared config."""
+def sonata_batch_kwargs(config: DictConfig, flavor: str, *, max_calo_hits: int | None) -> dict[str, Any]:
+    """Build `build_sonata_batch()` kwargs from the shared config.
+
+    Extends `point_view_kwargs` with augmentation and crop fields.
+
+    Args:
+        config (DictConfig): The full project config.
+        flavor (str): Model flavor (`"training"` or `"diagnostics"`).
+        max_calo_hits (int | None): Optional cap on calorimeter hits per event.
+
+    Returns:
+        dict[str, Any]: Keyword arguments for `build_sonata_batch()`.
+    """
 
     view_config = config.views
     batch_kwargs = point_view_kwargs(
@@ -257,9 +361,7 @@ def sonata_batch_kwargs(
             "global_crop_max_ratio": view_config.global_crop_max_ratio,
             "local_crop_min_ratio": view_config.local_crop_min_ratio,
             "local_crop_max_ratio": view_config.local_crop_max_ratio,
-            "constrain_to_principal": bool(
-                view_config.get("constrain_to_principal", True)
-            ),
+            "constrain_to_principal": bool(view_config.get("constrain_to_principal", True)),
         }
     )
     return batch_kwargs

@@ -20,6 +20,11 @@ from .views import DEFAULT_POINT_GRID_SIZE, POINT_FEATURE_DIM
 
 
 def get_world_size() -> int:
+    """Return the distributed world size (1 if not initialized).
+
+    Returns:
+        int: The number of processes in the distributed group.
+    """
     if dist.is_available() and dist.is_initialized():
         return dist.get_world_size()
     return 1
@@ -53,23 +58,31 @@ class CosineScheduler:
         if schedule_length > 0:
             iters = torch.arange(schedule_length, dtype=torch.float32)
             denom = max(1, schedule_length - 1)
-            schedule = (
-                final_value
-                + 0.5
-                * (base_value - final_value)
-                * (1 + torch.cos(torch.pi * iters / denom))
-            ).tolist()
+            schedule = (final_value + 0.5 * (base_value - final_value) * (1 + torch.cos(torch.pi * iters / denom))).tolist()
         else:
             schedule = []
         self.schedule = warmup_schedule + schedule + freeze_schedule
         self.iter = 0
 
     def get(self, iteration: int) -> float:
+        """Return the scheduled value at a given iteration.
+
+        Args:
+            iteration (int): Iteration index to query.
+
+        Returns:
+            float: The scheduled value (clamped to `final_value` past the end).
+        """
         if iteration >= self.total_iters:
             return float(self.final_value)
         return float(self.schedule[iteration])
 
     def step(self) -> float:
+        """Advance the scheduler one step and return the current value.
+
+        Returns:
+            float: The scheduled value at the current iteration before stepping.
+        """
         value = self.get(self.iter)
         self.iter += 1
         return value
@@ -104,15 +117,11 @@ class OnlineCluster(nn.Module):
         )
         self.apply(self._init_weights)
         if version.parse(torch.__version__) >= version.parse("2.1.0"):
-            self.prototype = torch.nn.utils.parametrizations.weight_norm(
-                nn.Linear(embed_channels, num_prototypes, bias=False)
-            )
+            self.prototype = torch.nn.utils.parametrizations.weight_norm(nn.Linear(embed_channels, num_prototypes, bias=False))
             self.prototype.parametrizations.weight.original0.data.fill_(1)
             self.prototype.parametrizations.weight.original0.requires_grad = False
         else:
-            self.prototype = torch.nn.utils.weight_norm(
-                nn.Linear(embed_channels, num_prototypes, bias=False)
-            )
+            self.prototype = torch.nn.utils.weight_norm(nn.Linear(embed_channels, num_prototypes, bias=False))
             self.prototype.weight_g.data.fill_(1)
             self.prototype.weight_g.requires_grad = False
 
@@ -124,6 +133,14 @@ class OnlineCluster(nn.Module):
                 nn.init.constant_(module.bias, 0)
 
     def embed(self, feat: torch.Tensor) -> torch.Tensor:
+        """Run the MLP projection and L2-normalize the output.
+
+        Args:
+            feat (torch.Tensor): Input features of shape `[N, D]`.
+
+        Returns:
+            torch.Tensor: L2-normalized embeddings of shape `[N, embed_channels]`.
+        """
         feat = self.mlp(feat)
         eps = 1e-6 if feat.dtype == torch.float16 else 1e-12
         return F.normalize(feat, dim=-1, p=2, eps=eps)
@@ -133,26 +150,51 @@ class OnlineCluster(nn.Module):
 
 
 def mean_pool_features(feat: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
-    """Average point features within each packed event slice."""
+    """Average point features within each packed event slice.
+
+    Args:
+        feat (torch.Tensor): Packed point features of shape `[N, D]`.
+        offset (torch.Tensor): Cumulative event boundaries of shape `[B]`,
+            where `offset[-1] == N`.
+
+    Returns:
+        torch.Tensor: Pooled event features of shape `[B, D]`.
+    """
 
     counts = torch.diff(offset, prepend=offset.new_zeros(1))
-    batch_index = torch.arange(offset.numel(), device=feat.device).repeat_interleave(
-        counts
-    )
+    batch_index = torch.arange(offset.numel(), device=feat.device).repeat_interleave(counts)
     pooled = feat.new_zeros((offset.numel(), feat.shape[1]))
     pooled.scatter_add_(0, batch_index.unsqueeze(1).expand(-1, feat.shape[1]), feat)
     return pooled / counts.unsqueeze(1)
 
 
 def gather_by_offset(values: torch.Tensor, offset: torch.Tensor) -> list[torch.Tensor]:
+    """Split a packed tensor into a list of per-event slices by offset.
+
+    Args:
+        values (torch.Tensor): Packed tensor of shape `[N, ...]`.
+        offset (torch.Tensor): Cumulative event boundaries of shape `[B]`.
+
+    Returns:
+        list[torch.Tensor]: One tensor per event, sliced from `values`.
+    """
     starts = torch.cat([offset.new_zeros(1), offset[:-1]], dim=0)
     return [values[start:end] for start, end in zip(starts.tolist(), offset.tolist())]
 
 
-def masked_mean_pool(
-    point_projection: torch.Tensor, mask: torch.Tensor, offset: torch.Tensor
-) -> torch.Tensor:
-    """Pool masked points per event, falling back to all points when needed."""
+def masked_mean_pool(point_projection: torch.Tensor, mask: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+    """Pool masked points per event, falling back to all points when none are masked.
+
+    Args:
+        point_projection (torch.Tensor): Packed per-point features of shape
+            `[N, D]`.
+        mask (torch.Tensor): Boolean mask of shape `[N]` selecting points to
+            pool.
+        offset (torch.Tensor): Cumulative event boundaries of shape `[B]`.
+
+    Returns:
+        torch.Tensor: Pooled features of shape `[B, D]`.
+    """
 
     chunks = gather_by_offset(point_projection, offset)
     mask_chunks = gather_by_offset(mask.to(dtype=torch.bool), offset)
@@ -241,9 +283,7 @@ class SonataSelfDistillation(nn.Module):
         teacher_backbone_kwargs["proj_drop"] = 0.0
 
         if head_in_channels is None:
-            enc_channels = tuple(
-                int(channel) for channel in resolved_backbone_kwargs["enc_channels"]
-            )
+            enc_channels = tuple(int(channel) for channel in resolved_backbone_kwargs["enc_channels"])
             head_in_channels = sum(enc_channels[-(up_cast_level + 1) :])
 
         self.grid_size = float(grid_size)
@@ -275,14 +315,8 @@ class SonataSelfDistillation(nn.Module):
         self.match_max_k = int(match_max_k)
         self.match_max_r = float(match_max_r)
         self.up_cast_level = int(up_cast_level)
-        self.flash_attention_enabled = bool(
-            resolved_backbone_kwargs.get("enable_flash", False)
-        )
-        self.flash_attention_backend = (
-            str(resolved_backbone_kwargs.get("flash_backend", "flash_attn"))
-            if self.flash_attention_enabled
-            else "disabled"
-        )
+        self.flash_attention_enabled = bool(resolved_backbone_kwargs.get("enable_flash", False))
+        self.flash_attention_backend = str(resolved_backbone_kwargs.get("flash_backend", "flash_attn")) if self.flash_attention_enabled else "disabled"
         self.num_prototypes = int(head_num_prototypes)
         self.last_monitoring_state: dict[str, Any] = {
             "student_logits": None,
@@ -293,10 +327,7 @@ class SonataSelfDistillation(nn.Module):
             "unmask_match_fraction": 0.0,
         }
 
-        assert (
-            self.unmask_loss_weight + self.mask_loss_weight + self.roll_mask_loss_weight
-            > 0
-        )
+        assert self.unmask_loss_weight + self.mask_loss_weight + self.roll_mask_loss_weight > 0
         assert self.num_global_view > 1 or self.roll_mask_loss_weight == 0
         assert self.num_global_view in {1, 2}
 
@@ -333,7 +364,13 @@ class SonataSelfDistillation(nn.Module):
         self.mask_jitter_scheduler: CosineScheduler | None = None
 
     def setup_schedulers(self, total_steps: int, current_step: int = 0) -> None:
-        """Initialize the per-step Sonata schedules from the configured warmups."""
+        """Initialize the per-step Sonata schedules from the configured warmups.
+
+        Args:
+            total_steps (int): Total optimization steps across all epochs.
+            current_step (int, optional): Starting step for resume. Defaults to
+                0.
+        """
 
         self.mask_size_scheduler = CosineScheduler(
             start_value=self.mask_size_start,
@@ -380,17 +417,18 @@ class SonataSelfDistillation(nn.Module):
             self.mask_jitter_scheduler.iter = current_step
 
     def step_schedules(self) -> dict[str, float]:
-        """Advance all configured schedules by one optimization step."""
+        """Advance all configured schedules by one optimization step.
 
-        if (
-            self.mask_size_scheduler is None
-            or self.mask_ratio_scheduler is None
-            or self.teacher_temp_scheduler is None
-            or self.momentum_scheduler is None
-        ):
-            raise RuntimeError(
-                "Sonata schedulers are not configured. Call setup_schedulers() first."
-            )
+        Returns:
+            dict[str, float]: Current values for mask_size, mask_ratio,
+            teacher_temperature, teacher_momentum, and mask_jitter.
+
+        Raises:
+            RuntimeError: If `setup_schedulers` has not been called.
+        """
+
+        if self.mask_size_scheduler is None or self.mask_ratio_scheduler is None or self.teacher_temp_scheduler is None or self.momentum_scheduler is None:
+            raise RuntimeError("Sonata schedulers are not configured. Call setup_schedulers() first.")
 
         self.mask_size = self.mask_size_scheduler.step()
         self.mask_ratio = self.mask_ratio_scheduler.step()
@@ -408,7 +446,12 @@ class SonataSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def update_teacher(self, momentum: float | None = None) -> None:
-        """EMA-update the teacher weights from the current student weights."""
+        """EMA-update the teacher weights from the current student weights.
+
+        Args:
+            momentum (float | None, optional): EMA momentum factor. If None,
+                uses the scheduler's current momentum. Defaults to None.
+        """
 
         if momentum is not None:
             self.momentum = float(momentum)
@@ -418,13 +461,22 @@ class SonataSelfDistillation(nn.Module):
         torch._foreach_add_(teacher_params, student_params, alpha=1 - self.momentum)
 
     @staticmethod
-    def sinkhorn_knopp(
-        feat: torch.Tensor, temp: float, num_iter: int = 3
-    ) -> torch.Tensor:
+    def sinkhorn_knopp(feat: torch.Tensor, temp: float, num_iter: int = 3) -> torch.Tensor:
         """Normalize teacher logits into balanced prototype assignments.
 
         Always participates in distributed collectives so that ranks with
         zero-length local inputs do not cause hangs under DDP.
+
+        Args:
+            feat (torch.Tensor): Teacher logits of shape `[N, num_prototypes]`.
+            temp (float): Temperature for the softmax exp(logit / temp).
+            num_iter (int, optional): Number of Sinkhorn-Knopp iterations.
+                Defaults to 3.
+
+        Returns:
+            torch.Tensor: Balanced assignment matrix of shape `[N,
+            num_prototypes]` (rows sum to 1). Returns a zero tensor of shape
+            `[0, num_prototypes]` if the input is empty.
         """
 
         num_prototypes = feat.shape[1] if feat.ndim == 2 else 1
@@ -461,10 +513,19 @@ class SonataSelfDistillation(nn.Module):
             return q.new_zeros((0, num_prototypes))
         return q.t()
 
-    def generate_mask(
-        self, coord: torch.Tensor, offset: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Voxelize each event and mask a random subset of occupied patches."""
+    def generate_mask(self, coord: torch.Tensor, offset: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Voxelize each event and mask a random subset of occupied patches.
+
+        Args:
+            coord (torch.Tensor): Packed point coordinates of shape `[N, 3]`.
+            offset (torch.Tensor): Cumulative event boundaries of shape `[B]`.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: `(point_mask, point_cluster)`
+            where `point_mask` is a boolean tensor of shape `[N]` and
+            `point_cluster` is a long tensor mapping each point to its voxel
+            cluster id.
+        """
 
         batch = offset2batch(offset)
         min_coord = torch_scatter.segment_coo(coord, batch, reduce="min")
@@ -472,9 +533,7 @@ class SonataSelfDistillation(nn.Module):
         # mask independently even though all points are packed together.
         grid_coord = ((coord - min_coord[batch]) // self.mask_size).int()
         grid_coord = torch.cat([batch.unsqueeze(-1), grid_coord], dim=-1)
-        unique, point_cluster, _ = torch.unique(
-            grid_coord, dim=0, sorted=True, return_inverse=True, return_counts=True
-        )
+        unique, point_cluster, _ = torch.unique(grid_coord, dim=0, sorted=True, return_inverse=True, return_counts=True)
         patch_num = unique.shape[0]
         mask_patch_num = int(patch_num * self.mask_ratio)
         if patch_num == 0 or mask_patch_num == 0:
@@ -495,7 +554,24 @@ class SonataSelfDistillation(nn.Module):
         view2_coord: torch.Tensor,
         view2_offset: torch.Tensor,
     ) -> torch.Tensor:
-        """Match each point in `view1` to its nearest in-batch neighbor from `view2`."""
+        """Match each point in `view1` to its nearest in-batch neighbor from `view2`.
+
+        Args:
+            view1_coord (torch.Tensor): Query point coordinates, shape `[N1, 3]`.
+            view1_offset (torch.Tensor): Cumulative event boundaries for view1.
+            view2_coord (torch.Tensor): Reference point coordinates, shape
+                `[N2, 3]`.
+            view2_offset (torch.Tensor): Cumulative event boundaries for view2.
+
+        Returns:
+            torch.Tensor: Matched index pairs of shape `[M, 2]`, where each row
+            is `(view1_index, view2_index)`. Pairs with distance exceeding
+            `match_max_r` are dropped.
+
+        Raises:
+            ValueError: If the view offsets have different lengths (unaligned
+                batch boundaries).
+        """
 
         view1_starts = torch.cat([view1_offset.new_zeros(1), view1_offset[:-1]], dim=0)
         view2_starts = torch.cat([view2_offset.new_zeros(1), view2_offset[:-1]], dim=0)
@@ -530,7 +606,15 @@ class SonataSelfDistillation(nn.Module):
 
     @torch.no_grad()
     def roll_point(self, point: Point) -> Point:
-        """Swap the two packed global views within each event for roll-mask targets."""
+        """Swap the two packed global views within each event for roll-mask targets.
+
+        Args:
+            point (Point): Packed point with global views ordered
+                `[event0_view0, event0_view1, ...]`.
+
+        Returns:
+            Point: New point with global views swapped per event.
+        """
 
         counts = offset2bincount(point.offset).tolist()
         bs = len(point.offset) // self.num_global_view
@@ -541,30 +625,31 @@ class SonataSelfDistillation(nn.Module):
             value = point[key].split(counts)
             # Packed global views are ordered [event0_view0, event0_view1, ...].  The
             # roll loss wants the opposite teacher view from the same event.
-            value = chain(
-                *[
-                    value[self.num_global_view * b : self.num_global_view * (b + 1)][
-                        ::-1
-                    ]
-                    for b in range(bs)
-                ]
-            )
+            value = chain(*[value[self.num_global_view * b : self.num_global_view * (b + 1)][::-1] for b in range(bs)])
             value_list = list(value)
             if key == "batch":
-                value_list = [
-                    torch.ones_like(chunk) * i for i, chunk in enumerate(value_list)
-                ]
+                value_list = [torch.ones_like(chunk) * i for i, chunk in enumerate(value_list)]
             data_dict[key] = torch.cat(value_list, dim=0)
         return Point(data_dict)
 
     def up_cast(self, point: Point) -> Point:
-        """Rebuild multiscale features from the PTv3 traceable pooling chain."""
+        """Rebuild multiscale features from the PTv3 traceable pooling chain.
+
+        Walks `up_cast_level` pooling levels up (coarse to finer), concatenating
+        features at each level.
+
+        Args:
+            point (Point): Backbone output with traceable pooling breadcrumbs.
+
+        Returns:
+            Point: Up-cast point with concatenated multiscale features.
+
+        Raises:
+            KeyError: If traceable PTv3 pooling features are missing.
+        """
 
         for _ in range(self.up_cast_level):
-            if (
-                "pooling_parent" not in point.keys()
-                or "pooling_inverse" not in point.keys()
-            ):
+            if "pooling_parent" not in point.keys() or "pooling_inverse" not in point.keys():
                 raise KeyError("Sonata up-cast requires traceable PTv3 features.")
             parent = point.pop("pooling_parent")
             inverse = point.pop("pooling_inverse")
@@ -575,9 +660,7 @@ class SonataSelfDistillation(nn.Module):
     def _grid_size_value(self, data_dict: Mapping[str, Any]) -> torch.Tensor:
         grid_size = data_dict["grid_size"]
         device = next(self.parameters()).device
-        grid_size_tensor = torch.as_tensor(
-            grid_size, dtype=torch.float32, device=device
-        )
+        grid_size_tensor = torch.as_tensor(grid_size, dtype=torch.float32, device=device)
         if grid_size_tensor.ndim == 0:
             return grid_size_tensor
         return grid_size_tensor.flatten()[0]
@@ -589,55 +672,50 @@ class SonataSelfDistillation(nn.Module):
         return module_dict["mask_head"]
 
     @torch.no_grad()
-    def encode_view(
-        self, view: Mapping[str, Any], use_teacher: bool
-    ) -> dict[str, torch.Tensor]:
-        """Encode one point view into plotting-friendly tensors for diagnostics."""
+    def encode_view(self, view: Mapping[str, Any], use_teacher: bool) -> dict[str, torch.Tensor]:
+        """Encode one point view into plotting-friendly tensors for diagnostics.
+
+        Args:
+            view (Mapping[str, Any]): Point view dict with `coord`, `feat`,
+                `offset`, and optional `origin_coord`, `grid_size`, `mask`,
+                `source_index` keys.
+            use_teacher (bool): Whether to use the teacher pathway.
+
+        Returns:
+            dict[str, torch.Tensor]: Encoded outputs with keys
+            `point_features`, `point_projection`, `point_logits`, `pooled`,
+            `masked_pooled_projection`, `masked_logits`, `offset`,
+            `source_index`, and `mask`.
+        """
 
         point = Point(
-            feat=torch.as_tensor(
-                view["feat"], dtype=torch.float32, device=view["coord"].device
-            ),
-            coord=torch.as_tensor(
-                view["coord"], dtype=torch.float32, device=view["coord"].device
-            ),
+            feat=torch.as_tensor(view["feat"], dtype=torch.float32, device=view["coord"].device),
+            coord=torch.as_tensor(view["coord"], dtype=torch.float32, device=view["coord"].device),
             origin_coord=torch.as_tensor(
                 view.get("origin_coord", view["coord"]),
                 dtype=torch.float32,
                 device=view["coord"].device,
             ),
-            offset=torch.as_tensor(
-                view["offset"], dtype=torch.long, device=view["coord"].device
-            ),
+            offset=torch.as_tensor(view["offset"], dtype=torch.long, device=view["coord"].device),
             grid_size=torch.as_tensor(
                 view.get("grid_size", self.grid_size),
                 dtype=torch.float32,
                 device=view["coord"].device,
             ),
             mask=torch.as_tensor(
-                view.get(
-                    "mask", torch.zeros(len(view["coord"]), device=view["coord"].device)
-                ),
+                view.get("mask", torch.zeros(len(view["coord"]), device=view["coord"].device)),
                 dtype=torch.bool,
                 device=view["coord"].device,
             ),
         )
-        backbone_module = (
-            self.teacher["backbone"] if use_teacher else self.student["backbone"]
-        )
+        backbone_module = self.teacher["backbone"] if use_teacher else self.student["backbone"]
         head_module = self._head_for_diagnostics(use_teacher)
         point = backbone_module(point)
         point = self.up_cast(point)
         point_features = point.feat
         point_logits = head_module(point_features)
         pooled = mean_pool_features(point_features, point.offset)
-        mask = (
-            point.mask
-            if "mask" in point.keys()
-            else torch.zeros(
-                point.feat.shape[0], dtype=torch.bool, device=point.feat.device
-            )
-        )
+        mask = point.mask if "mask" in point.keys() else torch.zeros(point.feat.shape[0], dtype=torch.bool, device=point.feat.device)
         masked_pooled_projection = masked_mean_pool(point_features, mask, point.offset)
         masked_logits = head_module(masked_pooled_projection)
         return {
@@ -660,15 +738,44 @@ class SonataSelfDistillation(nn.Module):
         }
 
     def encode_student_view(self, view: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+        """Encode a view through the student pathway.
+
+        Args:
+            view (Mapping[str, Any]): Point view dict.
+
+        Returns:
+            dict[str, torch.Tensor]: Encoded outputs (see `encode_view`).
+        """
         return self.encode_view(view, use_teacher=False)
 
     def encode_teacher_view(self, view: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+        """Encode a view through the teacher pathway.
+
+        Args:
+            view (Mapping[str, Any]): Point view dict.
+
+        Returns:
+            dict[str, torch.Tensor]: Encoded outputs (see `encode_view`).
+        """
         return self.encode_view(view, use_teacher=True)
 
-    def forward(
-        self, data_dict: Mapping[str, Any], return_point: bool = False
-    ) -> dict[str, torch.Tensor]:
-        """Run the Sonata loss on packed global/local views or return teacher features."""
+    def forward(self, data_dict: Mapping[str, Any], return_point: bool = False) -> dict[str, torch.Tensor]:
+        """Run the Sonata loss on packed global/local views or return teacher features.
+
+        Args:
+            data_dict (Mapping[str, Any]): Packed batch with either SonataBatch
+                keys (`global_*`, `local_*`) for training, or single-view keys
+                (`feat`, `coord`, `offset`) when `return_point` is True.
+            return_point (bool, optional): If True, run only the teacher backbone
+                and return `{"point": point}` without computing losses. Defaults
+                to False.
+
+        Returns:
+            dict[str, torch.Tensor]: Loss dict with `loss`, `total_loss`, and
+            individual loss components (`mask_loss`, `roll_mask_loss`,
+            `unmask_loss`) when applicable. If `return_point` is True, returns
+            `{"point": point}` instead.
+        """
 
         grid_size = self._grid_size_value(data_dict)
         if return_point:
@@ -695,12 +802,8 @@ class SonataSelfDistillation(nn.Module):
             global_mask, _ = self.generate_mask(global_point.coord, global_point.offset)
             mask_global_coord = global_point.coord.clone().detach()
             if self.mask_jitter is not None and torch.any(global_mask):
-                jitter = torch.randn_like(mask_global_coord[global_mask]).mul(
-                    self.mask_jitter
-                )
-                mask_global_coord[global_mask] += torch.clip(
-                    jitter, max=self.mask_jitter * 2
-                )
+                jitter = torch.randn_like(mask_global_coord[global_mask]).mul(self.mask_jitter)
+                mask_global_coord[global_mask] += torch.clip(jitter, max=self.mask_jitter * 2)
 
             mask_global_point = Point(
                 feat=data_dict["global_feat"],
@@ -726,9 +829,7 @@ class SonataSelfDistillation(nn.Module):
         monitor_logits: torch.Tensor | None = None
         monitor_features: torch.Tensor | None = None
         monitor_teacher_features = global_feat.detach()
-        monitor_masked_fraction = (
-            float(global_mask.float().mean().item()) if global_mask.numel() > 0 else 0.0
-        )
+        monitor_masked_fraction = float(global_mask.float().mean().item()) if global_mask.numel() > 0 else 0.0
         monitor_global_mask = global_mask.detach()
         monitor_cosine_similarities: torch.Tensor | None = None
         monitor_mask_match_fraction = 0.0
@@ -760,9 +861,7 @@ class SonataSelfDistillation(nn.Module):
                         global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
-                    monitor_mask_match_fraction = float(
-                        match_index.shape[0] / max(1, mask_global_point_.feat.shape[0])
-                    )
+                    monitor_mask_match_fraction = float(match_index.shape[0] / max(1, mask_global_point_.feat.shape[0]))
                     monitor_cosine_similarities = F.cosine_similarity(
                         mask_global_point_.feat[match_index[:, 0]],
                         global_feat[match_index[:, 1]],
@@ -774,10 +873,7 @@ class SonataSelfDistillation(nn.Module):
                             self.teacher_temp,
                         )
                     mask_loss = -torch.sum(
-                        mask_target_sim
-                        * F.log_softmax(
-                            mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                        ),
+                        mask_target_sim * F.log_softmax(mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1),
                         dim=-1,
                     )
                     mask_loss = torch_scatter.segment_coo(
@@ -800,19 +896,14 @@ class SonataSelfDistillation(nn.Module):
                         roll_global_point_.offset,
                     )
                 if match_index.shape[0] > 0:
-                    monitor_roll_match_fraction = float(
-                        match_index.shape[0] / max(1, mask_global_point_.feat.shape[0])
-                    )
+                    monitor_roll_match_fraction = float(match_index.shape[0] / max(1, mask_global_point_.feat.shape[0]))
                     with torch.no_grad():
                         roll_mask_target_sim = self.sinkhorn_knopp(
                             roll_global_point_.feat[match_index[:, 1]],
                             self.teacher_temp,
                         )
                     roll_mask_loss = -torch.sum(
-                        roll_mask_target_sim
-                        * F.log_softmax(
-                            mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                        ),
+                        roll_mask_target_sim * F.log_softmax(mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1),
                         dim=-1,
                     )
                     roll_mask_loss = torch_scatter.segment_coo(
@@ -838,12 +929,8 @@ class SonataSelfDistillation(nn.Module):
                 # target.  Local views are packed per event, so we keep one offset per
                 # event by selecting the last local-view boundary in each group.
                 principal_view_mask = global_point_.batch % self.num_global_view == 0
-                principal_view_batch = (
-                    global_point_.batch[principal_view_mask] // self.num_global_view
-                )
-                local_principal_offset = local_point_.offset[
-                    self.num_local_view - 1 :: self.num_local_view
-                ]
+                principal_view_batch = global_point_.batch[principal_view_mask] // self.num_global_view
+                local_principal_offset = local_point_.offset[self.num_local_view - 1 :: self.num_local_view]
                 match_index = self.match_neighbour(
                     local_point_.origin_coord,
                     local_principal_offset,
@@ -851,19 +938,14 @@ class SonataSelfDistillation(nn.Module):
                     batch2offset(principal_view_batch),
                 )
             if match_index.shape[0] > 0:
-                monitor_unmask_match_fraction = float(
-                    match_index.shape[0] / max(1, local_point_.feat.shape[0])
-                )
+                monitor_unmask_match_fraction = float(match_index.shape[0] / max(1, local_point_.feat.shape[0]))
                 with torch.no_grad():
                     unmask_target_sim = self.sinkhorn_knopp(
                         global_point_.feat[principal_view_mask][match_index[:, 1]],
                         self.teacher_temp,
                     )
                 unmask_loss = -torch.sum(
-                    unmask_target_sim
-                    * F.log_softmax(
-                        unmask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                    ),
+                    unmask_target_sim * F.log_softmax(unmask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1),
                     dim=-1,
                 )
                 unmask_loss = torch_scatter.segment_coo(
@@ -883,11 +965,7 @@ class SonataSelfDistillation(nn.Module):
         if self.unmask_loss_weight > 0:
             result_dict["loss"].append(unmask_pred_sim.sum() * 0.0)
 
-        total_loss = (
-            sum(result_dict["loss"])
-            if result_dict["loss"]
-            else global_feat.new_tensor(0.0)
-        )
+        total_loss = sum(result_dict["loss"]) if result_dict["loss"] else global_feat.new_tensor(0.0)
         result_dict["loss"] = total_loss
         result_dict["total_loss"] = total_loss.detach().clone()
 

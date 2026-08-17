@@ -38,6 +38,12 @@ from collider_fm.project_config import build_config_arg_parser, load_project_con
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the pdg-frequency CLI.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser with `--config`, `--split`,
+        and dotlist override support.
+    """
     parser = build_config_arg_parser(
         description="Tally pdg_id frequency across the ColliderML particles config.",
         epilog=(
@@ -56,6 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point: tallies pdg_id frequency and calorimetry-role buckets across a split."""
     cli_args = build_arg_parser().parse_args()
     config = load_project_config(cli_args.config, cli_args.overrides)
     dc = config.data

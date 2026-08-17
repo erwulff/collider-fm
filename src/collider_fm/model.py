@@ -48,7 +48,19 @@ def create_small_sonata_model(
     backbone_kwargs: Mapping[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> SonataSelfDistillation:
-    """Construct the compact Sonata model shared by smoke tests and diagnostics."""
+    """Construct the compact Sonata model shared by smoke tests and diagnostics.
+
+    Args:
+        device (torch.device | None, optional): Device to place the model on.
+            Defaults to None.
+        backbone_kwargs (Mapping[str, Any] | None, optional): Overrides for the
+            small backbone defaults. Defaults to None.
+        **model_kwargs (Any): Additional overrides for the Sonata model
+            hyperparameters (grid_size, head dimensions, view counts, etc.).
+
+    Returns:
+        SonataSelfDistillation: The constructed small Sonata model.
+    """
 
     resolved_backbone_kwargs = dict(SMALL_SONATA_MODEL_BACKBONE_KWARGS)
     if backbone_kwargs is not None:
@@ -82,7 +94,19 @@ def create_training_sonata_model(
     backbone_kwargs: Mapping[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> SonataSelfDistillation:
-    """Construct the Sonata model for the main training loop."""
+    """Construct the Sonata model for the main training loop.
+
+    Args:
+        device (torch.device | None, optional): Device to place the model on.
+            Defaults to None.
+        backbone_kwargs (Mapping[str, Any] | None, optional): Overrides for the
+            training backbone defaults. Defaults to None.
+        **model_kwargs (Any): Additional overrides for the Sonata model
+            hyperparameters (grid_size, head dimensions, view counts, etc.).
+
+    Returns:
+        SonataSelfDistillation: The constructed training Sonata model.
+    """
 
     resolved_backbone_kwargs = dict(TRAINING_SONATA_MODEL_BACKBONE_KWARGS)
     if backbone_kwargs is not None:
@@ -116,7 +140,21 @@ def create_small_model(
     backbone_kwargs: Mapping[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> SonataSelfDistillation:
-    """Construct the compact Sonata model (smoke tests, diagnostics)."""
+    """Construct the compact Sonata model (smoke tests, diagnostics).
+
+    Thin alias for `create_small_sonata_model`.
+
+    Args:
+        device (torch.device | None, optional): Device to place the model on.
+            Defaults to None.
+        backbone_kwargs (Mapping[str, Any] | None, optional): Overrides for the
+            small backbone defaults. Defaults to None.
+        **model_kwargs (Any): Additional overrides for the Sonata model
+            hyperparameters.
+
+    Returns:
+        SonataSelfDistillation: The constructed small Sonata model.
+    """
     return create_small_sonata_model(
         device=device,
         backbone_kwargs=backbone_kwargs,
@@ -129,7 +167,21 @@ def create_training_model(
     backbone_kwargs: Mapping[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> SonataSelfDistillation:
-    """Construct the Sonata model for training."""
+    """Construct the Sonata model for training.
+
+    Thin alias for `create_training_sonata_model`.
+
+    Args:
+        device (torch.device | None, optional): Device to place the model on.
+            Defaults to None.
+        backbone_kwargs (Mapping[str, Any] | None, optional): Overrides for the
+            training backbone defaults. Defaults to None.
+        **model_kwargs (Any): Additional overrides for the Sonata model
+            hyperparameters.
+
+    Returns:
+        SonataSelfDistillation: The constructed training Sonata model.
+    """
     return create_training_sonata_model(
         device=device,
         backbone_kwargs=backbone_kwargs,

@@ -1,6 +1,6 @@
 """Label-free representation-quality metrics for ColliderFM pretraining.
 
-v1 focus: **collapse detection** on the per-point 288-d backbone features that a
+Focus: **collapse detection** on the per-point 288-d backbone features that a
 downstream head would consume (the direct ``point.feat`` output, not mean-pooled).
 
 All metrics are computed on held-out validation events with the (deterministic)
@@ -56,6 +56,16 @@ def stable_rank(features: torch.Tensor) -> tuple[float, list[float]]:
     This is the nuclear-norm participation ratio ``(sum sigma)^2 / sum sigma^2``
     -- intentionally *not* Roy-Vetterli's entropy-based "effective rank"
     ``exp(-sum p_i log p_i)``.
+
+    Args:
+        features (torch.Tensor): Feature matrix of shape `[N, D]`.
+
+    Returns:
+        tuple[float, list[float]]: The stable rank (float) and the descending
+        singular-value spectrum (list of floats).
+
+    Raises:
+        ValueError: If `features` is not 2-D.
     """
     if features.ndim != 2:
         raise ValueError(f"stable_rank expects 2D features, got {features.ndim}D")
@@ -72,6 +82,14 @@ def alignment(crop0: torch.Tensor, crop1: torch.Tensor) -> float:
     ``mean ||f(x) - f(y)||^2`` over the paired crops, on the unit hypersphere.
     Lower is better -- augmented twins of the same event should map close
     together. Inputs are L2-normalized internally.
+
+    Args:
+        crop0 (torch.Tensor): First set of crop embeddings, shape `[N, D]`.
+        crop1 (torch.Tensor): Second set of crop embeddings, shape `[N, D]`,
+            positionally paired with `crop0`.
+
+    Returns:
+        float: The alignment metric (lower is better).
     """
     x = F.normalize(crop0.float(), dim=-1)
     y = F.normalize(crop1.float(), dim=-1)
@@ -89,6 +107,14 @@ def uniformity(embeddings: torch.Tensor, t: float = 2.0) -> float:
     This uses the canonical Wang-Isola sign (``-t``). A ``+t`` variant reduces
     to a soft-max-of-diameter rather than a uniformity measure, so it is not
     used here. Inputs are L2-normalized internally.
+
+    Args:
+        embeddings (torch.Tensor): Embedding vectors of shape `[N, D]`.
+        t (float, optional): Temperature parameter. Defaults to 2.0.
+
+    Returns:
+        float: The uniformity metric (lower is better; 0.0 for fewer than 2
+        points).
     """
     x = F.normalize(embeddings.float(), dim=-1)
     n = x.shape[0]
@@ -120,6 +146,19 @@ def nn_retrieval(
     similarity; the correct match is that event's own ``crop1`` (its augmented
     twin). Returns ``r_at_1``, ``r_at_5``, ... Random baseline ~ k / N;
     perfect = 1.0. Inputs are L2-normalized internally.
+
+    Args:
+        crop0 (torch.Tensor): Query crop embeddings, shape `[N, D]`.
+        crop1 (torch.Tensor): Pool crop embeddings, shape `[N, D]`, positionally
+            paired with `crop0`.
+        k_values (Sequence[int], optional): k values for Recall@k. Defaults to
+            `(1, 5)`.
+        chunk (int, optional): Row chunk size for the similarity computation.
+            Defaults to 1024.
+
+    Returns:
+        dict[str, float]: Recall@k metrics keyed `r_at_{k}`. Returns all zeros
+        if `N == 0`.
     """
     q = F.normalize(crop0.float(), dim=-1)
     pool = F.normalize(crop1.float(), dim=-1)
@@ -199,6 +238,21 @@ def collect_embeddings(
     only ``2N x 288`` pooled + ``<=budget x 288`` subsample + ``[num_prototypes]``
     bincount are stored. The subsample is drawn proportionally across batches so
     it is not biased toward early events.
+
+    Args:
+        model: The Sonata model with a teacher backbone and diagnostics head.
+        dataloader: DataLoader yielding raw ColliderML event batches.
+        device (torch.device): Compute device.
+        num_prototypes (int): Number of prototype clusters in the diagnostics head.
+        batch_kwargs (dict): Keyword arguments for `build_sonata_batch`.
+        point_subsample_budget (int, optional): Maximum per-point features to
+            collect. Defaults to 50000.
+        max_events (int | None, optional): Maximum events to process. Defaults
+            to None (all).
+        seed (int, optional): RNG seed for subsampling. Defaults to 0.
+
+    Returns:
+        EmbeddingCollection: Bounded embeddings and prototype counts.
     """
     model.eval()
     head = model._head_for_diagnostics(use_teacher=True)
@@ -216,9 +270,7 @@ def collect_embeddings(
 
     from tqdm import tqdm
 
-    pbar = tqdm(
-        dataloader, total=num_batches, desc="v1 embeddings", unit="batch", mininterval=2.0
-    )
+    pbar = tqdm(dataloader, total=num_batches, desc="embeddings", unit="batch", mininterval=2.0)
     for batch_index, events in enumerate(pbar):
         if max_events is not None and events_collected >= max_events:
             break
@@ -230,12 +282,8 @@ def collect_embeddings(
             coord=batch["global_coord"].float(),
             origin_coord=batch["global_origin_coord"].float(),
             offset=batch["global_offset"].long(),
-            grid_size=torch.as_tensor(
-                batch["grid_size"], dtype=torch.float32, device=device
-            ),
-            mask=torch.zeros(
-                batch["global_coord"].shape[0], dtype=torch.bool, device=device
-            ),
+            grid_size=torch.as_tensor(batch["grid_size"], dtype=torch.float32, device=device),
+            mask=torch.zeros(batch["global_coord"].shape[0], dtype=torch.bool, device=device),
         )
         point = model.teacher["backbone"](point)
         point = model.up_cast(point)
@@ -271,22 +319,14 @@ def collect_embeddings(
 
         pbar.set_postfix(events=events_collected, points=subsample_total, refresh=False)
 
-        if (
-            max_events is not None
-            and events_collected >= max_events
-            and subsample_total >= point_subsample_budget
-        ):
+        if max_events is not None and events_collected >= max_events and subsample_total >= point_subsample_budget:
             break
     pbar.close()
 
     return EmbeddingCollection(
         crop0=torch.cat(crop0_parts, dim=0) if crop0_parts else torch.empty(0, 0),
         crop1=torch.cat(crop1_parts, dim=0) if crop1_parts else torch.empty(0, 0),
-        point_subsample=(
-            torch.cat(subsample_parts, dim=0)
-            if subsample_parts
-            else torch.empty(0, 0)
-        ),
+        point_subsample=(torch.cat(subsample_parts, dim=0) if subsample_parts else torch.empty(0, 0)),
         prototype_bincount=bincount,
     )
 
@@ -296,10 +336,8 @@ def collect_embeddings(
 # ---------------------------------------------------------------------------
 
 
-def summarize(
-    collection: EmbeddingCollection, *, dead_fraction: float = 0.1
-) -> dict[str, object]:
-    """Compute the full v1 metric suite from an :class:`EmbeddingCollection`.
+def summarize(collection: EmbeddingCollection, *, dead_fraction: float = 0.1) -> dict[str, object]:
+    """Compute the full metric suite from an `EmbeddingCollection`.
 
     Prototype health is reported three ways:
       * ``prototype_entropy`` -- ``-sum p log p`` (max = ``log(K)``).
@@ -321,6 +359,16 @@ def summarize(
         alongside the relative-threshold ``num_dead_prototypes``; the
         threshold-free prototype-health headline is
         ``prototype_effective_count``.
+
+    Args:
+        collection (EmbeddingCollection): Bounded embeddings from
+            `collect_embeddings`.
+        dead_fraction (float, optional): Fraction of the uniform rate
+            `1/K` below which a prototype is "dead". Defaults to 0.1.
+
+    Returns:
+        dict[str, object]: The full metric suite (stable rank, alignment,
+        uniformity, retrieval, prototype health).
     """
     metrics: dict[str, object] = {}
 
@@ -342,15 +390,11 @@ def summarize(
     num_dead = int(dead_mask.sum().item())
     metrics["num_dead_prototypes"] = num_dead
     metrics["num_active_prototypes"] = num_prototypes - num_dead
-    metrics["num_empty_prototypes"] = int(
-        (collection.prototype_bincount == 0).sum().item()
-    )
+    metrics["num_empty_prototypes"] = int((collection.prototype_bincount == 0).sum().item())
 
     metrics["num_events"] = int(collection.crop0.shape[0])
     metrics["alignment"] = alignment(collection.crop0, collection.crop1)
-    metrics["uniformity"] = uniformity(
-        torch.cat([collection.crop0, collection.crop1], dim=0)
-    )
+    metrics["uniformity"] = uniformity(torch.cat([collection.crop0, collection.crop1], dim=0))
     metrics.update(nn_retrieval(collection.crop0, collection.crop1))
 
     return metrics
