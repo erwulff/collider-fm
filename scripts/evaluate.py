@@ -7,7 +7,11 @@ events through the deterministic EMA teacher backbone, and reports:
   * per-point prototype usage / entropy + dead-prototype count
   * per-event NN view-retrieval R@1/R@5 + alignment / uniformity (secondary lens)
 
-Metrics are written to ``runs/eval_<run_name>/metrics_step.jsonl``.
+Metrics are written to ``<training_run_dir>/eval/<checkpoint>/metrics_step.jsonl``
+when evaluating a training checkpoint (placed inside the training run dir, in a
+subfolder named after the checkpoint dir so the source is obvious), or to
+``runs/eval_<stem>_<timestamp>/metrics_step.jsonl`` for random-init / raw ``.pt``
+baselines. Pass ``evaluation.run_name=...`` to override.
 
 Examples:
   uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun   # resolves latest checkpoint + matches the run's backbone
@@ -100,6 +104,41 @@ def _config_by_run_name(ray_dir: Path) -> Path | None:
     return cfg if cfg.is_file() else None
 
 
+def _latest_checkpoint_dir(root: Path) -> Path | None:
+    """Find the latest checkpoint directory under ``root`` that holds a ``model.pt``.
+
+    Prefers ``checkpoint_manager_snapshot.json`` (Ray's canonical, naming-scheme-
+    agnostic record) and picks the entry with the largest ``global_step``. Falls
+    back to lexicographic sort of ``checkpoint_*`` dirs, which is correct for the
+    legacy timestamp naming but not for ``checkpoint_epoch{N}_step{M}_...`` names
+    (where ``epoch10`` would sort before ``epoch8``).
+
+    Args:
+        root (Path): Directory containing ``checkpoint_*`` subdirs and
+            (optionally) ``checkpoint_manager_snapshot.json``.
+
+    Returns:
+        Path | None: Path to the latest checkpoint dir containing ``model.pt``,
+        or ``None`` if none is found.
+    """
+    snapshot = root / "checkpoint_manager_snapshot.json"
+    if snapshot.is_file():
+        try:
+            data = json.loads(snapshot.read_text())
+            candidates: list[tuple[int, Path]] = []
+            for result in data.get("checkpoint_results", []):
+                name = result.get("checkpoint_dir_name")
+                step = result.get("metrics", {}).get("global_step", -1)
+                if name and (root / name / "model.pt").is_file():
+                    candidates.append((int(step), root / name))
+            if candidates:
+                return max(candidates)[1]
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+    ckpts = sorted(p for p in root.glob("checkpoint_*") if p.is_dir() and (p / "model.pt").is_file())
+    return ckpts[-1] if ckpts else None
+
+
 def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     """Resolve a checkpoint spec to `(model.pt path, run config.json path)`.
 
@@ -135,14 +174,11 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
                 search_roots.append(ray_dir)
         search_roots.append(path)
         for root in search_roots:
-            # Only true checkpoint directories (skip checkpoint_manager_snapshot.json etc.).
-            ckpts = sorted(p for p in root.glob("checkpoint_*") if p.is_dir())
-            if ckpts:
-                model_pt = ckpts[-1] / "model.pt"
-                if model_pt.is_file():
-                    if run_config is None:
-                        run_config = _config_alongside(root) or _config_by_run_name(root)
-                    return model_pt, run_config
+            latest = _latest_checkpoint_dir(root)
+            if latest is not None:
+                if run_config is None:
+                    run_config = _config_alongside(root) or _config_by_run_name(root)
+                return latest / "model.pt", run_config
     # Fall through; let load_checkpoint surface a clear error.
     return path, None
 
@@ -231,11 +267,24 @@ def main() -> None:
     metrics["val_split"] = str(eval_config.val_split)
 
     run_name = str(eval_config.get("run_name") or "").strip()
-    if not run_name:
+    if run_name:
+        # Explicit override -> path under runs/ (user opt-out).
+        run_dir = PROJECT_ROOT / "runs" / run_name
+    elif checkpoint is not None and run_config_path is not None:
+        # Evaluating a training checkpoint -> place inside the training run dir,
+        # in a subfolder named after the checkpoint dir so the source is obvious.
+        training_run_dir = run_config_path.parent
+        ckpt_name = checkpoint.parent.name
+        run_dir = training_run_dir / "eval" / ckpt_name
+        if run_dir.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_dir = training_run_dir / "eval" / f"{ckpt_name}_{timestamp}"
+    else:
+        # Random-init or raw .pt without a run config -> legacy fallback.
         stem = checkpoint.stem if checkpoint is not None else "random_init"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"eval_{stem}_{timestamp}"
-    run_dir = PROJECT_ROOT / "runs" / run_name
+        run_dir = PROJECT_ROOT / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Optional phases that load the raw calo truth (preserving contrib_* fields that

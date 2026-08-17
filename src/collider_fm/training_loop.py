@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1079,9 +1080,16 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                     )
                     ray_checkpoint = ray.train.Checkpoint.from_directory(tmpdir)
 
+                # Name the checkpoint dir by epoch + step + wall-clock timestamp so it is
+                # self-describing (the default is a Ray-generated timestamp). `global_step`
+                # is monotonic across the run, so names stay unique on resume; the timestamp
+                # adds wall-clock context for correlating with SLURM logs.
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                checkpoint_dir_name = f"checkpoint_epoch{epoch}_step{global_step}_{timestamp}"
                 ray.train.report(
                     metrics={"val_loss": epoch_metrics["val_loss"]} if not is_rank0 else epoch_metrics,
                     checkpoint=ray_checkpoint,
+                    checkpoint_dir_name=checkpoint_dir_name,
                 )
 
     finally:
