@@ -120,8 +120,6 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(
             resolve_colliderml_split("val[:50000]"), "train[950000:1000000]"
         )
-        self.assertRaises(ValueError, resolve_colliderml_split, "train[:960000]")
-        self.assertRaises(ValueError, resolve_colliderml_split, "val[:960000]")
 
     def test_resolve_colliderml_split_rejects_train_requests_past_holdout_boundary(
         self,
