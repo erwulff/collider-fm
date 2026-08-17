@@ -104,35 +104,34 @@ def _config_by_run_name(ray_dir: Path) -> Path | None:
     return cfg if cfg.is_file() else None
 
 
-def _latest_checkpoint_dir(root: Path) -> Path | None:
-    """Find the latest checkpoint directory under ``root`` that holds a ``model.pt``.
+def _best_checkpoint_dir(root: Path) -> Path | None:
+    """Find the best checkpoint directory under ``root`` that holds a ``model.pt``.
 
     Prefers ``checkpoint_manager_snapshot.json`` (Ray's canonical, naming-scheme-
-    agnostic record) and picks the entry with the largest ``global_step``. Falls
-    back to lexicographic sort of ``checkpoint_*`` dirs, which is correct for the
-    legacy timestamp naming but not for ``checkpoint_epoch{N}_step{M}_...`` names
-    (where ``epoch10`` would sort before ``epoch8``).
+    agnostic record) and picks the entry with the lowest ``val_loss``. Falls
+    back to lexicographic sort of ``checkpoint_*`` dirs (i.e. the latest), which
+    is the best guess available without per-checkpoint metrics.
 
     Args:
         root (Path): Directory containing ``checkpoint_*`` subdirs and
             (optionally) ``checkpoint_manager_snapshot.json``.
 
     Returns:
-        Path | None: Path to the latest checkpoint dir containing ``model.pt``,
+        Path | None: Path to the best checkpoint dir containing ``model.pt``,
         or ``None`` if none is found.
     """
     snapshot = root / "checkpoint_manager_snapshot.json"
     if snapshot.is_file():
         try:
             data = json.loads(snapshot.read_text())
-            candidates: list[tuple[int, Path]] = []
+            candidates: list[tuple[float, Path]] = []
             for result in data.get("checkpoint_results", []):
                 name = result.get("checkpoint_dir_name")
-                step = result.get("metrics", {}).get("global_step", -1)
-                if name and (root / name / "model.pt").is_file():
-                    candidates.append((int(step), root / name))
+                val_loss = result.get("metrics", {}).get("val_loss")
+                if name and val_loss is not None and (root / name / "model.pt").is_file():
+                    candidates.append((float(val_loss), root / name))
             if candidates:
-                return max(candidates)[1]
+                return min(candidates)[1]
         except (json.JSONDecodeError, ValueError, OSError):
             pass
     ckpts = sorted(p for p in root.glob("checkpoint_*") if p.is_dir() and (p / "model.pt").is_file())
@@ -143,12 +142,12 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     """Resolve a checkpoint spec to `(model.pt path, run config.json path)`.
 
     Accepts `None`/empty (random-init baseline -> `(None, None)`), a `model.pt`
-    file, a run directory (`runs/<run>` -> reads `checkpoint_path.txt` -> latest
-    `checkpoint_*/model.pt`), or a Ray storage directory containing
-    `checkpoint_*` subdirs. The run `config.json` is recovered when the spec is
-    a training run dir (`runs/<run>`) or a Ray storage dir whose name matches a
-    run dir, so the model can be built to match the checkpoint's architecture
-    exactly.
+    file, a run directory (`runs/<run>` -> reads `checkpoint_path.txt` -> best
+    `checkpoint_*/model.pt` by lowest val_loss), or a Ray storage directory
+    containing `checkpoint_*` subdirs. The run `config.json` is recovered when
+    the spec is a training run dir (`runs/<run>`) or a Ray storage dir whose
+    name matches a run dir, so the model can be built to match the checkpoint's
+    architecture exactly.
 
     Args:
         spec (Any): Checkpoint specification (None, path string, or Path).
@@ -174,11 +173,11 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
                 search_roots.append(ray_dir)
         search_roots.append(path)
         for root in search_roots:
-            latest = _latest_checkpoint_dir(root)
-            if latest is not None:
+            best = _best_checkpoint_dir(root)
+            if best is not None:
                 if run_config is None:
                     run_config = _config_alongside(root) or _config_by_run_name(root)
-                return latest / "model.pt", run_config
+                return best / "model.pt", run_config
     # Fall through; let load_checkpoint surface a clear error.
     return path, None
 
