@@ -3,7 +3,7 @@
 Loads a checkpoint (or runs a random-init baseline), encodes held-out validation
 events through the deterministic EMA teacher backbone, and reports:
 
-  * per-point stable rank + singular-value spectrum  (collapse headline)
+  * per-point participation ratio (effective rank) + singular-value spectrum  (collapse headline)
   * per-point prototype usage / entropy + dead-prototype count
   * per-event NN view-retrieval R@1/R@5 + alignment / uniformity (secondary lens)
 
@@ -62,7 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     return build_config_arg_parser(
         description=(
-            "Evaluate ColliderFM pretraining with label-free collapse metrics " "(stable rank, prototype usage, NN view-retrieval, alignment/uniformity)."
+            "Evaluate ColliderFM pretraining with label-free collapse metrics " "(participation ratio, prototype usage, NN view-retrieval, alignment/uniformity)."
         ),
         epilog=(
             "Examples:\n"
@@ -405,8 +405,8 @@ def main() -> None:
     print(f"Wrote summary to {report_path}\n")
     print("--- metrics ---")
     headline = [
-        "stable_rank",
-        "stable_rank_dim",
+        "participation_ratio",
+        "participation_ratio_dim",
         "point_subsample_size",
         "prototype_entropy",
         "num_dead_prototypes",
@@ -426,8 +426,8 @@ def main() -> None:
         else:
             print(f"  {key}: {value}")
     print(
-        f"  stable_rank_spectrum (first 8 of {len(metrics.get('stable_rank_spectrum', []))}): "
-        f"{[round(v, 4) for v in metrics.get('stable_rank_spectrum', [])[:8]]}"
+        f"  participation_ratio_spectrum (first 8 of {len(metrics.get('participation_ratio_spectrum', []))}): "
+        f"{[round(v, 4) for v in metrics.get('participation_ratio_spectrum', [])[:8]]}"
     )
 
     if "dominance" in metrics:

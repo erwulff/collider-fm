@@ -7,19 +7,19 @@ from collider_fm.evaluation import (
     EmbeddingCollection,
     alignment,
     nn_retrieval,
-    stable_rank,
+    participation_ratio,
     summarize,
     uniformity,
 )
 
 
-class StableRankTests(unittest.TestCase):
+class ParticipationRatioTests(unittest.TestCase):
     def test_rank_one_matrix_is_one(self):
-        # Every row identical -> rank 1 -> stable rank ~ 1.
+        # Every row identical -> rank 1 -> participation ratio ~ 1.
         row = torch.randn(1, 4)
         features = row.repeat(1000, 1)
 
-        rank, spectrum = stable_rank(features)
+        rank, spectrum = participation_ratio(features)
 
         self.assertAlmostEqual(rank, 1.0, places=5)
         self.assertEqual(len(spectrum), 4)
@@ -29,18 +29,18 @@ class StableRankTests(unittest.TestCase):
             self.assertLess(value, spectrum[0] * 1e-3)
 
     def test_isotropic_matrix_approaches_dim(self):
-        # Wide-spread isotropic features -> stable rank close to D.
+        # Wide-spread isotropic features -> participation ratio close to D.
         torch.manual_seed(0)
         features = torch.randn(4000, 8)
 
-        rank, _ = stable_rank(features)
+        rank, _ = participation_ratio(features)
 
         self.assertGreater(rank, 6.5)
         self.assertLessEqual(rank, 8.0 + 1e-6)
 
     def test_rejects_non_2d(self):
         with self.assertRaises(ValueError):
-            stable_rank(torch.randn(4, 4, 4))
+            participation_ratio(torch.randn(4, 4, 4))
 
 
 class AlignmentTests(unittest.TestCase):

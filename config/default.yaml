@@ -162,7 +162,7 @@ evaluation:
   checkpoint:
   val_split: val            # held-out window, e.g. val or val[:2000]
   max_events: 4000          # cap on events collected for per-event retrieval/alignment/uniformity
-  point_subsample_budget: 50000  # per-point features sampled for stable rank + prototype usage
+  point_subsample_budget: 50000  # per-point features sampled for participation ratio + prototype usage
   batch_size: 8             # dataloader batch size (events per batch)
   device: cuda
   seed: 7
