@@ -2,9 +2,8 @@
 
 ColliderFM is a self-supervised learning project on ColliderML Release 1. The current runtime path is calo-only: build point-cloud views from `calo_hits`, train a Panda-inspired student-teacher model, save checkpoints and metrics, and generate diagnostics and run-level plots.
 
-The project uses a shared OmegaConf config in `config/default.yaml`. Runtime scripts keep the merged config as a `DictConfig` and only convert it to plain containers at JSON or logging boundaries.
 
-## What lives here
+## Code overview
 
 - `src/collider_fm/data.py` loads ColliderML and applies the project split conventions
 - `src/collider_fm/views.py` builds the current point-view and masking pipeline
@@ -20,9 +19,9 @@ The project uses a shared OmegaConf config in `config/default.yaml`. Runtime scr
 /
 |- src/collider_fm/            # Package code for data, views, model, diagnostics, and vendored PTv3 pieces
 |- tests/                      # Unit tests for the current pipeline
-|- scripts/                    # Download, inspection, training, evaluation, smoke-test, and plotting scripts
+|- scripts/                    # Download, inspection, training, evaluation, and plotting scripts
 |- notebooks/                  # Newcomer walkthrough notebooks
-|- slurm/                      # Cluster job scripts for setup, downloads, smoke tests, and training
+|- slurm/                      # Cluster job scripts for setup, downloads, and training
 |- apptainer/                  # Container helper scripts
 |- Panda_repo/                 # Panda reference submodule
 |- markdown/                   # Project markdown docs except README.md and AGENTS.md
