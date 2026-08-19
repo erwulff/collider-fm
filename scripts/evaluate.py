@@ -3,11 +3,15 @@
 Loads a checkpoint (or runs a random-init baseline), encodes held-out validation
 events through the deterministic EMA teacher backbone, and reports:
 
-  * per-point stable rank + singular-value spectrum  (collapse headline)
+  * per-point participation ratio (effective rank) + singular-value spectrum  (collapse headline)
   * per-point prototype usage / entropy + dead-prototype count
   * per-event NN view-retrieval R@1/R@5 + alignment / uniformity (secondary lens)
 
-Metrics are written to ``runs/eval_<run_name>/metrics_step.jsonl``.
+Metrics are written to ``<training_run_dir>/eval/<checkpoint>/metrics_step.jsonl``
+when evaluating a training checkpoint (placed inside the training run dir, in a
+subfolder named after the checkpoint dir so the source is obvious), or to
+``runs/eval_<stem>_<timestamp>/metrics_step.jsonl`` for random-init / raw ``.pt``
+baselines. Pass ``evaluation.run_name=...`` to override.
 
 Examples:
   uv run python scripts/evaluate.py evaluation.checkpoint=runs/myrun   # resolves latest checkpoint + matches the run's backbone
@@ -58,7 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     return build_config_arg_parser(
         description=(
-            "Evaluate ColliderFM pretraining with label-free collapse metrics " "(stable rank, prototype usage, NN view-retrieval, alignment/uniformity)."
+            "Evaluate ColliderFM pretraining with label-free collapse metrics " "(participation ratio, prototype usage, NN view-retrieval, alignment/uniformity)."
         ),
         epilog=(
             "Examples:\n"
@@ -100,16 +104,50 @@ def _config_by_run_name(ray_dir: Path) -> Path | None:
     return cfg if cfg.is_file() else None
 
 
+def _best_checkpoint_dir(root: Path) -> Path | None:
+    """Find the best checkpoint directory under ``root`` that holds a ``model.pt``.
+
+    Prefers ``checkpoint_manager_snapshot.json`` (Ray's canonical, naming-scheme-
+    agnostic record) and picks the entry with the lowest ``val_loss``. Falls
+    back to lexicographic sort of ``checkpoint_*`` dirs (i.e. the latest), which
+    is the best guess available without per-checkpoint metrics.
+
+    Args:
+        root (Path): Directory containing ``checkpoint_*`` subdirs and
+            (optionally) ``checkpoint_manager_snapshot.json``.
+
+    Returns:
+        Path | None: Path to the best checkpoint dir containing ``model.pt``,
+        or ``None`` if none is found.
+    """
+    snapshot = root / "checkpoint_manager_snapshot.json"
+    if snapshot.is_file():
+        try:
+            data = json.loads(snapshot.read_text())
+            candidates: list[tuple[float, Path]] = []
+            for result in data.get("checkpoint_results", []):
+                name = result.get("checkpoint_dir_name")
+                val_loss = result.get("metrics", {}).get("val_loss")
+                if name and val_loss is not None and (root / name / "model.pt").is_file():
+                    candidates.append((float(val_loss), root / name))
+            if candidates:
+                return min(candidates)[1]
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+    ckpts = sorted(p for p in root.glob("checkpoint_*") if p.is_dir() and (p / "model.pt").is_file())
+    return ckpts[-1] if ckpts else None
+
+
 def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     """Resolve a checkpoint spec to `(model.pt path, run config.json path)`.
 
     Accepts `None`/empty (random-init baseline -> `(None, None)`), a `model.pt`
-    file, a run directory (`runs/<run>` -> reads `checkpoint_path.txt` -> latest
-    `checkpoint_*/model.pt`), or a Ray storage directory containing
-    `checkpoint_*` subdirs. The run `config.json` is recovered when the spec is
-    a training run dir (`runs/<run>`) or a Ray storage dir whose name matches a
-    run dir, so the model can be built to match the checkpoint's architecture
-    exactly.
+    file, a run directory (`runs/<run>` -> reads `checkpoint_path.txt` -> best
+    `checkpoint_*/model.pt` by lowest val_loss), or a Ray storage directory
+    containing `checkpoint_*` subdirs. The run `config.json` is recovered when
+    the spec is a training run dir (`runs/<run>`) or a Ray storage dir whose
+    name matches a run dir, so the model can be built to match the checkpoint's
+    architecture exactly.
 
     Args:
         spec (Any): Checkpoint specification (None, path string, or Path).
@@ -135,14 +173,11 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
                 search_roots.append(ray_dir)
         search_roots.append(path)
         for root in search_roots:
-            # Only true checkpoint directories (skip checkpoint_manager_snapshot.json etc.).
-            ckpts = sorted(p for p in root.glob("checkpoint_*") if p.is_dir())
-            if ckpts:
-                model_pt = ckpts[-1] / "model.pt"
-                if model_pt.is_file():
-                    if run_config is None:
-                        run_config = _config_alongside(root) or _config_by_run_name(root)
-                    return model_pt, run_config
+            best = _best_checkpoint_dir(root)
+            if best is not None:
+                if run_config is None:
+                    run_config = _config_alongside(root) or _config_by_run_name(root)
+                return best / "model.pt", run_config
     # Fall through; let load_checkpoint surface a clear error.
     return path, None
 
@@ -231,11 +266,24 @@ def main() -> None:
     metrics["val_split"] = str(eval_config.val_split)
 
     run_name = str(eval_config.get("run_name") or "").strip()
-    if not run_name:
+    if run_name:
+        # Explicit override -> path under runs/ (user opt-out).
+        run_dir = PROJECT_ROOT / "runs" / run_name
+    elif checkpoint is not None and run_config_path is not None:
+        # Evaluating a training checkpoint -> place inside the training run dir,
+        # in a subfolder named after the checkpoint dir so the source is obvious.
+        training_run_dir = run_config_path.parent
+        ckpt_name = checkpoint.parent.name
+        run_dir = training_run_dir / "eval" / ckpt_name
+        if run_dir.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_dir = training_run_dir / "eval" / f"{ckpt_name}_{timestamp}"
+    else:
+        # Random-init or raw .pt without a run config -> legacy fallback.
         stem = checkpoint.stem if checkpoint is not None else "random_init"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"eval_{stem}_{timestamp}"
-    run_dir = PROJECT_ROOT / "runs" / run_name
+        run_dir = PROJECT_ROOT / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Optional phases that load the raw calo truth (preserving contrib_* fields that
@@ -357,8 +405,8 @@ def main() -> None:
     print(f"Wrote summary to {report_path}\n")
     print("--- metrics ---")
     headline = [
-        "stable_rank",
-        "stable_rank_dim",
+        "participation_ratio",
+        "participation_ratio_dim",
         "point_subsample_size",
         "prototype_entropy",
         "num_dead_prototypes",
@@ -378,8 +426,8 @@ def main() -> None:
         else:
             print(f"  {key}: {value}")
     print(
-        f"  stable_rank_spectrum (first 8 of {len(metrics.get('stable_rank_spectrum', []))}): "
-        f"{[round(v, 4) for v in metrics.get('stable_rank_spectrum', [])[:8]]}"
+        f"  participation_ratio_spectrum (first 8 of {len(metrics.get('participation_ratio_spectrum', []))}): "
+        f"{[round(v, 4) for v in metrics.get('participation_ratio_spectrum', [])[:8]]}"
     )
 
     if "dominance" in metrics:

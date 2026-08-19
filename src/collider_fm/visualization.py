@@ -7,12 +7,17 @@ features -- one dot per grid-sampled calorimeter hit, unit-normalized -- and sca
 (e± / γ / μ± / charged hadron / neutral hadron / nucleus / other) so the legend stays
 readable; see :func:`collider_fm.evaluation_labels.pdg_bucket`.
 
-Two feature spaces: the **full up-cast** (all pooling levels → input resolution, an
-exact 1:1 coord bijection to raw hits) and **up_cast(2)** (the pretraining space, where
-each point is a downsampled voxel inheriting its cluster's energy-dominant pdg). The
-full up-cast is needed because ``up_cast(level=2)`` stops at downsampled stage-2, which
-has no mapping back to raw hits. Augmentation is off (one clean base view per event),
-matching the paper's ``model(data)`` on raw data.
+Two feature spaces: the **full up-cast** (all pooling levels → voxel resolution, i.e.
+the backbone input, with an exact 1:1 coord bijection to voxels) and **up_cast(2)**
+(the pretraining space, where each point is a downsampled voxel cluster whose raw-hit
+membership is recoverable by inverting the pooling chain, so it inherits the
+energy-dominant pdg across those hits). The full up-cast is needed because
+``up_cast(level=2)`` stops at downsampled stage-2, which has no direct mapping to
+voxels. Note the full-up-cast bijection is to *voxels*, not raw hits: voxelization
+(``grid_sample``) keeps one representative hit per voxel, so each voxel is labeled via
+that representative hit's pdg -- a lossy aggregation that sits before the backbone.
+Augmentation is off (one clean base view per event), matching the paper's
+``model(data)`` on raw data.
 """
 
 from __future__ import annotations
@@ -68,14 +73,15 @@ _EVENT_COLORS: list[str] = [
 
 
 def full_up_cast(point: Point) -> Point:
-    """Rebuild per-point features at input resolution by walking the full pooling chain.
+    """Rebuild per-point features at voxel resolution (the backbone input) by walking the full pooling chain.
 
     Mirrors `Panda_repo/panda/model_base.py` `forward(upcast=True)`: repeatedly pop
     `pooling_parent` / `pooling_inverse` and concatenate each parent's feature with
     its children's features broadcast back via `point.feat[inverse]`, until no parent
     remains. Unlike `SonataModel.up_cast` (which stops after `up_cast_level`), this
-    walks all levels and returns one feature per input point. Consumes the breadcrumb
-    keys (run on a fresh enc output each call).
+    walks all levels and returns one feature per voxel (the backbone input, after
+    ``grid_sample`` voxelization). Consumes the breadcrumb keys (run on a fresh enc
+    output each call).
 
     Args:
         point (Point): Backbone output (deepest stage, full pooling chain intact).
@@ -152,10 +158,11 @@ def upcast2_input_map(point: Point, up_cast_level: int = 2) -> tuple[Point, torc
 def match_to_input_coords(out_coord: torch.Tensor, in_coord: torch.Tensor) -> torch.Tensor:
     """For each output point, return the index of its nearest input point by Euclidean distance.
 
-    Recovers the input row (-> `source_index` / raw hit index) for each full-up-cast
-    output point, which is at the same resolution but reordered by serialization.
-    Returns `[num_out]` long indices into `in_coord`; on the happy path (verified) this
-    is a bijection within float noise.
+    Recovers the voxel row for each full-up-cast output point, which is at voxel
+    resolution but reordered by serialization. The returned index is into the input
+    (voxel) cloud; `view["source_index"]` then maps each voxel to its representative
+    raw hit for labeling. Returns `[num_out]` long indices into `in_coord`; on the
+    happy path (verified) this is a bijection within float noise.
 
     Uses `scipy.spatial.cKDTree` on CPU (O(N log N), bounded memory) rather than an
     O(N^2) `cdist` -- the per-event point count (~10^4) makes the dense distance matrix
@@ -212,9 +219,9 @@ def collect_tsne_points(
     (`build_point_view_from_event`), run the deterministic teacher backbone, then
     extract features in one of two spaces:
 
-    - `"full"` (default): `full_up_cast` to input resolution (one feature per
-      grid-sampled hit). Each output point is coord-matched back to its input row ->
-      `source_index` (raw hit index) -> the dominant particle's `pdg_id`.
+    - `"full"` (default): `full_up_cast` to voxel resolution (one feature per
+      grid-sampled voxel). Each output point is coord-matched back to its voxel row ->
+      `source_index` (that voxel's representative raw hit) -> the particle's `pdg_id`.
     - `"upcast2"`: up-cast only `up_cast_level` levels (the pretraining feature space).
       These points are downsampled vs input; each is a cluster of input points
       (recovered exactly via `upcast2_input_map`) and inherits the energy-dominant
@@ -339,9 +346,9 @@ def collect_tsne_points(
 
 
 def _full_space_labels(point, view, pdg_per_hit):
-    """Full-up-cast: input-resolution features, per-hit pdg via coord bijection."""
+    """Full-up-cast: voxel-resolution features, per-voxel pdg via coord bijection to voxels."""
     point = full_up_cast(point)
-    feats = point.feat  # [n_in, D] at input resolution
+    feats = point.feat  # [n_in, D] at voxel resolution
     out_coord = point.coord  # [n_in, 3], reordered vs input
 
     in_idx = match_to_input_coords(out_coord, view["coord"])

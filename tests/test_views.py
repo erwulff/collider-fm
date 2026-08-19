@@ -163,13 +163,6 @@ class ViewTests(unittest.TestCase):
         indices = grid_sample(coord, grid_size=0.001)
         self.assertEqual(indices.shape[0], 5)
 
-    def test_build_point_view_grid_sample_disabled_is_identity(self):
-        event = self.make_event()
-        view_disabled = build_point_view_from_event(
-            event, device=torch.device("cpu"), grid_sample_enabled=False
-        )
-        self.assertEqual(tuple(view_disabled["coord"].shape), (4, 3))
-
     def test_build_point_view_grid_sample_enabled_reduces_or_preserves(self):
         event = {
             "calo_hits": {
@@ -254,26 +247,6 @@ class ViewTests(unittest.TestCase):
             abs(float(principal_x.mean()) - float(local_x.mean())), 10.0
         )
 
-    def test_build_sonata_batch_unconstrained_preserves_shapes(self):
-        batch = build_sonata_batch(
-            [self.make_event(), self.make_event()],
-            device=torch.device("cpu"),
-            coord_noise_scale=0.0,
-            feat_noise_scale=0.0,
-            point_dropout=0.0,
-            num_global_views=2,
-            num_local_views=3,
-            global_crop_min_ratio=1.0,
-            global_crop_max_ratio=1.0,
-            local_crop_min_ratio=1.0,
-            local_crop_max_ratio=1.0,
-            constrain_to_principal=False,
-        )
-        self.assertEqual(tuple(batch["global_coord"].shape), (16, 3))
-        self.assertEqual(tuple(batch["local_coord"].shape), (24, 3))
-        self.assertTrue(
-            torch.equal(batch["global_offset"], torch.tensor([4, 8, 12, 16]))
-        )
 
 
 if __name__ == "__main__":

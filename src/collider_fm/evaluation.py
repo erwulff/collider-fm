@@ -1,6 +1,6 @@
 """Label-free representation-quality metrics for ColliderFM pretraining.
 
-Focus: **collapse detection** on the per-point 288-d backbone features that a
+Focus: **collapse detection** on the per-point ``embed_dim``-d backbone features that a
 downstream head would consume (the direct ``point.feat`` output, not mean-pooled).
 
 All metrics are computed on held-out validation events with the (deterministic)
@@ -9,7 +9,7 @@ jitter / dropout) and masking is off by construction -- the harness never calls
 the training ``forward``, so no mask tokens are inserted and ``mean_pool_features``
 sees every point.
 
-The headline is :func:`stable_rank` (floor-free: collapse -> ~1, healthy -> ~D).
+The headline is :func:`participation_ratio` (floor-free: collapse -> ~1, healthy -> ~D).
 Per-event retrieval / alignment / uniformity are a secondary invariance lens.
 """
 
@@ -29,7 +29,7 @@ from .views import build_sonata_batch, move_sonata_batch_to_device
 
 __all__ = [
     "EmbeddingCollection",
-    "stable_rank",
+    "participation_ratio",
     "alignment",
     "uniformity",
     "nn_retrieval",
@@ -43,32 +43,33 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def stable_rank(features: torch.Tensor) -> tuple[float, list[float]]:
-    """Stable rank ``(sum sigma)^2 / sum sigma^2`` plus the sorted spectrum.
+def participation_ratio(features: torch.Tensor) -> tuple[float, list[float]]:
+    """Participation ratio (effective rank) ``(sum sigma)^2 / sum sigma^2`` + spectrum.
 
-    Computed on the raw (uncentered) ``[N, D]`` feature matrix via singular
-    values. Bounded in ``[1, min(N, D)]``: a rank-1 (collapsed) matrix -> 1, an
-    isotropic matrix -> ``min(N, D)`` (288 for the per-point backbone output).
-    The full descending singular-value spectrum is returned alongside so a
-    dominant mean component (one large ``sigma`` masking healthy variation) is
-    visible.
+    The nuclear-norm participation ratio of the raw (uncentered) ``[N, D]``
+    feature matrix, computed via singular values. Bounded in
+    ``[1, min(N, D)]``: a rank-1 (collapsed) matrix -> 1, an isotropic matrix ->
+    ``min(N, D)``. The full descending singular-value spectrum is returned
+    alongside so a dominant mean component (one large ``sigma`` masking healthy
+    variation) is visible.
 
-    This is the nuclear-norm participation ratio ``(sum sigma)^2 / sum sigma^2``
-    -- intentionally *not* Roy-Vetterli's entropy-based "effective rank"
-    ``exp(-sum p_i log p_i)``.
+    This is the participation ratio (inverse Herfindahl index of the singular
+    spectrum), *not* the entropy-based "effective rank"
+    ``exp(-sum p_i log p_i)`` of Roy-Vetterli, and *not* the "stable rank"
+    ``sum sigma^2 / sigma_1^2`` of numerical linear algebra.
 
     Args:
         features (torch.Tensor): Feature matrix of shape `[N, D]`.
 
     Returns:
-        tuple[float, list[float]]: The stable rank (float) and the descending
-        singular-value spectrum (list of floats).
+        tuple[float, list[float]]: The participation ratio (float) and the
+        descending singular-value spectrum (list of floats).
 
     Raises:
         ValueError: If `features` is not 2-D.
     """
     if features.ndim != 2:
-        raise ValueError(f"stable_rank expects 2D features, got {features.ndim}D")
+        raise ValueError(f"participation_ratio expects 2D features, got {features.ndim}D")
     matrix = features.float()
     singular = torch.linalg.svdvals(matrix).clamp_min(0.0)
     denom = (singular * singular).sum().clamp_min(1e-12)
@@ -190,10 +191,10 @@ def nn_retrieval(
 class EmbeddingCollection:
     """Bounded held-out embeddings from the teacher backbone.
 
-    - ``crop0`` / ``crop1``: per-event L2-normalized pooled vectors ``[N, 288]``
+    - ``crop0`` / ``crop1``: per-event L2-normalized pooled vectors ``[N, embed_dim]``
       (the two augmented global crops), for retrieval / alignment / uniformity.
-    - ``point_subsample``: raw per-point features ``[M, 288]`` (M <= budget),
-      for stable rank.
+    - ``point_subsample``: raw per-point features ``[M, embed_dim]`` (M <= budget),
+      for participation ratio.
     - ``prototype_bincount``: ``[num_prototypes]`` assignment counts over the
       same subsample, for prototype usage / entropy.
     """
@@ -235,7 +236,7 @@ def collect_embeddings(
     """Collect bounded held-out embeddings from the teacher backbone.
 
     Per-point features are subsampled (never fully accumulated) to bound memory:
-    only ``2N x 288`` pooled + ``<=budget x 288`` subsample + ``[num_prototypes]``
+    only ``2N x embed_dim`` pooled + ``<=budget x embed_dim`` subsample + ``[num_prototypes]``
     bincount are stored. The subsample is drawn proportionally across batches so
     it is not biased toward early events.
 
@@ -287,10 +288,10 @@ def collect_embeddings(
         )
         point = model.teacher["backbone"](point)
         point = model.up_cast(point)
-        point_features = point.feat  # [P, 288]
+        point_features = point.feat  # [P, embed_dim]
 
         # Per-event pooled (secondary lens): two global crops, event-major.
-        pooled = mean_pool_features(point_features, point.offset)  # [2N, 288]
+        pooled = mean_pool_features(point_features, point.offset)  # [2N, embed_dim]
         n_events_batch = pooled.shape[0] // 2
         if max_events is not None:
             keep = max(0, max_events - events_collected)
@@ -310,7 +311,7 @@ def collect_embeddings(
             quota = max(1, int(round(remaining_budget / remaining_batches)))
             k = min(P, quota, remaining_budget)
             idx = torch.randperm(P, generator=generator)[:k].to(device)
-            sampled = point_features[idx]  # [k, 288] on device
+            sampled = point_features[idx]  # [k, embed_dim] on device
             logits = head(sampled.float())  # [k, num_prototypes]
             assigns = logits.argmax(dim=-1)
             bincount += torch.bincount(assigns, minlength=num_prototypes).cpu()
@@ -367,15 +368,15 @@ def summarize(collection: EmbeddingCollection, *, dead_fraction: float = 0.1) ->
             `1/K` below which a prototype is "dead". Defaults to 0.1.
 
     Returns:
-        dict[str, object]: The full metric suite (stable rank, alignment,
+        dict[str, object]: The full metric suite (participation ratio, alignment,
         uniformity, retrieval, prototype health).
     """
     metrics: dict[str, object] = {}
 
-    rank, spectrum = stable_rank(collection.point_subsample)
-    metrics["stable_rank"] = rank
-    metrics["stable_rank_spectrum"] = spectrum
-    metrics["stable_rank_dim"] = int(collection.point_subsample.shape[1])
+    rank, spectrum = participation_ratio(collection.point_subsample)
+    metrics["participation_ratio"] = rank
+    metrics["participation_ratio_spectrum"] = spectrum
+    metrics["participation_ratio_dim"] = int(collection.point_subsample.shape[1])
     metrics["point_subsample_size"] = int(collection.point_subsample.shape[0])
 
     total = collection.prototype_bincount.sum().clamp_min(1)
