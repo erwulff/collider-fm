@@ -12,8 +12,9 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 from collider_fm._panda.structure import Point
 from collider_fm.visualization import (
     _cluster_dominant_pdg,
-    make_tsne_plots,
+    make_2d_embedding_plots,
     match_to_input_coords,
+    pca_plot,
     tsne_plot,
     upcast2_input_map,
 )
@@ -185,7 +186,33 @@ class TsnePlotTests(unittest.TestCase):
             self.assertGreater(path.stat().st_size, 0)
 
 
-class MakeTsnePlotsTests(unittest.TestCase):
+class PcaPlotTests(unittest.TestCase):
+    def test_writes_png_file(self):
+        # Smoke: synthetic 2-cluster features -> PNG file exists after plotting.
+        torch.manual_seed(0)
+        a = torch.randn(60, 8) + 5.0
+        b = torch.randn(60, 8) - 5.0
+        features = torch.cat([a, b], dim=0)
+        color = torch.cat([torch.zeros(60), torch.ones(60)]).long()
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pca.png"
+            pca_plot(features, color, path, title="smoke", max_points=200, seed=0)
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 0)
+
+    def test_drops_unknown_labels(self):
+        # All-unknown (-1) color -> nothing to plot -> no file written (no crash).
+        features = torch.randn(20, 4)
+        color = torch.full((20,), -1, dtype=torch.long)
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pca.png"
+            pca_plot(features, color, path, max_points=200, seed=0)
+            self.assertFalse(path.exists())
+
+
+class Make2dEmbeddingPlotsTests(unittest.TestCase):
     def _collection(self, n=40):
         torch.manual_seed(0)
         return TsnePointCollection(
@@ -197,15 +224,21 @@ class MakeTsnePlotsTests(unittest.TestCase):
 
     def test_writes_pdg_and_event_id_plots(self):
         with TemporaryDirectory() as tmp:
-            paths = make_tsne_plots(self._collection(), tmp, seed=0)
+            paths = make_2d_embedding_plots(self._collection(), tmp, seed=0)
             names = {Path(p).name for p in paths}
             self.assertEqual(names, {"tsne_pdg_id.png", "tsne_event_id.png"})
 
     def test_subdir_writes_to_subdirectory(self):
         with TemporaryDirectory() as tmp:
-            paths = make_tsne_plots(self._collection(), tmp, seed=0, subdir="upcast2")
+            paths = make_2d_embedding_plots(self._collection(), tmp, seed=0, subdir="upcast2")
             self.assertTrue(all("upcast2" in p for p in paths))
             self.assertTrue((Path(tmp) / "upcast2" / "tsne_event_id.png").exists())
+
+    def test_pca_method_writes_pca_plots(self):
+        with TemporaryDirectory() as tmp:
+            paths = make_2d_embedding_plots(self._collection(), tmp, method="pca", seed=0)
+            names = {Path(p).name for p in paths}
+            self.assertEqual(names, {"pca_pdg_id.png", "pca_event_id.png"})
 
 
 if __name__ == "__main__":

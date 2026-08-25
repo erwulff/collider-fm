@@ -1,9 +1,11 @@
-"""Panda-style per-point t-SNE visualization of the pretrained backbone.
+"""Panda-style per-point visualization (t-SNE + PCA) of the pretrained backbone.
 
 Reproduces the Panda paper (arXiv 2512.01324, Figure 2): embed the backbone's per-point
 features -- one dot per grid-sampled calorimeter hit, unit-normalized -- and scatter the
-2D t-SNE colored by particle type and by event id. Particle type collapses the raw
-``pdg_id`` (of the dominant contributing particle) to 7 coarse calorimetry-role buckets
+2D projection colored by particle type and by event id. Two projections are produced:
+**t-SNE** (local neighborhood structure) and **PCA** (global variance structure), so the
+two views can be compared. Particle type collapses the raw ``pdg_id`` (of the dominant
+contributing particle) to 7 coarse calorimetry-role buckets
 (e± / γ / μ± / charged hadron / neutral hadron / nucleus / other) so the legend stays
 readable; see :func:`collider_fm.evaluation_labels.pdg_bucket`.
 
@@ -42,7 +44,8 @@ __all__ = [
     "match_to_input_coords",
     "collect_tsne_points",
     "tsne_plot",
-    "make_tsne_plots",
+    "pca_plot",
+    "make_2d_embedding_plots",
 ]
 
 # Display colors for the 7 calorimetry-role buckets, keyed by PDG_BUCKET_NAMES. A
@@ -415,6 +418,90 @@ def _cluster_dominant_pdg(
     return out
 
 
+def _prepare_xy(
+    features: torch.Tensor,
+    color: torch.Tensor,
+    *,
+    max_points: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Shared preprocessing for the plot functions: to numpy, drop unknown (-1) color
+    rows, subsample to `max_points` with a seeded rng.
+
+    Args:
+        features (torch.Tensor): Feature matrix `[N, D]`.
+        color (torch.Tensor): Per-point integer color `[N]`; rows with `-1` dropped.
+        max_points (int): Cap on points retained.
+        seed (int): RNG seed for subsampling.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] | None: `(X, y)` or None if fewer than 2 points
+        remain (caller should skip).
+    """
+    X = features.float().cpu().numpy()
+    y = color.long().cpu().numpy()
+    known = y >= 0
+    X = X[known]
+    y = y[known]
+    if X.shape[0] < 2:
+        return None
+    if X.shape[0] > max_points:
+        rng = np.random.default_rng(seed)
+        sel = rng.choice(X.shape[0], size=max_points, replace=False)
+        X = X[sel]
+        y = y[sel]
+    return X, y
+
+
+def _scatter_2d(
+    emb: np.ndarray,
+    y: np.ndarray,
+    path: str | Path,
+    *,
+    title: str,
+    color_label: str,
+    categories: Sequence[tuple[str, str]] | None = None,
+) -> None:
+    """Render a `[N, 2]` embedding `emb` to a PNG at `path`, colored by integer `y`.
+
+    If `categories` is given (a list of `(name, color)` pairs), `y` is taken as
+    integer bucket ids in `[0, len(categories))` and the plot uses a discrete colormap
+    with a per-bucket legend instead of a continuous colorbar.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    if categories is not None:
+        from matplotlib.colors import ListedColormap
+
+        cmap = ListedColormap([c for _, c in categories])
+        k = len(categories)
+        ax.scatter(
+            emb[:, 0],
+            emb[:, 1],
+            c=y,
+            cmap=cmap,
+            s=2,
+            alpha=0.5,
+            vmin=-0.5,
+            vmax=k - 0.5,
+        )
+        proxies = [plt.Line2D([], [], marker="o", linestyle="", markersize=5, color=c, label=n) for n, c in categories]
+        ax.legend(handles=proxies, loc="best", fontsize=8, framealpha=0.7)
+    else:
+        scatter = ax.scatter(emb[:, 0], emb[:, 1], c=y, cmap="tab20", s=2, alpha=0.5)
+        fig.colorbar(scatter, ax=ax, label=color_label)
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
 def tsne_plot(
     features: torch.Tensor,
     color: torch.Tensor,
@@ -452,25 +539,13 @@ def tsne_plot(
             `(name, color)` pairs for discrete coloring. If None, uses continuous
             coloring. Defaults to None.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
 
-    X = features.float().cpu().numpy()
-    y = color.long().cpu().numpy()
-    known = y >= 0
-    X = X[known]
-    y = y[known]
-    if X.shape[0] < 2:
+    prepped = _prepare_xy(features, color, max_points=max_points, seed=seed)
+    if prepped is None:
         return
-    if X.shape[0] > max_points:
-        rng = np.random.default_rng(seed)
-        sel = rng.choice(X.shape[0], size=max_points, replace=False)
-        X = X[sel]
-        y = y[sel]
+    X, y = prepped
 
     # PCA -> 50-d (or fewer) before t-SNE.
     pca_dim = min(50, X.shape[1], X.shape[0] - 1)
@@ -484,61 +559,99 @@ def tsne_plot(
         random_state=seed,
     ).fit_transform(X)
 
-    fig, ax = plt.subplots(figsize=(7, 6))
-    if categories is not None:
-        from matplotlib.colors import ListedColormap
-
-        cmap = ListedColormap([c for _, c in categories])
-        k = len(categories)
-        ax.scatter(
-            emb[:, 0],
-            emb[:, 1],
-            c=y,
-            cmap=cmap,
-            s=2,
-            alpha=0.5,
-            vmin=-0.5,
-            vmax=k - 0.5,
-        )
-        proxies = [plt.Line2D([], [], marker="o", linestyle="", markersize=5, color=c, label=n) for n, c in categories]
-        ax.legend(handles=proxies, loc="best", fontsize=8, framealpha=0.7)
-    else:
-        scatter = ax.scatter(emb[:, 0], emb[:, 1], c=y, cmap="tab20", s=2, alpha=0.5)
-        fig.colorbar(scatter, ax=ax, label=color_label)
-    ax.set_title(title)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
+    _scatter_2d(emb, y, path, title=title, color_label=color_label, categories=categories)
 
 
-def make_tsne_plots(
+def pca_plot(
+    features: torch.Tensor,
+    color: torch.Tensor,
+    path: str | Path,
+    *,
+    title: str = "",
+    color_label: str = "label id",
+    max_points: int = 8000,
+    seed: int = 0,
+    categories: Sequence[tuple[str, str]] | None = None,
+) -> None:
+    """2D PCA scatter (first two principal components) of `features`; saved to `path`.
+
+    Linear and deterministic, so the result is reproducible and the axes carry real
+    global-variance structure (unlike t-SNE, which only preserves local neighborhoods).
+    `color` rows with `-1` (unknown) are dropped. Subsampled to `max_points` for the
+    fit. Same signature/contract as :func:`tsne_plot`.
+
+    Args:
+        features (torch.Tensor): Feature matrix of shape `[N, D]`.
+        color (torch.Tensor): Per-point color values, shape `[N]`. Rows with `-1`
+            are dropped.
+        path (str | Path): Output PNG file path.
+        title (str, optional): Plot title. Defaults to `""`.
+        color_label (str, optional): Colorbar label for continuous coloring. Defaults
+            to `"label id"`.
+        max_points (int, optional): Maximum points for the PCA fit. Defaults to 8000.
+        seed (int, optional): RNG seed for PCA and subsampling. Defaults to 0.
+        categories (Sequence[tuple[str, str]] | None, optional): List of
+            `(name, color)` pairs for discrete coloring. If None, uses continuous
+            coloring. Defaults to None.
+    """
+    from sklearn.decomposition import PCA
+
+    prepped = _prepare_xy(features, color, max_points=max_points, seed=seed)
+    if prepped is None:
+        return
+    X, y = prepped
+
+    n_components = min(2, X.shape[1], X.shape[0] - 1)
+    if n_components < 2:
+        return
+    emb = PCA(n_components=2, random_state=seed).fit_transform(X)
+
+    _scatter_2d(emb, y, path, title=title, color_label=color_label, categories=categories)
+
+
+def make_2d_embedding_plots(
     collection: TsnePointCollection,
-    tsne_dir: str | Path,
+    out_dir: str | Path,
     *,
     seed: int = 0,
     subdir: str | None = None,
+    method: str = "tsne",
 ) -> list[str]:
-    """Write the pdg_id / event_id t-SNE PNGs to `tsne_dir`.
+    """Write the pdg_id / event_id 2D-embedding PNGs to `out_dir`.
 
     Returns the list of written paths; skips a plot silently if its channel is empty.
     pdg_id collapses to the 7 calorimetry-role buckets (`pdg_bucket`) with a discrete
     legend; event_id is a discrete per-event colormap. `subdir` writes to
-    `tsne_dir/subdir` (keeps the up_cast(2) plots separate from the full-up-cast ones).
+    `out_dir/subdir` (keeps the up_cast(2) plots separate from the full-up-cast ones).
+
+    `method` selects the projection: ``"tsne"`` (default) uses :func:`tsne_plot`,
+    ``"pca"`` uses :func:`pca_plot`. Both consume the same `collection`, so emitting
+    both is cheap -- the expensive :func:`collect_tsne_points` runs once and the two
+    methods each add only their own (fast) dimensionality-reduction fit.
 
     Args:
         collection (TsnePointCollection): Bounded features and coloring channels.
-        tsne_dir (str | Path): Output directory for the PNG files.
-        seed (int, optional): RNG seed for t-SNE. Defaults to 0.
-        subdir (str | None, optional): Subdirectory under `tsne_dir`. If None, writes
-            directly to `tsne_dir`. Defaults to None.
+        out_dir (str | Path): Output directory for the PNG files.
+        seed (int, optional): RNG seed for the projection. Defaults to 0.
+        subdir (str | None, optional): Subdirectory under `out_dir`. If None, writes
+            directly to `out_dir`. Defaults to None.
+        method (str, optional): Projection method, ``"tsne"`` or ``"pca"``. Defaults
+            to ``"tsne"``.
 
     Returns:
         list[str]: Paths to the written PNG files.
+
+    Raises:
+        ValueError: If `method` is not ``"tsne"`` or ``"pca"``.
     """
-    out_dir = Path(tsne_dir) if subdir is None else Path(tsne_dir) / subdir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if method not in {"tsne", "pca"}:
+        raise ValueError(f"method must be 'tsne' or 'pca', got {method!r}")
+    plot_fn = tsne_plot if method == "tsne" else pca_plot
+    label = "t-SNE" if method == "tsne" else "PCA"
+    prefix = "tsne_" if method == "tsne" else "pca_"
+
+    target_dir = Path(out_dir) if subdir is None else Path(out_dir) / subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
     if collection.features.shape[0] == 0:
         return paths
@@ -548,17 +661,17 @@ def make_tsne_plots(
     n_events = max(int(collection.event_id.max().item()) + 1, 1) if collection.num_events else 1
     event_categories = [(f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)]
     specs = [
-        (bucket, "tsne_pdg_id.png", "t-SNE colored by particle type", "particle type", pdg_categories),
-        (collection.event_id, "tsne_event_id.png", "t-SNE colored by event id", "event id", event_categories),
+        (bucket, f"{prefix}pdg_id.png", f"{label} colored by particle type", "particle type", pdg_categories),
+        (collection.event_id, f"{prefix}event_id.png", f"{label} colored by event id", "event id", event_categories),
     ]
-    for color, name, title, label, categories in specs:
-        path = out_dir / name
-        tsne_plot(
+    for color, name, title, color_label, categories in specs:
+        path = target_dir / name
+        plot_fn(
             collection.features,
             color,
             path,
             title=title,
-            color_label=label,
+            color_label=color_label,
             seed=seed,
             categories=categories,
         )

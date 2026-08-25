@@ -325,7 +325,7 @@ def main() -> None:
     # and up_cast(2) (the pretraining space, when enabled).
     if enable_tsne:
         from collider_fm.evaluation_labels import load_particle_pdg
-        from collider_fm.visualization import collect_tsne_points, make_tsne_plots
+        from collider_fm.visualization import collect_tsne_points, make_2d_embedding_plots
 
         tsne_max_events = int(eval_config.get("tsne_max_events", 100))
         tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
@@ -366,7 +366,8 @@ def main() -> None:
             "num_events": full_collection.num_events,
             "num_points": int(full_collection.features.shape[0]),
             "feature_dim": int(full_collection.features.shape[1]) if full_collection.features.ndim == 2 else 0,
-            "plots": make_tsne_plots(full_collection, tsne_dir, seed=int(eval_config.seed)),
+            "plots": make_2d_embedding_plots(full_collection, tsne_dir, seed=int(eval_config.seed))
+            + make_2d_embedding_plots(full_collection, tsne_dir, method="pca", seed=int(eval_config.seed)),
         }
 
         # up_cast(2): the pretraining feature space (the one the prototype loss shapes).
@@ -390,7 +391,8 @@ def main() -> None:
                 "num_events": upcast2_collection.num_events,
                 "num_points": int(upcast2_collection.features.shape[0]),
                 "feature_dim": int(upcast2_collection.features.shape[1]) if upcast2_collection.features.ndim == 2 else 0,
-                "plots": make_tsne_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2"),
+                "plots": make_2d_embedding_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2")
+                + make_2d_embedding_plots(upcast2_collection, tsne_dir, method="pca", seed=int(eval_config.seed), subdir="upcast2"),
             }
         metrics["tsne"] = tsne_metrics
 
