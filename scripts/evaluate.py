@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -182,11 +182,24 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     return path, None
 
 
-def main() -> None:
-    """CLI entry point: loads checkpoint, collects embeddings, reports metrics."""
-    cli_args = build_arg_parser().parse_args()
-    config = load_project_config(cli_args.config, cli_args.overrides)
+def run_evaluation(config: DictConfig) -> dict[str, Any]:
+    """Run the full evaluation described by `config.evaluation`.
 
+    Loads the checkpoint (or a random-init baseline), collects held-out embeddings
+    through the teacher backbone, computes the label-free metric suite, optionally
+    runs the dominance report and the t-SNE/PCA visualizations, and writes
+    `metrics_step.jsonl` + `summary.json` to the resolved run directory.
+
+    Shared by the CLI (`main`) and the post-training hook in `scripts/train.py`, so
+    both paths run identical logic driven purely by config.
+
+    Args:
+        config (DictConfig): Full project config; `config.evaluation` selects the
+            checkpoint, split, and optional phases.
+
+    Returns:
+        dict[str, Any]: The computed metrics (also persisted to disk).
+    """
     data_config = config.data
     eval_config = config.evaluation
     set_seed(int(eval_config.seed))
@@ -461,6 +474,14 @@ def main() -> None:
             print(f"  [{space}] num_events: {tsne.get('num_events')}  " f"num_points: {tsne.get('num_points')}  " f"feature_dim: {tsne.get('feature_dim')}")
             for plot in tsne.get("plots", []):
                 print(f"    plot: {plot}")
+
+    return metrics
+
+
+def main() -> None:
+    """CLI entry point: parses args and runs the evaluation."""
+    cli_args = build_arg_parser().parse_args()
+    run_evaluation(load_project_config(cli_args.config, cli_args.overrides))
 
 
 if __name__ == "__main__":

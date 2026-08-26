@@ -131,6 +131,10 @@ training:
   checkpoint_every_n_steps: 5000
   viz_every_n_steps: 10000
   log_backend: auto
+  # Run the evaluation harness on the best checkpoint when training finishes (same
+  # SLURM job). Skipped automatically for batch-limited (max_*_batches) debug runs;
+  # an eval failure never fails the training job. Uses the `evaluation:` block below.
+  eval_after_training: true
 
 diagnostics:
   detail_split: train[0:1]

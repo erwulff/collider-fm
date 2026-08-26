@@ -23,8 +23,8 @@ import torch
 import torch.nn.functional as F
 
 from ._panda.structure import Point
+from .metrics import prototype_entropy
 from .sonata_model import mean_pool_features
-from .training_loop import prototype_entropy
 from .views import build_sonata_batch, move_sonata_batch_to_device
 
 __all__ = [
