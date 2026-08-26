@@ -1,5 +1,6 @@
 import os
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -239,6 +240,36 @@ class Make2dEmbeddingPlotsTests(unittest.TestCase):
             paths = make_2d_embedding_plots(self._collection(), tmp, method="pca", seed=0)
             names = {Path(p).name for p in paths}
             self.assertEqual(names, {"pca_pdg_id.png", "pca_event_id.png"})
+
+    def test_max_event_plots_caps_only_the_event_plot(self):
+        # 8 events -> cap the event_id plot at 3; the pdg_id plot (all-0 pdg -> bucket 6,
+        # "other") keeps all points. Assert via the raw features each plot fn receives.
+        captured = {}
+        real_pca = pca_plot
+
+        def spy(features, color, path, **kwargs):
+            captured[Path(path).name] = int(features.shape[0])
+            real_pca(features, color, path, **kwargs)
+
+        with unittest.mock.patch(
+            "collider_fm.visualization.pca_plot", side_effect=spy
+        ) as mock_pca, TemporaryDirectory() as tmp:
+            n_events, per = 8, 5
+            torch.manual_seed(0)
+            collection = TsnePointCollection(
+                features=torch.randn(n_events * per, 8),
+                pdg_id=torch.zeros(n_events * per, dtype=torch.long),
+                event_id=torch.arange(n_events).repeat_interleave(per),
+                num_events=n_events,
+            )
+            make_2d_embedding_plots(collection, tmp, method="pca", seed=0, max_event_plots=3)
+
+            self.assertEqual(mock_pca.call_count, 2)
+            # event_id plot sees exactly 3 events * 5 points; pdg plot sees all 40.
+            self.assertEqual(captured["pca_event_id.png"], 3 * per)
+            self.assertEqual(captured["pca_pdg_id.png"], n_events * per)
+            for name in ("pca_pdg_id.png", "pca_event_id.png"):
+                self.assertTrue((Path(tmp) / name).exists())
 
 
 if __name__ == "__main__":

@@ -616,6 +616,7 @@ def make_2d_embedding_plots(
     seed: int = 0,
     subdir: str | None = None,
     method: str = "tsne",
+    max_event_plots: int | None = None,
 ) -> list[str]:
     """Write the pdg_id / event_id 2D-embedding PNGs to `out_dir`.
 
@@ -629,6 +630,11 @@ def make_2d_embedding_plots(
     both is cheap -- the expensive :func:`collect_tsne_points` runs once and the two
     methods each add only their own (fast) dimensionality-reduction fit.
 
+    For the event_id plot, only the first `max_event_plots` events (distinct
+    ``event_id`` values, keeping all their points) are colored; points from later events
+    are dropped from that plot. The pdg_id plot is unaffected. This keeps a large
+    `tsne_max_events` collection from crowding the event-separation visual.
+
     Args:
         collection (TsnePointCollection): Bounded features and coloring channels.
         out_dir (str | Path): Output directory for the PNG files.
@@ -637,6 +643,8 @@ def make_2d_embedding_plots(
             directly to `out_dir`. Defaults to None.
         method (str, optional): Projection method, ``"tsne"`` or ``"pca"``. Defaults
             to ``"tsne"``.
+        max_event_plots (int | None, optional): Cap on distinct events shown in the
+            event_id plot. If None, all events are shown. Defaults to None.
 
     Returns:
         list[str]: Paths to the written PNG files.
@@ -656,18 +664,26 @@ def make_2d_embedding_plots(
     if collection.features.shape[0] == 0:
         return paths
 
+    # Event_id channel, optionally capped to the first `max_event_plots` distinct events.
+    event_features = collection.features
+    event_ids = collection.event_id
+    if max_event_plots is not None:
+        keep = event_ids < max_event_plots
+        event_features = event_features[keep]
+        event_ids = event_ids[keep]
+    n_events = max(int(event_ids.max().item()) + 1, 1) if event_ids.numel() else 1
+    event_categories = [(f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)]
+
     bucket = torch.as_tensor(pdg_bucket(collection.pdg_id.cpu().numpy()))
     pdg_categories = [(name, PDG_BUCKET_COLORS[name]) for name in PDG_BUCKET_NAMES]
-    n_events = max(int(collection.event_id.max().item()) + 1, 1) if collection.num_events else 1
-    event_categories = [(f"event {i}", _EVENT_COLORS[i % len(_EVENT_COLORS)]) for i in range(n_events)]
     specs = [
-        (bucket, f"{prefix}pdg_id.png", f"{label} colored by particle type", "particle type", pdg_categories),
-        (collection.event_id, f"{prefix}event_id.png", f"{label} colored by event id", "event id", event_categories),
+        (collection.features, bucket, f"{prefix}pdg_id.png", f"{label} colored by particle type", "particle type", pdg_categories),
+        (event_features, event_ids, f"{prefix}event_id.png", f"{label} colored by event id", "event id", event_categories),
     ]
-    for color, name, title, color_label, categories in specs:
+    for features, color, name, title, color_label, categories in specs:
         path = target_dir / name
         plot_fn(
-            collection.features,
+            features,
             color,
             path,
             title=title,

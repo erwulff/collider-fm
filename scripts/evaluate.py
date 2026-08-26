@@ -342,6 +342,8 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
 
         tsne_max_events = int(eval_config.get("tsne_max_events", 100))
         tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
+        tsne_max_event_plots = eval_config.get("tsne_max_event_plots")
+        tsne_max_event_plots = int(tsne_max_event_plots) if tsne_max_event_plots is not None else None
         enable_upcast2 = bool(eval_config.get("tsne_upcast2", False))
         up_cast_level = int(config.model.training.get("up_cast_level", 2))
         print(f"\nt-SNE: collecting up to {tsne_max_points} points over " f"{tsne_max_events} events from {eval_config.val_split}...")
@@ -379,8 +381,8 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
             "num_events": full_collection.num_events,
             "num_points": int(full_collection.features.shape[0]),
             "feature_dim": int(full_collection.features.shape[1]) if full_collection.features.ndim == 2 else 0,
-            "plots": make_2d_embedding_plots(full_collection, tsne_dir, seed=int(eval_config.seed))
-            + make_2d_embedding_plots(full_collection, tsne_dir, method="pca", seed=int(eval_config.seed)),
+            "plots": make_2d_embedding_plots(full_collection, tsne_dir, seed=int(eval_config.seed), max_event_plots=tsne_max_event_plots)
+            + make_2d_embedding_plots(full_collection, tsne_dir, method="pca", seed=int(eval_config.seed), max_event_plots=tsne_max_event_plots),
         }
 
         # up_cast(2): the pretraining feature space (the one the prototype loss shapes).
@@ -404,8 +406,8 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
                 "num_events": upcast2_collection.num_events,
                 "num_points": int(upcast2_collection.features.shape[0]),
                 "feature_dim": int(upcast2_collection.features.shape[1]) if upcast2_collection.features.ndim == 2 else 0,
-                "plots": make_2d_embedding_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2")
-                + make_2d_embedding_plots(upcast2_collection, tsne_dir, method="pca", seed=int(eval_config.seed), subdir="upcast2"),
+                "plots": make_2d_embedding_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2", max_event_plots=tsne_max_event_plots)
+                + make_2d_embedding_plots(upcast2_collection, tsne_dir, method="pca", seed=int(eval_config.seed), subdir="upcast2", max_event_plots=tsne_max_event_plots),
             }
         metrics["tsne"] = tsne_metrics
 
