@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
+import traceback
+from collections.abc import Sequence
 from pathlib import Path
 
 # Import Comet before torch so the optional backend can initialize cleanly.
@@ -17,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import ray.train
+from omegaconf import DictConfig
 from ray.train.torch import TorchTrainer
 
 from collider_fm.project_config import (
@@ -51,6 +55,57 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "training",
         ),
     )
+
+
+def should_eval_after_training(config: DictConfig, has_checkpoint: bool) -> tuple[bool, str]:
+    """Decide whether to run the post-training evaluation.
+
+    Args:
+        config (DictConfig): Full project config.
+        has_checkpoint (bool): Whether training produced a checkpoint.
+
+    Returns:
+        tuple[bool, str]: `(should_run, reason)`. `reason` explains a skip and is
+        empty when `should_run` is True.
+    """
+    training_config = config.training
+    if not bool(training_config.get("eval_after_training", True)):
+        return False, "training.eval_after_training is false"
+    if not has_checkpoint:
+        return False, "training produced no checkpoint"
+    # Batch-limited runs are debug/smoke runs; a full held-out eval would dwarf them.
+    for key in ("max_train_batches", "max_val_batches"):
+        if training_config.get(key) is not None:
+            return False, f"training.{key} is set (batch-limited debug run)"
+    return True, ""
+
+
+def build_eval_config(config: DictConfig, run_dir: Path, cli_overrides: Sequence[str]) -> DictConfig:
+    """Build the config for the post-training evaluation.
+
+    Points `evaluation.checkpoint` at the training run dir (not the raw `model.pt`) so
+    `evaluate.resolve_checkpoint` recovers the run's `config.json` and rebuilds the
+    exact backbone, and picks the lowest-val_loss checkpoint. Enables the t-SNE/PCA
+    phases unless the user set them explicitly on the command line.
+
+    Args:
+        config (DictConfig): Full project config.
+        run_dir (Path): Resolved training run directory.
+        cli_overrides (Sequence[str]): Raw dotlist overrides, used to detect explicit
+            `evaluation.*` opt-outs.
+
+    Returns:
+        DictConfig: A deep copy configured for the post-training eval.
+    """
+    eval_config = copy.deepcopy(config)
+    eval_config.evaluation.checkpoint = str(run_dir)
+    # Leave evaluation.run_name unset so output nests at runs/<run>/eval/<checkpoint>/.
+    eval_config.evaluation.run_name = None
+    overridden = {override.split("=", 1)[0] for override in cli_overrides}
+    for key in ("enable_tsne", "tsne_upcast2"):
+        if f"evaluation.{key}" not in overridden:
+            eval_config.evaluation[key] = True
+    return eval_config
 
 
 def main() -> None:
@@ -102,7 +157,32 @@ def main() -> None:
 
     print(f"Launching Ray Train: {num_gpus} GPU(s), storage={storage_path}, " f"name={resolved_run_name}, resume={resume}")
     result = trainer.fit()
-    print(f"Training finished. Best checkpoint: {result.checkpoint.path}")
+    has_checkpoint = result.checkpoint is not None
+    if has_checkpoint:
+        print(f"Training finished. Best checkpoint: {result.checkpoint.path}")
+    else:
+        print("Training finished. No checkpoint was produced.")
+
+    # Post-training evaluation: runs here on the driver rather than inside the Ray
+    # worker, so it executes once (not once per rank) with the GPUs already released.
+    should_eval, skip_reason = should_eval_after_training(config, has_checkpoint)
+    if not should_eval:
+        print(f"Skipping post-training evaluation: {skip_reason}.")
+        return
+
+    # Imported lazily: scripts/ is not a package, and evaluate.py pulls in
+    # sklearn/matplotlib that the training path does not need.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from evaluate import run_evaluation
+
+    print(f"\n{'=' * 64}\nRunning post-training evaluation\n{'=' * 64}")
+    try:
+        run_evaluation(build_eval_config(config, resolved_run_dir, cli_args.overrides))
+    except Exception:
+        # Training succeeded and its checkpoints are safe; an eval failure must not
+        # mark a multi-day training job as failed. Warn loudly and exit 0.
+        print("WARNING: post-training evaluation failed. Training itself succeeded " "and the checkpoints are intact; re-run scripts/evaluate.py manually.")
+        print(traceback.format_exc())
 
 
 if __name__ == "__main__":

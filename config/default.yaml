@@ -131,6 +131,10 @@ training:
   checkpoint_every_n_steps: 5000
   viz_every_n_steps: 10000
   log_backend: auto
+  # Run the evaluation harness on the best checkpoint when training finishes (same
+  # SLURM job). Skipped automatically for batch-limited (max_*_batches) debug runs;
+  # an eval failure never fails the training job. Uses the `evaluation:` block below.
+  eval_after_training: true
 
 diagnostics:
   detail_split: train[0:1]
@@ -174,3 +178,4 @@ evaluation:
   tsne_max_points: 20000          # cap on points subsampled across events for the t-SNE fit
   tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
   tsne_upcast2: false             # also embed the up_cast(2) pretraining feature space (extra forward)
+  tsne_max_event_plots: 20        # cap distinct events shown in the event_id plot (legend readability); pdg_id unaffected

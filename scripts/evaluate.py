@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -182,11 +182,24 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     return path, None
 
 
-def main() -> None:
-    """CLI entry point: loads checkpoint, collects embeddings, reports metrics."""
-    cli_args = build_arg_parser().parse_args()
-    config = load_project_config(cli_args.config, cli_args.overrides)
+def run_evaluation(config: DictConfig) -> dict[str, Any]:
+    """Run the full evaluation described by `config.evaluation`.
 
+    Loads the checkpoint (or a random-init baseline), collects held-out embeddings
+    through the teacher backbone, computes the label-free metric suite, optionally
+    runs the dominance report and the t-SNE/PCA visualizations, and writes
+    `metrics_step.jsonl` + `summary.json` to the resolved run directory.
+
+    Shared by the CLI (`main`) and the post-training hook in `scripts/train.py`, so
+    both paths run identical logic driven purely by config.
+
+    Args:
+        config (DictConfig): Full project config; `config.evaluation` selects the
+            checkpoint, split, and optional phases.
+
+    Returns:
+        dict[str, Any]: The computed metrics (also persisted to disk).
+    """
     data_config = config.data
     eval_config = config.evaluation
     set_seed(int(eval_config.seed))
@@ -325,10 +338,12 @@ def main() -> None:
     # and up_cast(2) (the pretraining space, when enabled).
     if enable_tsne:
         from collider_fm.evaluation_labels import load_particle_pdg
-        from collider_fm.visualization import collect_tsne_points, make_tsne_plots
+        from collider_fm.visualization import collect_tsne_points, make_2d_embedding_plots
 
         tsne_max_events = int(eval_config.get("tsne_max_events", 100))
         tsne_max_points = int(eval_config.get("tsne_max_points", 20000))
+        tsne_max_event_plots = eval_config.get("tsne_max_event_plots")
+        tsne_max_event_plots = int(tsne_max_event_plots) if tsne_max_event_plots is not None else None
         enable_upcast2 = bool(eval_config.get("tsne_upcast2", False))
         up_cast_level = int(config.model.training.get("up_cast_level", 2))
         print(f"\nt-SNE: collecting up to {tsne_max_points} points over " f"{tsne_max_events} events from {eval_config.val_split}...")
@@ -366,7 +381,8 @@ def main() -> None:
             "num_events": full_collection.num_events,
             "num_points": int(full_collection.features.shape[0]),
             "feature_dim": int(full_collection.features.shape[1]) if full_collection.features.ndim == 2 else 0,
-            "plots": make_tsne_plots(full_collection, tsne_dir, seed=int(eval_config.seed)),
+            "plots": make_2d_embedding_plots(full_collection, tsne_dir, seed=int(eval_config.seed), max_event_plots=tsne_max_event_plots)
+            + make_2d_embedding_plots(full_collection, tsne_dir, method="pca", seed=int(eval_config.seed), max_event_plots=tsne_max_event_plots),
         }
 
         # up_cast(2): the pretraining feature space (the one the prototype loss shapes).
@@ -390,7 +406,8 @@ def main() -> None:
                 "num_events": upcast2_collection.num_events,
                 "num_points": int(upcast2_collection.features.shape[0]),
                 "feature_dim": int(upcast2_collection.features.shape[1]) if upcast2_collection.features.ndim == 2 else 0,
-                "plots": make_tsne_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2"),
+                "plots": make_2d_embedding_plots(upcast2_collection, tsne_dir, seed=int(eval_config.seed), subdir="upcast2", max_event_plots=tsne_max_event_plots)
+                + make_2d_embedding_plots(upcast2_collection, tsne_dir, method="pca", seed=int(eval_config.seed), subdir="upcast2", max_event_plots=tsne_max_event_plots),
             }
         metrics["tsne"] = tsne_metrics
 
@@ -459,6 +476,14 @@ def main() -> None:
             print(f"  [{space}] num_events: {tsne.get('num_events')}  " f"num_points: {tsne.get('num_points')}  " f"feature_dim: {tsne.get('feature_dim')}")
             for plot in tsne.get("plots", []):
                 print(f"    plot: {plot}")
+
+    return metrics
+
+
+def main() -> None:
+    """CLI entry point: parses args and runs the evaluation."""
+    cli_args = build_arg_parser().parse_args()
+    run_evaluation(load_project_config(cli_args.config, cli_args.overrides))
 
 
 if __name__ == "__main__":

@@ -169,6 +169,27 @@ uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
     data.local_files_only=true
 ```
 
+Each feature space also gets a **PCA** scatter of the same points (`pca_{pdg_id,event_id}.png` next to the `tsne_*` PNGs). PCA is linear and deterministic, so its axes carry real global-variance structure, whereas t-SNE preserves only local neighborhoods; comparing the pair separates genuine learned structure from t-SNE's neighborhood-matching artifacts. Both come from the same collected features, so the extra plots cost no additional GPU work.
+
+### Automatic evaluation after training
+
+Training runs the evaluation harness on the best checkpoint when it finishes, in the same SLURM job — no second job to submit. It is driven by the `evaluation:` config block and writes to `runs/<run_name>/eval/<checkpoint>/` (metrics + `summary.json` + the `viz/` plots), with `enable_tsne` / `tsne_upcast2` on by default so you get metrics plus t-SNE and PCA in both feature spaces.
+
+The eval runs on the Ray *driver* after `trainer.fit()` returns, so it executes once (not once per rank) with the GPUs already released, and it uses the lowest-`val_loss` checkpoint that Ray's `CheckpointConfig` selected.
+
+```bash
+# opt out entirely
+uv run python scripts/train.py training.eval_after_training=false
+
+# keep the auto-eval but skip the (slower) plots
+uv run python scripts/train.py evaluation.enable_tsne=false
+```
+
+Two behaviors worth knowing:
+
+- **Batch-limited runs skip it.** If `training.max_train_batches` or `max_val_batches` is set (debug/smoke runs), the auto-eval is skipped with a printed reason — a full held-out eval would dwarf a 20-batch run.
+- **An eval failure never fails the training job.** If the eval raises (e.g. OOM on a large backbone), the traceback is printed as a warning and the job still exits 0. Training succeeded and its checkpoints are intact; re-run `scripts/evaluate.py` manually.
+
 ### pdg frequency report
 
 `scripts/pdg_frequency.py` tallies how often each `pdg_id` appears among all particle records in the sibling `..._particles` config (the full GenParticle record, not just calorimeter contributors), and collapses the counts into the same 7 t-SNE colormap buckets. Loads via `ColliderMLDataset` (correct revision / cache / `local_files_only` from the project config) and tallies with one pyarrow `value_counts` pass, so the full 50k-event split finishes in seconds. Use it to see how large each t-SNE color bucket is and which raw `pdg_id` values land in "other".
