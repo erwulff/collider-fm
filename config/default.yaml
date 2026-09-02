@@ -179,3 +179,14 @@ evaluation:
   tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
   tsne_upcast2: false             # also embed the up_cast(2) pretraining feature space (extra forward)
   tsne_max_event_plots: 20        # cap distinct events shown in the event_id plot (legend readability); pdg_id unaffected
+  enable_probes: false            # Panda-style linear probes on frozen teacher features (per-point segmentation + per-event class energy)
+  probe_train_events: 1000        # probe-training events (taken from the start of val_split)
+  probe_val_events: 500           # probe-evaluation events (taken right after the probe-training events)
+  probe_max_calo_hits:            # per-event hit cap for the probe forward (bounds GPU memory); empty = all hits (energy probe target covers the whole event, so truncating the input biases it)
+  probe_max_points: 1000000       # cap on per-point rows collected per probe split (segmentation probe)
+  probe_random_init_baseline: true # also probe an identically-configured random-init model (same data/settings) for the trained-vs-random comparison; skipped for random-init evals (no checkpoint)
+  probe_epochs: 20                # linear-head epochs for the segmentation probe
+  probe_energy_epochs: 300        # linear-head epochs for the energy probe (few event-level rows -> more epochs)
+  probe_batch_size: 65536         # rows per optimizer step for both probes
+  probe_lr: 0.001                 # AdamW learning rate for the probe heads
+  probe_weight_decay: 0.0         # AdamW weight decay for the probe heads
