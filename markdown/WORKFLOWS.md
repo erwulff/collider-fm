@@ -51,7 +51,7 @@ Common overrides:
 - `training.mixed_precision=none|bf16|fp16`
 - `model.training.backbone.enable_flash=true`
 - `data.dataset_revision=...` and `data.local_files_only=true`
-- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_upcast2`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`
+- `evaluation.checkpoint`, `evaluation.val_split`, `evaluation.max_events`, `evaluation.point_subsample_budget` (see `scripts/evaluate.py`); `evaluation.enable_dominance_report`, `evaluation.dominance_max_events`; `evaluation.enable_tsne`, `evaluation.tsne_upcast2`, `evaluation.tsne_max_events`, `evaluation.tsne_max_points`, `evaluation.tsne_max_calo_hits`; `evaluation.enable_probes`, `evaluation.probe_train_events`, `evaluation.probe_val_events`
 
 To start a single-GPU training run:
 
@@ -170,6 +170,28 @@ uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
 ```
 
 Each feature space also gets a **PCA** scatter of the same points (`pca_{pdg_id,event_id}.png` next to the `tsne_*` PNGs). PCA is linear and deterministic, so its axes carry real global-variance structure, whereas t-SNE preserves only local neighborhoods; comparing the pair separates genuine learned structure from t-SNE's neighborhood-matching artifacts. Both come from the same collected features, so the extra plots cost no additional GPU work.
+
+### Linear probes on frozen features (Panda-style)
+
+`evaluation.enable_probes=true` trains linear probes on the frozen teacher backbone's full-up-cast features (the Panda paper's linear-probing protocol: a single `nn.Linear` on frozen features, AdamW + cross-entropy/MSE). Two probes:
+
+- **Semantic segmentation** (per point): classify each grid-sampled hit's dominant-particle calorimetry-role bucket (the same 7 `pdg_bucket` classes as the t-SNE legend). Reported as val accuracy, macro-F1, and mean IoU (macros average only over classes present in the split), plus per-class F1 / IoU / support.
+- **Class-energy regression** (per event): regress the event's total deposited energy per class — neutral hadron / photon / charged hadron, summed from `contrib_energies` bucketed by the contributing particle's pdg — from the mean-pooled per-point features. Trained on `log1p` energies; reported as per-class R² (log1p space) and MAE (raw energy units).
+
+Probe train/val events are disjoint consecutive slices from the start of `evaluation.val_split` (defaults: 1000 train / 500 val), so neither was seen by pretraining. Sizing knobs: `evaluation.probe_train_events`, `probe_val_events`, `probe_max_points` (per-point row cap per split), `probe_max_calo_hits` (per-event forward cap, off by default — the energy target covers the whole event, so truncating the input would bias the energy probe); optimizer knobs: `probe_epochs`, `probe_energy_epochs`, `probe_batch_size`, `probe_lr`, `probe_weight_decay`. Results land under `"probes"` in `summary.json`. Run once with the checkpoint and once random-init to see the pretraining gain.
+
+With `evaluation.probe_random_init_baseline=true` (default), a checkpoint eval also probes an identically-configured random-init model on the same data with the same settings, so the trained-vs-random comparison comes out of a single run — the random baseline's metrics land under `"probes"."random_init_baseline"` in `summary.json`. It is skipped automatically for random-init evals (no checkpoint). Note the random baseline is surprisingly strong on the energy probe (mean-pooled features retain the input energy/geometry); the *delta* is the pretraining signal.
+
+Each probe run writes human-reviewable artifacts into the eval dir:
+
+- `probes/trained/{confusion_matrix,loss_curves,energy_scatter}.png` (or `probes/random_init/` for a random-init eval) — the confusion matrix is row-normalized per true class with supports on the y labels (train | val side by side); the energy scatter is predicted-vs-true per class (rows train/val, log-log with diagonal; ≤0 points dropped and counted); the loss curves show per-epoch probe train loss (checks the probe heads converged rather than underfitting).
+- `probes/random_init/...` — the same three PNGs for the baseline, when enabled.
+- `probes_report.txt` — side-by-side plain-text tables (per-class F1/IoU/support, R²/MAE/target-mean, convergence).
+
+```bash
+uv run python scripts/evaluate.py evaluation.checkpoint=runs/<run_name> \
+    evaluation.enable_probes=true data.local_files_only=true
+```
 
 ### Automatic evaluation after training
 

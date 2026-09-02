@@ -6,6 +6,8 @@ events through the deterministic EMA teacher backbone, and reports:
   * per-point participation ratio (effective rank) + singular-value spectrum  (collapse headline)
   * per-point prototype usage / entropy + dead-prototype count
   * per-event NN view-retrieval R@1/R@5 + alignment / uniformity (secondary lens)
+  * optional linear probes on frozen features (``evaluation.enable_probes=true``):
+    per-point pdg-bucket segmentation + per-event class-energy regression
 
 Metrics are written to ``<training_run_dir>/eval/<checkpoint>/metrics_step.jsonl``
 when evaluating a training checkpoint (placed inside the training run dir, in a
@@ -182,13 +184,35 @@ def resolve_checkpoint(spec: Any) -> tuple[Path | None, Path | None]:
     return path, None
 
 
+def _write_probe_artifacts(out_dir: Path, probes_metrics: dict[str, Any], scatter: dict[str, Any] | None) -> None:
+    """Write the per-weights-source probe PNGs (confusion, loss curves, energy scatter).
+
+    Args:
+        out_dir (Path): Target directory (e.g. `<eval_run>/probes/trained`); created.
+        probes_metrics (dict[str, Any]): `{"semantic_segmentation", "energy"}` dicts
+            from the probe phase (`scatter` already popped).
+        scatter (dict[str, Any] | None): The popped `scatter` tensors from
+            `train_energy_probe`, or None to skip the energy scatter.
+    """
+    from collider_fm.evaluation_labels import PDG_BUCKET_NAMES
+    from collider_fm.probing import plot_confusion_matrix, plot_energy_scatter, plot_loss_curves
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seg = probes_metrics["semantic_segmentation"]
+    energy = probes_metrics["energy"]
+    plot_confusion_matrix(seg["train"]["confusion"], seg["val"]["confusion"], PDG_BUCKET_NAMES, out_dir / "confusion_matrix.png")
+    plot_loss_curves(seg["epoch_losses"], energy["epoch_losses"], out_dir / "loss_curves.png")
+    if scatter is not None:
+        plot_energy_scatter(scatter, energy, out_dir / "energy_scatter.png")
+
+
 def run_evaluation(config: DictConfig) -> dict[str, Any]:
     """Run the full evaluation described by `config.evaluation`.
 
     Loads the checkpoint (or a random-init baseline), collects held-out embeddings
     through the teacher backbone, computes the label-free metric suite, optionally
-    runs the dominance report and the t-SNE/PCA visualizations, and writes
-    `metrics_step.jsonl` + `summary.json` to the resolved run directory.
+    runs the dominance report, the t-SNE/PCA visualizations, and the linear probes,
+    and writes `metrics_step.jsonl` + `summary.json` to the resolved run directory.
 
     Shared by the CLI (`main`) and the post-training hook in `scripts/train.py`, so
     both paths run identical logic driven purely by config.
@@ -304,12 +328,25 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
     # HF_HUB_OFFLINE=1 to skip the slow 1000-shard hub verification.
     enable_dominance = bool(eval_config.get("enable_dominance_report", False))
     enable_tsne = bool(eval_config.get("enable_tsne", False))
+    enable_probes = bool(eval_config.get("enable_probes", False))
     calo_truth = None
     pid_to_pdg = None
-    if enable_dominance or enable_tsne:
+    if enable_dominance or enable_tsne or enable_probes:
         from collider_fm.evaluation_labels import load_calo_truth
 
         calo_truth = load_calo_truth(
+            split=str(eval_config.val_split),
+            dataset_name=str(data_config.dataset_name),
+            dataset_type=str(data_config.dataset_type),
+            pu_config=str(data_config.pu_config),
+            cache_dir=str(data_config.cache_dir),
+            dataset_revision=str(data_config.dataset_revision) if data_config.get("dataset_revision") is not None else None,
+            local_files_only=bool(data_config.get("local_files_only", False)),
+        )
+    if enable_tsne or enable_probes:
+        from collider_fm.evaluation_labels import load_particle_pdg
+
+        pid_to_pdg = load_particle_pdg(
             split=str(eval_config.val_split),
             dataset_name=str(data_config.dataset_name),
             dataset_type=str(data_config.dataset_type),
@@ -337,7 +374,6 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
     # sibling particles config. Two feature spaces are supported: full-up-cast (always)
     # and up_cast(2) (the pretraining space, when enabled).
     if enable_tsne:
-        from collider_fm.evaluation_labels import load_particle_pdg
         from collider_fm.visualization import collect_tsne_points, make_2d_embedding_plots
 
         tsne_max_events = int(eval_config.get("tsne_max_events", 100))
@@ -347,15 +383,6 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
         enable_upcast2 = bool(eval_config.get("tsne_upcast2", False))
         up_cast_level = int(config.model.training.get("up_cast_level", 2))
         print(f"\nt-SNE: collecting up to {tsne_max_points} points over " f"{tsne_max_events} events from {eval_config.val_split}...")
-        pid_to_pdg = load_particle_pdg(
-            split=str(eval_config.val_split),
-            dataset_name=str(data_config.dataset_name),
-            dataset_type=str(data_config.dataset_type),
-            pu_config=str(data_config.pu_config),
-            cache_dir=str(data_config.cache_dir),
-            dataset_revision=str(data_config.dataset_revision) if data_config.get("dataset_revision") is not None else None,
-            local_files_only=bool(data_config.get("local_files_only", False)),
-        )
         tsne_view_kwargs = point_view_kwargs(
             config,
             "training",
@@ -410,6 +437,104 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
                 + make_2d_embedding_plots(upcast2_collection, tsne_dir, method="pca", seed=int(eval_config.seed), subdir="upcast2", max_event_plots=tsne_max_event_plots),
             }
         metrics["tsne"] = tsne_metrics
+
+    # Linear probes (Panda-style): frozen full-up-cast teacher features -> one linear
+    # head per task (per-point pdg-bucket segmentation, per-event class energies).
+    # Probe train/val events are disjoint slices from the start of the val split.
+    # Optionally an identically-configured random-init baseline is probed on the same
+    # data, so the trained-vs-random delta is available from a single run.
+    if enable_probes:
+        from collider_fm.probing import (
+            collect_probe_data,
+            format_probes_report,
+            train_energy_probe,
+            train_segmentation_probe,
+        )
+
+        probe_train_events = int(eval_config.probe_train_events)
+        probe_val_events = int(eval_config.probe_val_events)
+        total_truth_events = len(calo_truth)
+        if probe_train_events + probe_val_events > total_truth_events:
+            raise ValueError(
+                f"evaluation.probe_train_events + evaluation.probe_val_events "
+                f"({probe_train_events} + {probe_val_events}) exceeds the "
+                f"{total_truth_events} events in evaluation.val_split={eval_config.val_split}."
+            )
+        probe_max_calo_hits = eval_config.get("probe_max_calo_hits")
+        probe_view_kwargs = point_view_kwargs(
+            config,
+            "training",
+            max_calo_hits=int(probe_max_calo_hits) if probe_max_calo_hits is not None else None,
+        )
+        probe_max_points = int(eval_config.probe_max_points)
+        probe_kwargs = dict(
+            batch_size=int(eval_config.probe_batch_size),
+            lr=float(eval_config.probe_lr),
+            weight_decay=float(eval_config.probe_weight_decay),
+            device=device,
+            seed=int(eval_config.seed),
+        )
+
+        def _run_probes(probe_model, label: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+            """Collect frozen features for one model and train both probes on them."""
+            print(f"\nProbes [{label}]: collecting frozen features for {probe_train_events} train / " f"{probe_val_events} val events from {eval_config.val_split}...")
+            probe_train = collect_probe_data(
+                probe_model,
+                calo_truth.select(range(probe_train_events)),
+                pid_to_pdg,
+                device,
+                view_kwargs=probe_view_kwargs,
+                max_events=probe_train_events,
+                max_points=probe_max_points,
+                seed=int(eval_config.seed),
+                desc=f"probe {label} train",
+            )
+            probe_val = collect_probe_data(
+                probe_model,
+                calo_truth.select(range(probe_train_events, probe_train_events + probe_val_events)),
+                pid_to_pdg,
+                device,
+                view_kwargs=probe_view_kwargs,
+                max_events=probe_val_events,
+                max_points=probe_max_points,
+                seed=int(eval_config.seed) + 1,
+                desc=f"probe {label} val",
+            )
+            print(f"Probes [{label}]: training semantic-segmentation probe...")
+            seg_metrics = train_segmentation_probe(probe_train, probe_val, epochs=int(eval_config.probe_epochs), **probe_kwargs)
+            print(f"Probes [{label}]: training energy probe...")
+            energy_metrics = train_energy_probe(probe_train, probe_val, epochs=int(eval_config.probe_energy_epochs), **probe_kwargs)
+            # The scatter tensors feed the PNG artifact; pop them so the metrics dict
+            # stays JSON-serializable for summary.json.
+            scatter = energy_metrics.pop("scatter", None)
+            return {"semantic_segmentation": seg_metrics, "energy": energy_metrics}, scatter
+
+        probes_metrics, probes_scatter = _run_probes(model, "trained" if checkpoint is not None else "random_init")
+
+        # Random-init baseline: same architecture, same data, same probe settings.
+        # Only meaningful when the main run is a trained checkpoint (otherwise the
+        # main model already is random-init).
+        probes_baseline = None
+        probes_baseline_scatter = None
+        if bool(eval_config.get("probe_random_init_baseline", False)) and checkpoint is not None:
+            baseline_model = create_training_model(device=device, **model_factory_kwargs(model_config))
+            baseline_model.eval()
+            probes_baseline, probes_baseline_scatter = _run_probes(baseline_model, "random_init")
+
+        metrics["probes"] = probes_metrics
+        if probes_baseline is not None:
+            metrics["probes"]["random_init_baseline"] = probes_baseline
+
+        # Human-reviewable artifacts: probes/<label>/{confusion_matrix,loss_curves,
+        # energy_scatter}.png + a side-by-side probes_report.txt at the eval root.
+        probes_dir = run_dir / "probes"
+        main_label = "trained" if checkpoint is not None else "random_init"
+        _write_probe_artifacts(probes_dir / main_label, probes_metrics, probes_scatter)
+        if probes_baseline is not None:
+            _write_probe_artifacts(probes_dir / "random_init", probes_baseline, probes_baseline_scatter)
+        report_path = run_dir / "probes_report.txt"
+        report_path.write_text(format_probes_report(probes_metrics, probes_baseline, main_label=main_label))
+        print(f"  wrote {report_path}")
 
     write_run_config(run_dir, to_plain_container(config))
     logger = JsonlLogger(run_dir)
@@ -476,6 +601,33 @@ def run_evaluation(config: DictConfig) -> dict[str, Any]:
             print(f"  [{space}] num_events: {tsne.get('num_events')}  " f"num_points: {tsne.get('num_points')}  " f"feature_dim: {tsne.get('feature_dim')}")
             for plot in tsne.get("plots", []):
                 print(f"    plot: {plot}")
+
+    if "probes" in metrics:
+        seg = metrics["probes"]["semantic_segmentation"]
+        energy = metrics["probes"]["energy"]
+        print("\n--- linear probes (frozen teacher features) ---")
+        print(f"  semantic segmentation ({seg['num_train_points']} train / {seg['num_val_points']} val points):")
+        print(f"    val: accuracy={seg['val']['accuracy']:.4f}  macro_f1={seg['val']['macro_f1']:.4f}  " f"mean_iou={seg['val']['mean_iou']:.4f}")
+        for name, cls in seg["val"]["per_class"].items():
+            print(f"      {name}: f1={cls['f1']:.4f}  iou={cls['iou']:.4f}  support={cls['support']}")
+        print(f"  energy regression ({energy['num_train_events']} train / {energy['num_val_events']} val events):")
+        print(f"    val: mean_r2={energy['val']['mean_r2']:.4f}")
+        for name, cls in energy["val"]["per_class"].items():
+            print(f"      {name}: r2={cls['r2']:.4f}  mae={cls['mae']:.4f}  target_mean={cls['target_mean']:.2f}")
+        if "random_init_baseline" in metrics["probes"]:
+            baseline = metrics["probes"]["random_init_baseline"]
+            baseline_seg = baseline["semantic_segmentation"]["val"]
+            baseline_energy = baseline["energy"]["val"]
+            print("  random-init baseline (same data, same probe settings):")
+            print(
+                f"    seg: mean_iou={baseline_seg['mean_iou']:.4f}  "
+                f"delta(trained-random)={seg['val']['mean_iou'] - baseline_seg['mean_iou']:+.4f}"
+            )
+            print(
+                f"    energy: mean_r2={baseline_energy['mean_r2']:.4f}  "
+                f"delta(trained-random)={energy['val']['mean_r2'] - baseline_energy['mean_r2']:+.4f}"
+            )
+        print(f"  artifacts: {run_dir / 'probes'} + {run_dir / 'probes_report.txt'}")
 
     return metrics
 
