@@ -29,66 +29,45 @@ The checked-in runtime jobs execute with the activated environment's `python`; `
   - creates `.venv`
   - runs `uv sync`
 - `slurm/download.slurm`
-  - generic bulk-cache download job
-  - currently requests `tracker_hits` and `particles`, so edit it if you want a calo-only cache warmup for the current runtime path
+  - generic bulk-cache download job; currently requests `tracker_hits` and `particles`, so edit it if you want a calo-only cache warmup
 
-## Recommended first-pass job order
+## Standard SLURM scripts
 
-For a fresh cluster environment:
+Four training and four evaluation scripts are kept; each has an "EDIT" block at the top for the per-run knobs (run name prefix, epochs, batch size, checkpoint, etc.), and everything else is fixed to sensible defaults. Add new experiments by editing a script before submitting rather than by creating a new one; run-specific runs are distinguished by `RUN_NAME_PREFIX` (first positional arg), not by separate files.
+
+### Training
+
+| script | purpose | GPUs / node | defaults |
+|---|---|---|---|
+| `slurm/train_smoke.slurm` | end-to-end training wiring sanity check; *not* for experiments | 1 × a100 | 1 epoch, batch 4, tiny `train[:32]` / `val[:8]`, auto-eval off |
+| `slurm/train.slurm` | the training script — modify the EDIT block per run | 8 × h100 | full paper-config backbone, 100 epochs, batch 8/GPU |
+
+Usage:
+
+```bash
+sbatch slurm/train.slurm                # run name "train_<ts>"
+sbatch slurm/train.slurm mytest         # run name "mytest_train_<ts>"
+```
+
+### Evaluation
+
+| script | purpose | defaults |
+|---|---|---|
+| `slurm/eval.slurm` | label-free quality metrics (harness); set `TSNE=true` to add t-SNE/PCA | probes and t-SNE off |
+| `slurm/eval_tsne.slurm` | t-SNE/PCA plots, per-point features colored by particle / event id | 100 events × 20k points caps |
+| `slurm/eval_probes.slurm` | Panda-style linear probes (seg + energy, random-init and raw-input baselines) | 2000 train / 500 val probe events |
+
+`eval.slurm` is the "evaluate this checkpoint" job; `eval_probes.slurm` re-runs probes when probe settings change (cached backbone features make the second run fast); `eval_tsne.slurm` adds visualization.
+
+### First-pass job order on a fresh cluster
 
 ```bash
 sbatch slurm/create_uv_venv.slurm
 sbatch slurm/test_model.slurm
-sbatch slurm/train_gpu1_debug.slurm
+sbatch slurm/train_smoke.slurm
 ```
 
 If you want to prewarm the dataset cache first, either edit `slurm/download.slurm` for `calo_hits` or use `scripts/download_data.py` directly with the desired object types.
-
-## Checked-in runtime jobs
-
-### `slurm/test_model.slurm`
-
-- runs `scripts/smoke_test_model.py`
-- 1 GPU on `a100-80gb`
-- uses the shared `slurm/load_env.sh` bootstrap
-
-### `slurm/train_gpu1_debug.slurm`
-
-- short Sonata debug run
-- 1 GPU on `a100`
-- 4 epochs, batch_size=4, 200 train / 40 val events
-- useful for validating the Sonata pipeline end-to-end before a longer run
-- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_sonata_debug_20260610_043244_123456`
-- optional positional prefix: `sbatch slurm/train_gpu1_debug.slurm test_x` -> `test_x_sonata_debug_<timestamp>`
-
-### `slurm/train_gpu1.slurm`
-
-- longer Sonata training run
-- 1 GPU on `a100-80gb`
-- 5 epochs, batch_size=8, full train and val splits
-- uses `data.local_files_only=true` and logs to Comet
-- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_sonata_full_20260610_043244_123456`
-- optional positional prefix: `sbatch slurm/train_gpu1.slurm test_x` -> `test_x_sonata_full_<timestamp>`
-
-### `slurm/train_multigpu_debug.slurm`
-
-- 2-GPU Ray Train debug run
-- 2 GPUs on `a100-80gb`, 16 CPUs
-- 5 epochs, batch_size=4 per GPU, 20 train / 5 val batches
-- uses `training.num_gpus=2`, `training.num_workers=4`
-- uses `training.log_backend=comet`
-- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_train_multigpu_debug_20260610_043244_123456`
-- optional positional prefix: `sbatch slurm/train_multigpu_debug.slurm test_x` -> `test_x_train_multigpu_debug_<timestamp>`
-
-### `slurm/train_multigpu.slurm`
-
-- 8-GPU Ray Train full run
-- 8 GPUs on `h100`, 64 CPUs
-- 5 epochs, batch_size=12 per GPU (global batch=96), full splits
-- uses `training.num_gpus=8`, `training.num_workers=4`, `data.local_files_only=true`
-- checkpoints persisted to `/mnt/ceph/users/ewulff/raytrain_results/`
-- run names are suffixed with a microsecond-resolution timestamp, for example `test_x_train_multigpu_20260610_043244_123456`
-- optional positional prefix: `sbatch slurm/train_multigpu.slurm test_x` -> `test_x_train_multigpu_<timestamp>`
 
 ## Reproducibility and cache usage
 
@@ -105,7 +84,7 @@ For reproducible training, prefer pinning that revision and using `data.local_fi
 The checked-in jobs currently use these hardware patterns:
 
 - smoke test and single-GPU training jobs: `a100` or `a100-80gb`
-- multi-GPU training jobs (2 GPUs for debug, 8 GPUs for full): `h100`/`h200`
+- multi-GPU training jobs (8 GPUs for full): `h100`/`h200`
 - environment bootstrap jobs: `h100`
 
 When requesting fewer than 4 GPUs, always use `a100` (not `h100` or `h200`). Only use `h100`/`h200` for multi-GPU jobs (4+ GPUs).

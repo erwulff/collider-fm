@@ -186,6 +186,142 @@ def build_optimizer_param_groups(model: torch.nn.Module, weight_decay: float) ->
     ]
 
 
+def _run_periodic_probes(
+    base_model,
+    config: DictConfig,
+    run_dir: Path,
+    device: torch.device,
+    epoch: int,
+    global_step: int,
+    logger: Any,
+) -> None:
+    """Panda-style in-training linear probes on the frozen teacher features.
+
+    Mirrors pimm's `PretrainEvaluator`: rank-0-only collection, teacher backbone
+    forward, 13-LR sweep, then log_seg/energy metrics. Called at the end of a
+    checkpoint epoch when enabled (`evaluation.probe_every_n_epochs > 0`).
+
+    Failures are warnings, not exceptions — losing a probe tick must not take down
+    a multi-day training job.
+    """
+    from .probing import (
+        collect_probe_data,
+        format_probes_report,
+        train_energy_probe,
+        train_segmentation_probe,
+    )
+    from .evaluation_labels import load_calo_truth, load_particle_pdg
+
+    eval_config = config.evaluation
+    probe_train_events = int(eval_config.probe_train_events)
+    probe_val_events = int(eval_config.probe_val_events)
+    seed = int(eval_config.seed)
+    val_split = str(eval_config.val_split)
+
+    print(f"[probes @ epoch {epoch}] collecting frozen features ({probe_train_events} train / {probe_val_events} val events from '{val_split}')...")
+    try:
+        calo_truth = load_calo_truth(
+            split=val_split,
+            dataset_name=str(config.data.dataset_name),
+            dataset_type=str(config.data.dataset_type),
+            pu_config=str(config.data.pu_config),
+            cache_dir=str(config.data.cache_dir),
+            dataset_revision=str(config.data.dataset_revision) if config.data.get("dataset_revision") is not None else None,
+            local_files_only=bool(config.data.get("local_files_only", False)),
+        )
+        pid_to_pdg = load_particle_pdg(
+            split=val_split,
+            dataset_name=str(config.data.dataset_name),
+            dataset_type=str(config.data.dataset_type),
+            pu_config=str(config.data.pu_config),
+            cache_dir=str(config.data.cache_dir),
+            dataset_revision=str(config.data.dataset_revision) if config.data.get("dataset_revision") is not None else None,
+            local_files_only=bool(config.data.get("local_files_only", False)),
+        )
+    except Exception as e:  # noqa: BLE001 - keep training alive
+        print(f"[probes @ epoch {epoch}] WARNING: failed to load truth data: {e}")
+        return
+
+    probe_view_kwargs = dict(sonata_batch_kwargs(config, "training", max_calo_hits=None))
+    probe_kwargs = dict(
+        batch_size=int(eval_config.probe_batch_size),
+        lr=float(eval_config.probe_lr),
+        weight_decay=float(eval_config.probe_weight_decay),
+        device=device,
+        seed=seed,
+        early_stop_patience=int(eval_config.get("probe_early_stop_patience", 0)),
+    )
+    probe_lr_list_raw = str(eval_config.get("probe_lr_list", "") or "").strip()
+    if probe_lr_list_raw:
+        probe_kwargs["learning_rates"] = tuple(float(x) for x in probe_lr_list_raw.split(","))
+
+    probe_train_slice = calo_truth.select(range(probe_train_events))
+    probe_val_slice = calo_truth.select(range(probe_train_events, probe_train_events + probe_val_events))
+
+    try:
+        probe_train = collect_probe_data(
+            base_model,
+            probe_train_slice,
+            pid_to_pdg,
+            device,
+            view_kwargs=probe_view_kwargs,
+            max_events=probe_train_events,
+            max_points=int(eval_config.probe_max_points),
+            seed=seed,
+            desc=f"probe epoch {epoch} train",
+        )
+        probe_val = collect_probe_data(
+            base_model,
+            probe_val_slice,
+            pid_to_pdg,
+            device,
+            view_kwargs=probe_view_kwargs,
+            max_events=probe_val_events,
+            max_points=int(eval_config.probe_max_points),
+            seed=seed + 1,
+            desc=f"probe epoch {epoch} val",
+        )
+        seg_metrics = train_segmentation_probe(probe_train, probe_val, epochs=int(eval_config.probe_seg_epochs), **probe_kwargs)
+        energy_metrics = train_energy_probe(probe_train, probe_val, epochs=int(eval_config.probe_energy_epochs), **probe_kwargs)
+        scatter = energy_metrics.pop("scatter", None)
+    except Exception as e:  # noqa: BLE001
+        print(f"[probes @ epoch {epoch}] WARNING: probe training failed: {e}")
+        return
+
+    # Artifacts on rank 0 only, under the run dir. Keep all artifacts per epoch in a
+    # subfolder so they don't replace previous epochs' plots.
+    probes_root = run_dir / "probes"
+    probes_root.mkdir(parents=True, exist_ok=True)
+    probe_report = probes_root / f"report_epoch{epoch:03d}.txt"
+    probe_report.write_text(
+        format_probes_report(
+            {"semantic_segmentation": seg_metrics, "energy": energy_metrics},
+            None,
+            main_label="trained",
+        )
+    )
+    # Loss curves (train-side; curves only — scatter only makes sense at the end, not mid-epoch).
+    from .probing import plot_loss_curves
+
+    plot_loss_curves(
+        seg_metrics["epoch_losses"],
+        energy_metrics["epoch_losses"],
+        probes_root / f"loss_curves_epoch{epoch:03d}.png",
+        seg_val_losses=seg_metrics.get("epoch_val_losses"),
+        energy_val_losses=energy_metrics.get("epoch_val_losses"),
+    )
+    print(f"[probes @ epoch {epoch}] wrote {probe_report}")
+    if logger is not None:
+        logger.log_metrics(
+            {
+                "probe_seg_val_iou": seg_metrics["val"]["mean_iou"],
+                "probe_seg_val_f1": seg_metrics["val"]["macro_f1"],
+                "probe_energy_val_r2": energy_metrics["val"]["mean_r2"],
+            },
+            step=global_step,
+        )
+
+
 def step_weight_decay(optimizer: AdamW, wd_scheduler: CosineScheduler) -> float:
     """Advance the WD scheduler and update applicable param groups.
 
@@ -1036,6 +1172,16 @@ def train_loop_per_worker(train_loop_config: dict) -> None:
                     checkpoint=ray_checkpoint,
                     checkpoint_dir_name=checkpoint_dir_name,
                 )
+
+            # Panda-style periodic linear probes on the checkpointed teacher features.
+            # Rank 0 runs the probe; the other ranks sit at the next epoch's first
+            # batch's broadcast barrier — the natural synchronization point of DDP.
+            probe_every_n = int(config.evaluation.get("probe_every_n_epochs", 0))
+            if probe_every_n > 0 and (epoch + 1) % probe_every_n == 0 and is_rank0:
+                try:
+                    _run_periodic_probes(base_model, config, run_dir, device, epoch, global_step, logger)
+                except Exception as probe_exc:  # noqa: BLE001
+                    print(f"[probes @ epoch {epoch}] WARNING: probe phase raised {type(probe_exc).__name__}: {probe_exc}")
 
     finally:
         if is_rank0:
