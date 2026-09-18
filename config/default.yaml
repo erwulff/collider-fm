@@ -179,7 +179,7 @@ evaluation:
   tsne_max_calo_hits: 8000        # per-event hit cap for the t-SNE forward (bounds GPU memory)
   tsne_upcast2: false             # also embed the up_cast(2) pretraining feature space (extra forward)
   tsne_max_event_plots: 20        # cap distinct events shown in the event_id plot (legend readability); pdg_id unaffected
-  enable_probes: false            # Panda-style linear probes on frozen teacher features (per-point segmentation + per-event class energy)
+  enable_probes: true             # Panda-style linear probes on frozen teacher features (per-point segmentation + per-event class energy); set false to opt out
   probe_train_events: 2000        # probe-training events (taken from the start of val_split)
   probe_val_events: 500           # probe-evaluation events (taken right after the probe-training events)
   probe_max_calo_hits:            # per-event hit cap for the probe forward (bounds GPU memory); empty = all hits (energy probe target covers the whole event, so truncating the input biases it)
@@ -193,4 +193,4 @@ evaluation:
   probe_lr_list: ""               # Panda-style LR sweep: comma-separated values (e.g. "1e-5,...,0.1"); empty = single probe_lr
   probe_weight_decay: 0.01        # AdamW weight decay for the probe heads; 0.01 rides the energy probe's small head to a ridge-like plateau
   probe_early_stop_patience: 20   # val-loss early stopping for the probe heads (restore best-val); 0 disables
-  probe_every_n_epochs: 0          # in-training probes every n epochs (rank 0 only, Panda PretrainEvaluator-style); 0 = off
+  probe_every_n_epochs: 0         # in-training probes every n epochs (rank 0 only, Panda PretrainEvaluator-style); 0 = off
