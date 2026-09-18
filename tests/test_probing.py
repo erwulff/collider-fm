@@ -10,11 +10,15 @@ from collider_fm.probing import (
     ENERGY_PROBE_CLASSES,
     ProbeDataCollection,
     _classification_metrics,
+    collect_raw_input_probe_data,
     event_class_energies,
     format_probes_report,
+    load_probe_features,
     plot_confusion_matrix,
     plot_energy_scatter,
     plot_loss_curves,
+    probe_features_signature,
+    save_probe_features,
     train_energy_probe,
     train_segmentation_probe,
 )
@@ -148,6 +152,11 @@ class ProbeArtifactsTests(unittest.TestCase):
         self.assertEqual(len(self.seg["epoch_losses"]), 3)
         self.assertEqual(len(self.energy["epoch_losses"]), 5)
         self.assertAlmostEqual(self.seg["final_train_loss"], self.seg["epoch_losses"][-1])
+        # Val-loss curves are recorded per epoch alongside the train curves.
+        self.assertEqual(len(self.seg["epoch_val_losses"]), 3)
+        self.assertEqual(len(self.energy["epoch_val_losses"]), 5)
+        self.assertAlmostEqual(self.seg["final_val_loss"], self.seg["epoch_val_losses"][-1])
+        self.assertAlmostEqual(self.energy["final_val_loss"], self.energy["epoch_val_losses"][-1])
 
     def test_confusion_rows_sum_to_support(self):
         confusion = self.seg["val"]["confusion"]
@@ -166,7 +175,13 @@ class ProbeArtifactsTests(unittest.TestCase):
     def test_plots_write_pngs(self):
         with TemporaryDirectory() as tmp:
             plot_confusion_matrix(self.seg["train"]["confusion"], self.seg["val"]["confusion"], PDG_BUCKET_NAMES, Path(tmp) / "confusion.png")
-            plot_loss_curves(self.seg["epoch_losses"], self.energy["epoch_losses"], Path(tmp) / "losses.png")
+            plot_loss_curves(
+                self.seg["epoch_losses"],
+                self.energy["epoch_losses"],
+                Path(tmp) / "losses.png",
+                seg_val_losses=self.seg["epoch_val_losses"],
+                energy_val_losses=self.energy["epoch_val_losses"],
+            )
             plot_energy_scatter(self.energy["scatter"], self.energy, Path(tmp) / "scatter.png")
             for name in ("confusion.png", "losses.png", "scatter.png"):
                 path = Path(tmp) / name
@@ -183,6 +198,8 @@ class ProbeArtifactsTests(unittest.TestCase):
         self.assertIn("Probe convergence", report)
         for name in PDG_BUCKET_NAMES:
             self.assertIn(name, report)
+        report = format_probes_report(self.seg_and_energy(), baseline, raw_metrics=baseline, main_label="trained")
+        self.assertIn("raw input", report)
 
     @staticmethod
     def seg_and_energy():
@@ -220,6 +237,84 @@ class TrainEnergyProbeTests(unittest.TestCase):
         val = _separable_collection(10, 50, seed=1)
         with self.assertRaises(ValueError):
             train_energy_probe(train, val, epochs=1, device=torch.device("cpu"))
+
+
+class ProbeFeatureCacheTests(unittest.TestCase):
+    def test_save_load_round_trip(self):
+        # Save -> load should reproduce the collection exactly.
+        collection = _separable_collection(num_points=40, num_events=4, seed=0)
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "features.pt"
+            save_probe_features(collection, path)
+            loaded = load_probe_features(path)
+        self.assertEqual(loaded.num_events, collection.num_events)
+        self.assertTrue(torch.equal(loaded.point_features, collection.point_features))
+        self.assertTrue(torch.equal(loaded.point_labels, collection.point_labels))
+        self.assertTrue(torch.equal(loaded.event_features, collection.event_features))
+        self.assertTrue(torch.equal(loaded.event_targets, collection.event_targets))
+
+    def test_signature_changes_with_any_input(self):
+        # Two collections that differ in any cached attribute must hash differently.
+        kwargs = {"grid_size": 0.002, "max_calo_hits": None}
+        base = probe_features_signature(kwargs, max_events=10, max_points=1000, seed=0, num_prototypes=4096)
+        self.assertNotEqual(base, probe_features_signature(kwargs, max_events=11, max_points=1000, seed=0, num_prototypes=4096))
+        self.assertNotEqual(base, probe_features_signature(kwargs, max_events=10, max_points=1001, seed=0, num_prototypes=4096))
+        self.assertNotEqual(base, probe_features_signature(kwargs, max_events=10, max_points=1000, seed=1, num_prototypes=4096))
+        self.assertNotEqual(base, probe_features_signature({**kwargs, "grid_size": 0.004}, max_events=10, max_points=1000, seed=0, num_prototypes=4096))
+        self.assertNotEqual(base, probe_features_signature(kwargs, max_events=10, max_points=1000, seed=0, num_prototypes=8192))
+        # Same inputs -> same signature
+        self.assertEqual(base, probe_features_signature(kwargs, max_events=10, max_points=1000, seed=0, num_prototypes=4096))
+
+
+class CollectRawInputProbeDataTests(unittest.TestCase):
+    """The backbone-free collector builds views on CPU with synthetic events."""
+
+    def _fake_events(self, num_events: int = 3, num_hits: int = 200) -> list[dict]:
+        rng = np.random.default_rng(0)
+        events = []
+        for _ in range(num_events):
+            pids = rng.choice([22, 2112, 211], size=num_hits)
+            events.append(
+                {
+                    # Normalized coords like the real dataset (raw mm / 5000).
+                    "x": rng.uniform(-0.5, 0.5, num_hits),
+                    "y": rng.uniform(-0.5, 0.5, num_hits),
+                    "z": rng.uniform(-0.5, 0.5, num_hits),
+                    "total_energy": rng.uniform(0.1, 5.0, num_hits),
+                    "contrib_particle_ids": [[int(p)] for p in rng.integers(1, 10, num_hits)],
+                    "contrib_energies": [[float(e)] for e in rng.uniform(0.1, 1.0, num_hits)],
+                    "pids": pids,  # for the pid map below
+                }
+            )
+        return events
+
+    def test_collects_views_labels_and_targets(self):
+        from collider_fm.project_config import point_view_kwargs, load_project_config
+
+        events = self._fake_events()
+        pid_to_pdg = {i: pdg for i, pdg in enumerate([22, 2112, 211, -11, 13, 2212, 211, 22, 2112], start=1)}
+
+        config = load_project_config()
+        view_kwargs = point_view_kwargs(config, "training", max_calo_hits=None)
+        collection = collect_raw_input_probe_data(
+            events,
+            pid_to_pdg,
+            torch.device("cpu"),
+            view_kwargs=view_kwargs,
+            max_events=3,
+            max_points=1000,
+            seed=0,
+        )
+
+        self.assertEqual(collection.num_events, 3)
+        self.assertEqual(collection.event_features.shape[0], 3)
+        self.assertEqual(collection.event_targets.shape, (3, len(ENERGY_PROBE_CLASSES)))
+        self.assertGreater(collection.point_features.shape[0], 0)
+        self.assertEqual(collection.point_features.shape[0], collection.point_labels.shape[0])
+        # Features are the standardized base-view inputs ({x, y, z, E} = 4 channels).
+        self.assertEqual(collection.point_features.shape[1], collection.event_features.shape[1])
+        # All subsampled labels must be pid buckets (0..6) from the fake map above.
+        self.assertTrue(bool(((collection.point_labels >= 0) & (collection.point_labels < len(PDG_BUCKET_NAMES))).all()))
 
 
 if __name__ == "__main__":
